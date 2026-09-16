@@ -81,7 +81,7 @@ scripts/run.sh      # собрать, запустить эмулятор, ус�
 ### 1. Установка инструментов — `scripts/setup.sh`
 Ставит в `~/Android` (можно переопределить `ANDROID_TOOLS_DIR`):
 - JDK 17 (Temurin) — если JDK 17 ещё не установлен;
-- Android SDK: platform-tools, platform 35, build-tools 35.0.0, эмулятор и образ Android 15 (x86_64);
+- Android SDK: platform-tools, platform 35, build-tools 34.0.0, эмулятор и образ Android 15 (x86_64);
 - виртуальное устройство `petrovich` (Pixel 7, 4 ГБ ОЗУ);
 - `local.properties` с путём к SDK (файл локальный, в git не попадает).
 

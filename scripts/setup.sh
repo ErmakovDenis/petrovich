@@ -51,7 +51,7 @@ else
 fi
 
 # 3. Пакеты SDK
-PACKAGES=("platform-tools" "platforms;$PLATFORM" "build-tools;35.0.0")
+PACKAGES=("platform-tools" "platforms;$PLATFORM" "build-tools;34.0.0")
 [ "$WITH_EMULATOR" = 1 ] && PACKAGES+=("emulator" "$SYSTEM_IMAGE")
 echo "→ Устанавливаю пакеты SDK: ${PACKAGES[*]} (первый раз — несколько минут)"
 yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null 2>&1 || true
