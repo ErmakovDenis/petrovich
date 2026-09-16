@@ -39,6 +39,13 @@ class AnomalyNotifier(private val context: Context) {
             context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // На экране блокировки — только общий текст, без названий машин и описаний.
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Обнаружены аномалии")
+            .setContentText("Разблокируйте устройство, чтобы посмотреть подробности")
+            .build()
+
         // Отдельные уведомления для первых нескольких + сводное.
         anomalies.sortedByDescending { it.severity }.take(5).forEach { a ->
             val n = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -49,6 +56,8 @@ class AnomalyNotifier(private val context: Context) {
                 .setPriority(if (a.severity == Severity.CRITICAL) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
                 .setCategory(NotificationCompat.CATEGORY_ALARM)
                 .setGroup(GROUP)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(publicVersion)
                 .setContentIntent(pending)
                 .setAutoCancel(true)
                 .build()
@@ -60,6 +69,8 @@ class AnomalyNotifier(private val context: Context) {
             .setContentText(anomalies.map { it.vehicleName }.distinct().joinToString())
             .setGroup(GROUP)
             .setGroupSummary(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .setContentIntent(pending)
             .setAutoCancel(true)
             .build()

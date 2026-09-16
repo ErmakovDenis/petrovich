@@ -8,6 +8,7 @@ import retrofit2.HttpException
 import ru.petrovich.telemetry.data.api.AutoGraphApi
 import ru.petrovich.telemetry.data.settings.SettingsRepository
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -23,7 +24,7 @@ class AutoGraphTelemetryRepository(
     private val mutex = Mutex()
     private var token: String? = null
     private var tokenFor: Pair<String, String>? = null
-    private var vehiclesCache: Pair<String, List<Vehicle>>? = null
+    @Volatile private var vehiclesCache: Pair<String, List<Vehicle>>? = null
 
     /** Длина одного запроса GetTripTables: сутки сырых данных по машине — ~6 МБ JSON (≈0.8 МБ в gzip). */
     private val chunk: Duration = Duration.ofHours(6)
@@ -95,7 +96,8 @@ class AutoGraphTelemetryRepository(
 
     private data class SelectedParameters(val list: List<ParameterInfo>, val aggregation: Map<String, Aggregation>)
 
-    private val parametersCache = mutableMapOf<String, SelectedParameters>()
+    // Заполняется из нескольких корутин одновременно (AnomalyScanner); повторный запрос параметров безвреден.
+    private val parametersCache = ConcurrentHashMap<String, SelectedParameters>()
 
     private suspend fun parameters(session: String, schemaId: String, vehicleId: String): SelectedParameters {
         parametersCache[vehicleId]?.let { return it }

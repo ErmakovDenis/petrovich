@@ -9,12 +9,13 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.util.concurrent.TimeUnit
 
 /** Периодическая фоновая проверка телеметрии на аномалии. */
 class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result = runCatching {
+    override suspend fun doWork(): Result = runCatchingCancellable {
         ServiceLocator.anomalyScanner.scan(lookbackHours = 3)
     }.fold(
         onSuccess = { Result.success() },

@@ -45,6 +45,7 @@ import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.Schema
 import ru.petrovich.telemetry.data.settings.AppSettings
+import ru.petrovich.telemetry.util.runCatchingCancellable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,9 +68,10 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
         }
     }
 
-    fun save(transform: (AppSettings) -> AppSettings) = scope.launch {
+    /** Сохраняет настройку; [reload] — если она меняет источник данных (демо/API, схема). */
+    fun save(reload: Boolean = true, transform: (AppSettings) -> AppSettings) = scope.launch {
         repo.update(transform)
-        onChanged()
+        if (reload) onChanged()
     }
 
     Scaffold(
@@ -95,7 +97,7 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 title = "Фоновая проверка аномалий",
                 subtitle = "Каждые 15 минут с уведомлениями",
                 checked = s.backgroundChecks,
-                onChecked = { v -> save { it.copy(backgroundChecks = v) } },
+                onChecked = { v -> save(reload = false) { it.copy(backgroundChecks = v) } },
             )
             HorizontalDivider()
 
@@ -116,11 +118,16 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 onClick = {
                     busy = true; status = null
                     scope.launch {
-                        runCatching { ServiceLocator.autoGraph.schemas(user.trim(), password) }
+                        runCatchingCancellable { ServiceLocator.autoGraph.schemas(user.trim(), password) }
                             .onSuccess { list ->
                                 schemas = list
-                                repo.update { it.copy(userName = user.trim(), password = password, demoMode = false) }
-                                if (list.size == 1) repo.update { it.copy(schemaId = list[0].id, schemaName = list[0].name) }
+                                repo.update {
+                                    val single = list.singleOrNull()
+                                    it.copy(
+                                        userName = user.trim(), password = password, demoMode = false,
+                                        schemaId = single?.id ?: it.schemaId, schemaName = single?.name ?: it.schemaName,
+                                    )
+                                }
                                 status = "Вход выполнен. Схем: ${list.size}"
                                 onChanged()
                             }

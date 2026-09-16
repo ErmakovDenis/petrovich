@@ -51,6 +51,7 @@ import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,7 +71,7 @@ class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : V
         if (trimmed.isEmpty() || _state.value.agentTyping) return
         _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = trimmed), agentTyping = true) }
         viewModelScope.launch {
-            val reply = runCatching { agent.reply(_state.value.messages) }
+            val reply = runCatchingCancellable { agent.reply(_state.value.messages) }
                 .fold(
                     onSuccess = { ChatMessage(author = Author.AGENT, text = it) },
                     onFailure = { ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true) },

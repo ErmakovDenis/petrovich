@@ -6,6 +6,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import ru.petrovich.telemetry.data.TelemetryRepository
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalDateTime
 
 data class ScanResult(val checkedVehicles: Int, val newAnomalies: List<Anomaly>, val errors: List<String>)
@@ -27,7 +28,7 @@ class AnomalyScanner(
         val found = vehicles.map { v ->
             async {
                 limit.withPermit {
-                    runCatching { detector.detect(repository.telemetry(v, from, to)) }
+                    runCatchingCancellable { detector.detect(repository.telemetry(v, from, to)) }
                         .onFailure { synchronized(errors) { errors += "${v.name}: ${it.message}" } }
                         .getOrDefault(emptyList())
                 }

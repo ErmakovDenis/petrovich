@@ -36,15 +36,6 @@ interface AutoGraphApi {
         @Query("IDs") ids: String,
     ): Map<String, RParameters>
 
-    /** Последние известные значения (финальные параметры) по ТС. */
-    @GET("GetOnlineInfo")
-    suspend fun getOnlineInfo(
-        @Query("session") session: String,
-        @Query("schemaID") schemaId: String,
-        @Query("IDs") ids: String,
-        @Query("finalParams") finalParams: String? = null,
-    ): Map<String, ROnlineInfo>
-
     /**
      * Табличные (онлайн) параметры за период. Ответ большой (~10 с между точками),
      * поэтому возвращается как поток и разбирается [ru.petrovich.telemetry.data.TripTablesMapper].

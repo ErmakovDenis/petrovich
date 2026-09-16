@@ -1,5 +1,6 @@
 package ru.petrovich.telemetry.data.api
 
+import android.util.Log
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -13,6 +14,8 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 object ApiFactory {
+    private val SECRET_QUERY_PARAMS = Regex("(?i)\\b(username|password|session)=[^&\\s]*")
+
     val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -27,7 +30,10 @@ object ApiFactory {
             .addInterceptor(RetryInterceptor(maxAttempts = 3))
             .apply {
                 if (BuildConfig.DEBUG) {
-                    addInterceptor(HttpLoggingInterceptor().apply {
+                    // Логин и пароль (Login) и токен (session) передаются в query — в логе их маскируем.
+                    addInterceptor(HttpLoggingInterceptor { message ->
+                        Log.d("OkHttp", message.replace(SECRET_QUERY_PARAMS, "$1=***"))
+                    }.apply {
                         level = HttpLoggingInterceptor.Level.BASIC
                     })
                 }

@@ -61,6 +61,7 @@ import ru.petrovich.telemetry.ui.common.short
 import ru.petrovich.telemetry.ui.theme.SeverityCritical
 import ru.petrovich.telemetry.ui.theme.SeverityInfo
 import ru.petrovich.telemetry.ui.theme.SeverityWarning
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalDateTime
 
 fun Severity.color(): Color = when (this) {
@@ -106,7 +107,7 @@ fun AnomaliesScreen(onOpenSettings: () -> Unit) {
                     if (scanning) return@ExtendedFloatingActionButton
                     scanning = true
                     scope.launch {
-                        val msg = runCatching { ServiceLocator.anomalyScanner.scan(lookbackHours = 24) }.fold(
+                        val msg = runCatchingCancellable { ServiceLocator.anomalyScanner.scan(lookbackHours = 24) }.fold(
                             onSuccess = { r ->
                                 buildString {
                                     append("Проверено машин: ${r.checkedVehicles}, новых аномалий: ${r.newAnomalies.size}")

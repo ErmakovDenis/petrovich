@@ -9,3 +9,8 @@
 .externalNativeBuild
 .cxx
 .kotlin/
+
+# Ключи подписи release
+*.jks
+*.keystore
+keystore.properties

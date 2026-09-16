@@ -6,7 +6,6 @@ import java.util.Locale
 import kotlin.math.abs
 
 val TimeShort: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM HH:mm", Locale("ru"))
-val TimeOnly: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale("ru"))
 
 fun Double?.formatValue(): String = when {
     this == null -> "—"

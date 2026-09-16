@@ -12,6 +12,7 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.data.VehicleTelemetry
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalDateTime
 
 enum class Period(val title: String, val hours: Long) {
@@ -46,7 +47,7 @@ class TelemetryViewModel(
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            runCatching { repository.vehicles() }
+            runCatchingCancellable { repository.vehicles() }
                 .onSuccess { list ->
                     val keep = _state.value.selectedVehicleId?.takeIf { id -> list.any { it.id == id } }
                     _state.update { it.copy(vehicles = list, selectedVehicleId = keep ?: list.firstOrNull()?.id, telemetry = null) }
@@ -82,11 +83,8 @@ class TelemetryViewModel(
         }
         _state.update { it.copy(loading = true, error = null) }
         val to = LocalDateTime.now()
-        runCatching { repository.telemetry(vehicle, to.minusHours(s.period.hours), to) }
+        runCatchingCancellable { repository.telemetry(vehicle, to.minusHours(s.period.hours), to) }
             .onSuccess { t -> _state.update { it.copy(telemetry = t, loading = false) } }
-            .onFailure { e ->
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                _state.update { it.copy(loading = false, error = e.message ?: e.toString()) }
-            }
+            .onFailure { e -> _state.update { it.copy(loading = false, error = e.message ?: e.toString()) } }
     }
 }

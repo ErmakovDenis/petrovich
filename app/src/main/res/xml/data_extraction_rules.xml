@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: allowBackup="false" не отключает перенос данных на новое устройство.
+     Исключаем настройки (логин/пароль AutoGRAPH) и историю аномалий. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/" />
+        <exclude domain="file" path="anomalies.json" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/" />
+        <exclude domain="file" path="anomalies.json" />
+    </device-transfer>
+</data-extraction-rules>

@@ -45,7 +45,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        intent?.getStringExtra(EXTRA_OPEN_TAB)?.let { pendingTab.value = it }
+        // Activity экспортирована (LAUNCHER): принимаем только известные значения, иначе навигация упадёт.
+        intent?.getStringExtra(EXTRA_OPEN_TAB)?.takeIf { it == TAB_ANOMALIES }?.let { pendingTab.value = it }
     }
 
     companion object {

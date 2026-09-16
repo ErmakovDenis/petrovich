@@ -73,6 +73,34 @@ class TripTablesMapperTest {
         assertEquals(listOf(15.0, null, null), t.tables.getValue(MetricCategory.MOTION).columns[0].values)
     }
 
+    @Test
+    fun fastDateParsingMatchesLocalDateTime() {
+        val samples = listOf(
+            "2026-09-16T10:00:05", "2026-09-16T23:59:59.123", "2026-09-16T05:00:05Z",
+            "2024-02-29T12:30:00", "2026-01-01T00:00:00+05:00", "1999-12-31T23:59:59",
+        )
+        samples.forEach { s ->
+            val expected = TripTablesMapper.parseDateTime(s)!!.toEpochSecond(java.time.ZoneOffset.UTC)
+            assertEquals(s, expected, TripTablesMapper.fastEpochSecond(s))
+        }
+        listOf("2026-02-30T10:00:00", "2026-13-01T10:00:00", "2026-09-16 10:00:00", "00:00:10", "20260916-1000")
+            .forEach { assertNull(it, TripTablesMapper.fastEpochSecond(it)) }
+    }
+
+    @Test
+    fun oversizedResponseIsRejected() {
+        val huge = buildString {
+            append("""{"v1":{"Trips":[{"DT":[""")
+            repeat(TripTablesMapper.MAX_POINTS + 1) { if (it > 0) append(','); append("\"2026-09-16T10:00:00\"") }
+            append("]}]}}")
+        }
+        val (selected, aggregation) = AutoGraphParameters.select(listOf(RParameter("Speed", returnType = 4)))
+        val from = LocalDateTime.of(2026, 9, 16, 10, 0)
+        val builder = TripTablesMapper.Builder(vehicle, from, from.plusHours(1), selected, aggregation)
+        val error = runCatching { builder.read(huge.reader()) }.exceptionOrNull()
+        assertTrue("ожидалась IOException, получено $error", error is java.io.IOException)
+    }
+
     /**
      * Проверка на реальных ответах API (по одной машине в файле):
      * REAL_TRIP_TABLES=/path/to/dir ./gradlew testDebugUnitTest

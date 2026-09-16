@@ -1,6 +1,7 @@
 package ru.petrovich.telemetry.data.settings
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -31,30 +32,22 @@ class SettingsRepository(private val context: Context) {
         val background = booleanPreferencesKey("background_checks")
     }
 
-    val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
-        AppSettings(
-            demoMode = p[Keys.demo] ?: true,
-            userName = p[Keys.user].orEmpty(),
-            password = p[Keys.password].orEmpty(),
-            schemaId = p[Keys.schemaId].orEmpty(),
-            schemaName = p[Keys.schemaName].orEmpty(),
-            backgroundChecks = p[Keys.background] ?: true,
-        )
-    }
+    private fun Preferences.toSettings() = AppSettings(
+        demoMode = this[Keys.demo] ?: true,
+        userName = this[Keys.user].orEmpty(),
+        password = this[Keys.password].orEmpty(),
+        schemaId = this[Keys.schemaId].orEmpty(),
+        schemaName = this[Keys.schemaName].orEmpty(),
+        backgroundChecks = this[Keys.background] ?: true,
+    )
+
+    val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
 
     suspend fun current(): AppSettings = settings.first()
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         context.dataStore.edit { p ->
-            val old = AppSettings(
-                demoMode = p[Keys.demo] ?: true,
-                userName = p[Keys.user].orEmpty(),
-                password = p[Keys.password].orEmpty(),
-                schemaId = p[Keys.schemaId].orEmpty(),
-                schemaName = p[Keys.schemaName].orEmpty(),
-                backgroundChecks = p[Keys.background] ?: true,
-            )
-            val new = transform(old)
+            val new = transform(p.toSettings())
             p[Keys.demo] = new.demoMode
             p[Keys.user] = new.userName
             p[Keys.password] = new.password

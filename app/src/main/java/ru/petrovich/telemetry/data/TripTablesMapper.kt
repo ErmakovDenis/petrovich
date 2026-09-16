@@ -2,9 +2,12 @@ package ru.petrovich.telemetry.data
 
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
+import java.io.IOException
 import java.io.Reader
 import java.time.Duration
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 
 /**
@@ -15,6 +18,12 @@ import java.time.temporal.ChronoUnit
  * дерева JSON: разбор в JsonElement на суточных данных приводил к нехватке памяти на устройстве.
  */
 object TripTablesMapper {
+
+    /**
+     * Максимум точек в одном треке ответа. Реально ~2 200 за 6 ч (точка раз в ~10 с, с повторами);
+     * лимит защищает от нехватки памяти при сбойном или подменённом ответе сервера.
+     */
+    const val MAX_POINTS = 500_000
 
     fun bucketFor(period: Duration): Duration = when {
         period <= Duration.ofHours(6) -> Duration.ofMinutes(1)
@@ -33,6 +42,7 @@ object TripTablesMapper {
         bucket: Duration = bucketFor(Duration.between(from, to)),
     ) {
         private val start = from.truncatedTo(ChronoUnit.MINUTES)
+        private val startEpochSecond = start.toEpochSecond(ZoneOffset.UTC)
         private val bucketSeconds = bucket.seconds
         private val count = (Duration.between(start, to).seconds / bucketSeconds + 1).toInt()
         private val accumulators = parameters.associate { it.name to Accumulator(count, aggregation[it.name] ?: Aggregation.MEAN) }
@@ -96,6 +106,7 @@ object TripTablesMapper {
             json.beginArray()
             while (json.hasNext()) {
                 val idx = if (json.peek() == JsonToken.STRING) bucketIndex(json.nextString()) else { json.skipValue(); -1 }
+                if (n >= MAX_POINTS) throw IOException("Слишком большой ответ сервера: более $MAX_POINTS точек")
                 if (n == result.size) result = result.copyOf(n * 2)
                 result[n++] = idx
             }
@@ -119,6 +130,7 @@ object TripTablesMapper {
                         size = 0
                         json.beginArray()
                         while (json.hasNext()) {
+                            if (size >= MAX_POINTS) throw IOException("Слишком большой ответ сервера: более $MAX_POINTS значений")
                             if (size == columnBuffer.size) columnBuffer = columnBuffer.copyOf(size * 2)
                             columnBuffer[size++] = readNumber(json)
                         }
@@ -145,8 +157,9 @@ object TripTablesMapper {
         }
 
         private fun bucketIndex(dt: String): Int {
-            val time = parseDateTime(dt) ?: return -1
-            val idx = Duration.between(start, time).seconds / bucketSeconds
+            // Вызывается для каждой точки (сотни тысяч за неделю): сначала быстрый разбор без аллокаций.
+            val epochSecond = fastEpochSecond(dt) ?: parseDateTime(dt)?.toEpochSecond(ZoneOffset.UTC) ?: return -1
+            val idx = Math.floorDiv(epochSecond - startEpochSecond, bucketSeconds)
             return if (idx in 0 until count) idx.toInt() else -1
         }
 
@@ -208,6 +221,28 @@ object TripTablesMapper {
                 else -> Math.round(sum[i] * 10) / 10.0
             }
         }
+    }
+
+    /**
+     * «yyyy-MM-ddTHH:mm:ss…» → секунды от эпохи (время считается UTC-меткой, как и в [startEpochSecond]).
+     * null, если строка в другом формате — тогда используется [parseDateTime].
+     */
+    internal fun fastEpochSecond(s: String): Long? {
+        if (s.length < 19 || s[4] != '-' || s[7] != '-' || s[10] != 'T' || s[13] != ':' || s[16] != ':') return null
+        fun num(from: Int, len: Int): Int {
+            var r = 0
+            for (i in from until from + len) {
+                val d = s[i] - '0'
+                if (d !in 0..9) return -1
+                r = r * 10 + d
+            }
+            return r
+        }
+        val year = num(0, 4); val month = num(5, 2); val day = num(8, 2)
+        val hour = num(11, 2); val minute = num(14, 2); val second = num(17, 2)
+        if (year < 0 || month !in 1..12 || day !in 1..31 || hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
+        if (day > 28 && day > java.time.YearMonth.of(year, month).lengthOfMonth()) return null
+        return LocalDate.of(year, month, day).toEpochDay() * 86_400 + hour * 3_600 + minute * 60 + second
     }
 
     fun parseDateTime(s: String?): LocalDateTime? {

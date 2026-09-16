@@ -28,7 +28,13 @@ class AnomalyStore(context: Context) {
 
     private suspend fun save(list: List<Anomaly>) = withContext(Dispatchers.IO) {
         _anomalies.value = list
-        file.writeText(ApiFactory.json.encodeToString(serializer, list))
+        // Пишем во временный файл и переименовываем: сбой посреди записи не сотрёт историю.
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        tmp.writeText(ApiFactory.json.encodeToString(serializer, list))
+        if (!tmp.renameTo(file)) {
+            file.delete()
+            tmp.renameTo(file)
+        }
     }
 
     /** Добавляет аномалии и возвращает только новые (ранее не встречавшиеся). */
