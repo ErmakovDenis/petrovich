@@ -6,6 +6,21 @@
 Стек: Kotlin, Jetpack Compose (Material 3), Retrofit + kotlinx.serialization, WorkManager, DataStore.
 minSdk 26, targetSdk 35.
 
+## Быстрый старт (Linux)
+
+```bash
+git clone git@github.com:ErmakovDenis/petrovich.git
+cd petrovich
+scripts/setup.sh    # JDK 17, Android SDK, эмулятор — один раз, ~5 ГБ, 10–20 минут
+scripts/run.sh      # собрать, запустить эмулятор, установить и открыть приложение
+```
+
+Приложение открывается в **демо-режиме** на синтетических данных — логин не нужен.
+Для реальных данных: ⚙ → Настройки → логин/пароль AutoGRAPH → «Войти и загрузить схемы».
+Учётные данные **не хранятся в репозитории** — получите их у владельца проекта и не коммитьте.
+
+Подробнее — в разделе [Сборка и запуск](#сборка-и-запуск).
+
 ## Разделы
 1. **Чат** — интерфейс диалога с ИИ-агентом. Агент — заглушка `chat/StubChatAgent`;
    настоящую реализацию `ChatAgent` подключить в `ServiceLocator.chatAgent`.
@@ -29,8 +44,10 @@ minSdk 26, targetSdk 35.
   (`data/TripTablesMapper.kt`).
 - Какие параметры показываются и как агрегируются — `data/AutoGraphParameters.kt`. Дубликаты
   (`FL1` = `FLTankMain` = `TankMainFuelLevel`) и неподключённые датчики (всегда 0) скрываются.
-- **Напряжения аккумулятора в схеме нет**: `Power` — это флаг «питание есть/нет». Если в AutoGRAPH
-  добавить датчик напряжения, он автоматически появится в разделе «Аккумулятор» (поиск по «напряж/volt/аккум»).
+- **Напряжение аккумулятора** есть только у Урал NEXT (`BattaryVOLTAGE`, 24 В); у FAW его нет —
+  там в разделе «Аккумулятор» только флаги «Питание» и «Зажигание». При выключенном зажигании
+  CAN-параметры приходят нулями, а обороты «замирают» на последнем значении — это учитывается при
+  агрегации и в правилах аномалий.
 - Сервер иногда не принимает соединение — запросы повторяются до 3 раз.
 
 ## Место под ML-модель
@@ -39,36 +56,82 @@ minSdk 26, targetSdk 35.
 - `anomaly/MlAnomalyDetector.kt` — заготовка: положить модель в `app/src/main/assets/models/anomaly.tflite`,
   раскомментировать зависимость LiteRT в `app/build.gradle.kts` и реализовать `AnomalyModel.score()`
   (пример — в комментарии).
-- Пока модели нет, работает `BaselineAnomalyDetector`. Правила (пороги сверены с реальными данными):
-  слив по данным AutoGRAPH (`TankMainFuelDnVol`), падение уровня топлива ≥ 25 л за 15 мин, пропадание питания,
-  ОЖ > 100 °C, давление масла < 100 кПа при > 800 об/мин, тормозной контур < 550 кПа на работающем двигателе,
-  напряжение вне нормы (если датчик есть). Состав детекторов — в `ServiceLocator.anomalyDetector`.
+- Пока модели нет, работает `BaselineAnomalyDetector` — правила с порогами, сверенными с реальными данными:
+  - слив по данным AutoGRAPH (`TankMainFuelDnVol`) и падение уровня топлива ≥ 25 л за 15 мин;
+  - пропадание питания (кратковременное — «Инфо», без уведомления; от 2 мин — предупреждение);
+  - напряжение вне нормы (12/24 В определяется автоматически) дольше 5 мин;
+  - ОЖ > 100 °C, давление масла < 100 кПа при > 800 об/мин;
+  - давление в тормозном контуре < 550 кПа дольше 10 мин.
+
+  Правила по двигателю срабатывают только при включённом зажигании. Уведомления приходят для
+  уровней «Предупреждение» и «Критично». Состав детекторов — в `ServiceLocator.anomalyDetector`.
 
 ## Сборка и запуск
 
-Инструменты установлены локально: JDK 17 — `~/Android/jdk-17`, Android SDK и эмулятор — `~/Android/Sdk`,
-виртуальное устройство `petrovich` (Pixel 7, Android 15) — `~/.android/avd`.
+### Требования
+- **Linux x86_64** для скриптов из `scripts/` (проверено на Ubuntu 24.04). На macOS/Windows —
+  через Android Studio (см. ниже).
+- ~5 ГБ на диске (SDK + образ эмулятора), 8+ ГБ ОЗУ.
+- `curl`, `unzip`, `tar` (`sudo apt install curl unzip`).
+- Для эмулятора — аппаратная виртуализация и доступ к KVM:
+  ```bash
+  sudo usermod -aG kvm $USER   # затем выйти из системы и войти снова
+  ```
 
+### 1. Установка инструментов — `scripts/setup.sh`
+Ставит в `~/Android` (можно переопределить `ANDROID_TOOLS_DIR`):
+- JDK 17 (Temurin) — если JDK 17 ещё не установлен;
+- Android SDK: platform-tools, platform 35, build-tools 35.0.0, эмулятор и образ Android 15 (x86_64);
+- виртуальное устройство `petrovich` (Pixel 7, 4 ГБ ОЗУ);
+- `local.properties` с путём к SDK (файл локальный, в git не попадает).
+
+Уже установленные JDK 17 и Android SDK (из Android Studio, `$JAVA_HOME`, `$ANDROID_HOME`)
+используются как есть. Повторный запуск безопасен.
+
+```bash
+scripts/setup.sh                # всё, включая эмулятор
+scripts/setup.sh --no-emulator  # только для сборки (например, если тестируете на телефоне)
 ```
-scripts/run.sh                 # собрать, запустить эмулятор с окном (если не запущен), установить и открыть приложение
-scripts/emulator.sh            # только эмулятор с окном
-scripts/emulator.sh --gpu host # с окном через видеокарту — быстрее, но см. примечание ниже
-scripts/emulator.sh --headless # без окна
-scripts/emulator.sh --wipe     # сбросить данные эмулятора
+
+### 2. Запуск
+```bash
+scripts/run.sh                  # собрать, запустить эмулятор (если не запущен), установить и открыть приложение
+scripts/emulator.sh             # только эмулятор (в окне)
+scripts/emulator.sh --gpu host  # отрисовка через видеокарту — быстрее, см. примечание
+scripts/emulator.sh --headless  # без окна
+scripts/emulator.sh --wipe      # сбросить данные эмулятора
 ```
 
-По умолчанию эмулятор рисует программно (`-gpu swiftshader_indirect`): при `-gpu auto/host` в сессии
-GNOME на Wayland (особенно при удалённом подключении) падал GNOME Shell. Если работаете за компьютером
-напрямую, можно попробовать `--gpu host`.
+По умолчанию эмулятор рисует программно (`-gpu swiftshader_indirect`) — медленнее, но стабильно:
+с `-gpu auto/host` в GNOME на Wayland (особенно при удалённом подключении) падал GNOME Shell.
+При работе за компьютером напрямую можно попробовать `--gpu host`.
 
-Для эмулятора нужен доступ к KVM: `sudo usermod -aG kvm $USER` и повторный вход в систему.
-
-Вручную:
+**Телефон вместо эмулятора:** включите «Отладку по USB», подключите телефон и выполните
+```bash
+source scripts/env.sh && ./gradlew installDebug && adb shell am start -n ru.petrovich.telemetry/.MainActivity
 ```
-source scripts/env.sh
-./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
+
+### 3. Сборка и тесты вручную
+```bash
+source scripts/env.sh           # JAVA_HOME / ANDROID_HOME / PATH для текущего терминала
+./gradlew assembleDebug         # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew testDebugUnitTest
-# проверка правил на сохранённых ответах GetTripTables (по одной машине в файле):
+# проверка правил на сохранённых ответах GetTripTables (JSON-файлы, по одной машине в файле):
 REAL_TRIP_TABLES=/path/to/dir ./gradlew testDebugUnitTest
 ```
-Или открыть проект в Android Studio (SDK: `~/Android/Sdk`, JDK: `~/Android/jdk-17`).
+
+### Android Studio (любая ОС)
+Откройте папку проекта (**File → Open**). Studio сама предложит установить недостающий SDK.
+- JDK: **Settings → Build Tools → Gradle → Gradle JDK** — версия 17 (подходит встроенный JBR).
+- Эмулятор: **Device Manager → Create Device** — Pixel 7, Android 15 (API 35), x86_64 или arm64
+  (для Apple Silicon), затем Run ▶.
+
+### Частые проблемы
+| Симптом | Что сделать |
+|---|---|
+| `Нет доступа к /dev/kvm` | `sudo usermod -aG kvm $USER`, перезайти в систему |
+| `Эмулятор 'petrovich' не найден` | `scripts/setup.sh` |
+| `SDK location not found` | `scripts/setup.sh` (создаст `local.properties`) или открыть проект в Android Studio |
+| Эмулятор очень медленный | `scripts/emulator.sh --gpu host` |
+| Падает рабочий стол при запуске эмулятора | не использовать `--gpu host/auto`, запускать по умолчанию или `--headless` |
+| В приложении «Не удалось загрузить данные» | сервер AutoGRAPH иногда не отвечает — нажать «Обновить»; проверить логин в Настройках |

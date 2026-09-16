@@ -20,6 +20,7 @@ while [ $# -gt 0 ]; do
 done
 
 check_kvm
+check_avd
 if emulator_running; then
     echo "Эмулятор уже запущен."
     exit 0
