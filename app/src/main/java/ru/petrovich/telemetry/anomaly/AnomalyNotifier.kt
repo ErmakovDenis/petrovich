@@ -25,9 +25,16 @@ class AnomalyNotifier(private val context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    fun notify(all: List<Anomaly>) {
+    fun notify(all: List<Anomaly>, pushCritical: Boolean = true, pushWarning: Boolean = true) {
         // Информационные события (например, кратковременное пропадание питания) — только в списке, без уведомления.
-        val anomalies = all.filter { it.severity >= Severity.WARNING }
+        // Остальное — по выбору владельца (экран «Что присылать»).
+        val anomalies = all.filter {
+            when (it.severity) {
+                Severity.CRITICAL -> pushCritical
+                Severity.WARNING -> pushWarning
+                Severity.INFO -> false
+            }
+        }
         if (anomalies.isEmpty() || !canNotify()) return
         val manager = NotificationManagerCompat.from(context)
 

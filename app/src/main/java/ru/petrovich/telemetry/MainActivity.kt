@@ -6,7 +6,14 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.graphics.Color
+import ru.petrovich.telemetry.data.settings.ThemeMode
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import ru.petrovich.telemetry.ui.AppRoot
@@ -30,7 +37,19 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            TelemetryTheme {
+            val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+            val dark = when (settings?.themeMode) {
+                ThemeMode.DARK -> true
+                ThemeMode.LIGHT -> false
+                else -> isSystemInDarkTheme()
+            }
+            // Цвет значков в статус-баре и панели навигации должен следовать выбранной теме, а не системной.
+            DisposableEffect(dark) {
+                val style = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark }
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                onDispose {}
+            }
+            TelemetryTheme(dark = dark) {
                 AppRoot(
                     requestedTab = pendingTab.value,
                     onTabHandled = { pendingTab.value = null },

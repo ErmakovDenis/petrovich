@@ -11,14 +11,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -26,7 +22,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +40,12 @@ import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.Schema
 import ru.petrovich.telemetry.data.settings.AppSettings
+import ru.petrovich.telemetry.data.settings.ThemeMode
+import ru.petrovich.telemetry.ui.theme.Petrovich
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.util.runCatchingCancellable
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,10 +77,7 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Настройки") },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } },
-            )
+            AppTopBar(title = "Настройки", onBack = onBack)
         },
     ) { padding ->
         val s = settings ?: return@Scaffold
@@ -87,17 +85,30 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Text("Оформление", style = MaterialTheme.typography.titleMedium)
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                ThemeMode.entries.forEachIndexed { i, mode ->
+                    SegmentedButton(
+                        selected = s.themeMode == mode,
+                        onClick = { save(reload = false) { it.copy(themeMode = mode) } },
+                        shape = SegmentedButtonDefaults.itemShape(i, ThemeMode.entries.size),
+                        colors = SegmentedButtonDefaults.colors(
+                            activeContainerColor = Petrovich.colors.accentSoft, activeContentColor = Petrovich.colors.accent,
+                            activeBorderColor = Petrovich.colors.accent,
+                            inactiveContainerColor = Petrovich.colors.surface, inactiveContentColor = Petrovich.colors.muted,
+                            inactiveBorderColor = Petrovich.colors.line,
+                        ),
+                        label = { Text(mode.title) },
+                    )
+                }
+            }
+            HorizontalDivider()
+
             SwitchRow(
                 title = "Демо-режим",
                 subtitle = "Синтетические данные 10 машин без обращения к API",
                 checked = s.demoMode,
                 onChecked = { v -> save { it.copy(demoMode = v) } },
-            )
-            SwitchRow(
-                title = "Фоновая проверка аномалий",
-                subtitle = "Каждые 15 минут с уведомлениями",
-                checked = s.backgroundChecks,
-                onChecked = { v -> save(reload = false) { it.copy(backgroundChecks = v) } },
             )
             HorizontalDivider()
 

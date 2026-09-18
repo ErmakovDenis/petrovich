@@ -28,7 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.CategoryTable
-import ru.petrovich.telemetry.ui.anomalies.color
+import ru.petrovich.telemetry.ui.common.color
 import ru.petrovich.telemetry.ui.common.CategoryScreen
 import ru.petrovich.telemetry.ui.common.TelemetryViewModel
 import ru.petrovich.telemetry.ui.common.formatValue
@@ -38,8 +38,8 @@ private val TimeColumn = 110.dp
 private val ValueColumn = 120.dp
 
 @Composable
-fun TablesScreen(vm: TelemetryViewModel, onOpenSettings: () -> Unit) {
-    CategoryScreen("Данные телеметрии", vm, onOpenSettings) { table, vehicleId -> DataTable(table, vehicleId) }
+fun TablesScreen(vm: TelemetryViewModel, onBack: () -> Unit, onOpenSettings: () -> Unit) {
+    CategoryScreen("Данные телеметрии", vm, onBack, onOpenSettings) { table, vehicleId -> DataTable(table, vehicleId) }
 }
 
 @Composable

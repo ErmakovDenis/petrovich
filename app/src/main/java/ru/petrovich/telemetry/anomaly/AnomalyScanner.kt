@@ -6,6 +6,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import ru.petrovich.telemetry.data.TelemetryRepository
+import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalDateTime
 
@@ -17,6 +18,7 @@ class AnomalyScanner(
     private val detector: AnomalyDetector,
     private val store: AnomalyStore,
     private val notifier: AnomalyNotifier,
+    private val settings: SettingsRepository,
 ) {
     suspend fun scan(lookbackHours: Long = 24, notify: Boolean = true): ScanResult = coroutineScope {
         val to = LocalDateTime.now()
@@ -36,7 +38,10 @@ class AnomalyScanner(
         }.awaitAll().flatten()
 
         val fresh = store.addAll(found)
-        if (notify && fresh.isNotEmpty()) notifier.notify(fresh)
+        if (notify && fresh.isNotEmpty()) {
+            val prefs = settings.current()
+            notifier.notify(fresh, prefs.pushCritical, prefs.pushWarning)
+        }
         ScanResult(vehicles.size, fresh, errors)
     }
 }

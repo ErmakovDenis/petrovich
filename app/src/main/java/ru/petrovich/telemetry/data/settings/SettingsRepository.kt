@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
+/** Оформление: следовать системе или зафиксировать светлую/тёмную тему. */
+enum class ThemeMode(val title: String) { SYSTEM("Системная"), LIGHT("Светлая"), DARK("Тёмная") }
+
 data class AppSettings(
     val demoMode: Boolean = true,
     val userName: String = "",
@@ -17,6 +20,13 @@ data class AppSettings(
     val schemaId: String = "",
     val schemaName: String = "",
     val backgroundChecks: Boolean = true,
+    /** Пройден ли первый запуск (выбор источника данных). */
+    val onboarded: Boolean = false,
+    /** Раскладка виджетов сводки: `id:размер,id:размер`; пусто — набор по умолчанию. */
+    val widgetLayout: String = "",
+    val pushCritical: Boolean = true,
+    val pushWarning: Boolean = true,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
 )
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -30,6 +40,11 @@ class SettingsRepository(private val context: Context) {
         val schemaId = stringPreferencesKey("schema_id")
         val schemaName = stringPreferencesKey("schema_name")
         val background = booleanPreferencesKey("background_checks")
+        val onboarded = booleanPreferencesKey("onboarded")
+        val widgetLayout = stringPreferencesKey("widget_layout")
+        val pushCritical = booleanPreferencesKey("push_critical")
+        val pushWarning = booleanPreferencesKey("push_warning")
+        val themeMode = stringPreferencesKey("theme_mode")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -39,6 +54,11 @@ class SettingsRepository(private val context: Context) {
         schemaId = this[Keys.schemaId].orEmpty(),
         schemaName = this[Keys.schemaName].orEmpty(),
         backgroundChecks = this[Keys.background] ?: true,
+        onboarded = this[Keys.onboarded] ?: false,
+        widgetLayout = this[Keys.widgetLayout].orEmpty(),
+        pushCritical = this[Keys.pushCritical] ?: true,
+        pushWarning = this[Keys.pushWarning] ?: true,
+        themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -54,6 +74,11 @@ class SettingsRepository(private val context: Context) {
             p[Keys.schemaId] = new.schemaId
             p[Keys.schemaName] = new.schemaName
             p[Keys.background] = new.backgroundChecks
+            p[Keys.onboarded] = new.onboarded
+            p[Keys.widgetLayout] = new.widgetLayout
+            p[Keys.pushCritical] = new.pushCritical
+            p[Keys.pushWarning] = new.pushWarning
+            p[Keys.themeMode] = new.themeMode.name
         }
     }
 }

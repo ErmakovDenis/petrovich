@@ -44,7 +44,7 @@ object ServiceLocator {
 
     val notifier by lazy { AnomalyNotifier(appContext) }
 
-    val anomalyScanner by lazy { AnomalyScanner(telemetry, anomalyDetector, anomalyStore, notifier) }
+    val anomalyScanner by lazy { AnomalyScanner(telemetry, anomalyDetector, anomalyStore, notifier, settings) }
 
     // Точка подключения ИИ-агента.
     val chatAgent: ChatAgent by lazy { StubChatAgent() }

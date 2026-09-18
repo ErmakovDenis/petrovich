@@ -52,6 +52,19 @@ class AnomalyStore(context: Context) {
         save(_anomalies.value.map { if (it.id == id) it.copy(acknowledged = true) else it })
     }
 
+    suspend fun resolve(id: String, resolution: Resolution, reason: String? = null) = mutex.withLock {
+        save(_anomalies.value.map {
+            if (it.id == id) it.copy(acknowledged = true, resolution = resolution, falseAlarmReason = reason) else it
+        })
+    }
+
+    /** Возвращает аномалию в «ждут решения». */
+    suspend fun reopen(id: String) = mutex.withLock {
+        save(_anomalies.value.map {
+            if (it.id == id) it.copy(acknowledged = false, resolution = null, falseAlarmReason = null) else it
+        })
+    }
+
     suspend fun acknowledgeAll() = mutex.withLock {
         save(_anomalies.value.map { it.copy(acknowledged = true) })
     }

@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ru.petrovich.telemetry.data.CategoryTable
 import ru.petrovich.telemetry.data.MetricCategory
+import ru.petrovich.telemetry.ui.theme.Petrovich
 
 /**
  * Общий каркас разделов «Данные» и «Графики»: шапка с машиной, выбор машины и периода,
@@ -28,6 +29,7 @@ import ru.petrovich.telemetry.data.MetricCategory
 fun CategoryScreen(
     title: String,
     vm: TelemetryViewModel,
+    onBack: () -> Unit,
     onOpenSettings: () -> Unit,
     minRows: Int = 1,
     content: @Composable (table: CategoryTable, vehicleId: String?) -> Unit,
@@ -41,14 +43,14 @@ fun CategoryScreen(
             AppTopBar(
                 title = title,
                 subtitle = state.selectedVehicle?.let { v -> listOfNotNull(v.name, v.group).joinToString(" · ") },
+                onBack = onBack,
                 onRefresh = vm::refresh,
-                onOpenSettings = onOpenSettings,
             )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             TelemetryHeader(state, vm)
-            ScrollableTabRow(selectedTabIndex = tab, edgePadding = 12.dp) {
+            ScrollableTabRow(selectedTabIndex = tab, edgePadding = 12.dp, containerColor = Petrovich.colors.bg, contentColor = Petrovich.colors.accent) {
                 categories.forEachIndexed { i, c ->
                     Tab(selected = tab == i, onClick = { tab = i }, text = { Text(c.title) })
                 }
