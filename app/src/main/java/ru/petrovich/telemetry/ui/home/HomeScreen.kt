@@ -73,6 +73,11 @@ import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.ui.common.Pill
+import ru.petrovich.telemetry.ui.common.PrimaryButton
+import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.Instant
+import java.time.ZoneId
+import androidx.compose.runtime.LaunchedEffect
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.color
@@ -82,7 +87,6 @@ import ru.petrovich.telemetry.ui.common.weekdayTitle
 import ru.petrovich.telemetry.ui.feed.FeedFilter
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -98,7 +102,6 @@ fun HomeScreen(
 ) {
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
-    val data = remember(anomalies, vehicleCount) { HomeData(anomalies, vehicleCount) }
     val speaker = rememberSpeaker()
     val scope = rememberCoroutineScope()
     var edit by remember { mutableStateOf(false) }
@@ -106,6 +109,24 @@ fun HomeScreen(
     var speechHint by remember { mutableStateOf<String?>(null) }
 
     val s = settings ?: return
+    val scanned = s.lastScanAt > 0
+    val data = remember(anomalies, vehicleCount, scanned) { HomeData(anomalies, vehicleCount, scanned) }
+    var scanning by remember { mutableStateOf(false) }
+    var scanError by remember { mutableStateOf<String?>(null) }
+
+    fun scan() {
+        if (scanning) return
+        scanning = true
+        scanError = null
+        scope.launch {
+            runCatchingCancellable { ServiceLocator.anomalyScanner.scan(lookbackHours = 24) }
+                .onSuccess { r -> if (r.checkedVehicles > 0 && r.errors.size >= r.checkedVehicles) scanError = r.errors.first() }
+                .onFailure { scanError = it.message ?: it.toString() }
+            scanning = false
+        }
+    }
+    // Первая проверка запускается сама: пока её нет, сводке нечего сказать.
+    LaunchedEffect(scanned) { if (!scanned) scan() }
     val layout = s.layout
     fun saveLayout(new: List<WidgetSlot>) {
         scope.launch { ServiceLocator.settings.update { it.copy(widgetLayout = serializeLayout(new)) } }
@@ -136,6 +157,10 @@ fun HomeScreen(
         if (!edit) {
             BriefCard(
                 data = data,
+                lastScanAt = s.lastScanAt,
+                scanning = scanning,
+                scanError = scanError,
+                onScan = ::scan,
                 speaking = speaker.speaking,
                 onListen = {
                     if (speaker.speaking) speaker.stop()
@@ -224,12 +249,22 @@ private fun TuneButton(edit: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun BriefCard(data: HomeData, speaking: Boolean, onListen: () -> Unit, onReport: () -> Unit) {
+private fun BriefCard(
+    data: HomeData,
+    lastScanAt: Long,
+    scanning: Boolean,
+    scanError: String?,
+    onScan: () -> Unit,
+    speaking: Boolean,
+    onListen: () -> Unit,
+    onReport: () -> Unit,
+) {
     val c = Petrovich.colors
     val (bg, dot) = when (data.tone) {
         BriefTone.RED -> c.highSoft to c.high
         BriefTone.YELLOW -> c.medSoft to c.med
         BriefTone.GREEN -> c.okSoft to c.ok
+        BriefTone.NEUTRAL -> c.surface2 to c.faint
     }
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(bg).padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -241,12 +276,20 @@ private fun BriefCard(data: HomeData, speaking: Boolean, onListen: () -> Unit, o
             }
             Column {
                 Text("Петрович докладывает", style = MaterialTheme.typography.labelLarge, fontSize = 13.sp)
-                Text("актуально на ${LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm", Locale("ru")))}", style = MaterialTheme.typography.labelSmall, color = c.muted)
+                Text(
+                    if (lastScanAt > 0) "проверено в ${Instant.ofEpochMilli(lastScanAt).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm", Locale("ru")))}"
+                    else "данные ещё не проверялись",
+                    style = MaterialTheme.typography.labelSmall, color = c.muted,
+                )
             }
         }
-        Text(data.verdict, fontSize = 21.sp, lineHeight = 25.sp, fontWeight = FontWeight.Bold, color = c.ink)
+        Text(if (data.tone == BriefTone.NEUTRAL && scanning) "Проверяю данные…" else data.verdict, fontSize = 21.sp, lineHeight = 25.sp, fontWeight = FontWeight.Bold, color = c.ink)
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (data.tone == BriefTone.GREEN) {
+            if (data.tone == BriefTone.NEUTRAL) {
+                BriefLine(buildAnnotatedString {
+                    append(scanError?.let { "Не удалось получить данные: $it" } ?: "Петрович проверит парк и расскажет, что нашёл.")
+                })
+            } else if (data.tone == BriefTone.GREEN) {
                 BriefLine(buildAnnotatedString {
                     if (data.vehicleCount != null && data.vehicleCount > 0) {
                         append("Все "); bold("${data.vehicleCount} ${plural(data.vehicleCount, "машина", "машины", "машин")}"); append(" без замечаний.")
@@ -259,6 +302,10 @@ private fun BriefCard(data: HomeData, speaking: Boolean, onListen: () -> Unit, o
                 }
                 if (data.moreCount > 0) BriefLine(buildAnnotatedString { append("И ещё ${data.moreCount} — в ленте.") })
             }
+        }
+        if (data.tone == BriefTone.NEUTRAL) {
+            PrimaryButton(if (scanning) "Проверяю…" else "Проверить сейчас", onScan, Modifier.fillMaxWidth(), enabled = !scanning)
+            return@Column
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(

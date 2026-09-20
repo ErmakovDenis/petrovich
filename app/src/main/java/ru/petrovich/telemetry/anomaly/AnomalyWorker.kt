@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit
 class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result = runCatchingCancellable {
+        // Пока не выбран источник данных (первый запуск), проверять нечего.
+        if (!ServiceLocator.settings.current().onboarded) return@runCatchingCancellable
         ServiceLocator.anomalyScanner.scan(lookbackHours = 3)
     }.fold(
         onSuccess = { Result.success() },

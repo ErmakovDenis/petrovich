@@ -38,6 +38,10 @@ class AnomalyScanner(
         }.awaitAll().flatten()
 
         val fresh = store.addAll(found)
+        // Если ни одна машина не ответила — проверкой это считать нельзя, иначе сводка скажет «всё в порядке».
+        if (vehicles.isEmpty() || errors.size < vehicles.size) {
+            settings.update { it.copy(lastScanAt = System.currentTimeMillis()) }
+        }
         if (notify && fresh.isNotEmpty()) {
             val prefs = settings.current()
             notifier.notify(fresh, prefs.pushCritical, prefs.pushWarning)

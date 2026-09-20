@@ -46,6 +46,12 @@ object ServiceLocator {
 
     val anomalyScanner by lazy { AnomalyScanner(telemetry, anomalyDetector, anomalyStore, notifier, settings) }
 
+    /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
+    suspend fun onDataSourceChanged() {
+        anomalyStore.clear()
+        settings.update { it.copy(lastScanAt = 0) }
+    }
+
     // Точка подключения ИИ-агента.
     val chatAgent: ChatAgent by lazy { StubChatAgent() }
 }

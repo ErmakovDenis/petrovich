@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -14,7 +15,7 @@ import kotlinx.coroutines.flow.map
 enum class ThemeMode(val title: String) { SYSTEM("Системная"), LIGHT("Светлая"), DARK("Тёмная") }
 
 data class AppSettings(
-    val demoMode: Boolean = true,
+    val demoMode: Boolean = false,
     val userName: String = "",
     val password: String = "",
     val schemaId: String = "",
@@ -27,6 +28,8 @@ data class AppSettings(
     val pushCritical: Boolean = true,
     val pushWarning: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /** Когда последняя проверка данных завершилась успешно (epoch millis); 0 — ещё не проверяли. */
+    val lastScanAt: Long = 0,
 )
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -45,10 +48,11 @@ class SettingsRepository(private val context: Context) {
         val pushCritical = booleanPreferencesKey("push_critical")
         val pushWarning = booleanPreferencesKey("push_warning")
         val themeMode = stringPreferencesKey("theme_mode")
+        val lastScanAt = longPreferencesKey("last_scan_at")
     }
 
     private fun Preferences.toSettings() = AppSettings(
-        demoMode = this[Keys.demo] ?: true,
+        demoMode = this[Keys.demo] ?: false,
         userName = this[Keys.user].orEmpty(),
         password = this[Keys.password].orEmpty(),
         schemaId = this[Keys.schemaId].orEmpty(),
@@ -58,6 +62,7 @@ class SettingsRepository(private val context: Context) {
         widgetLayout = this[Keys.widgetLayout].orEmpty(),
         pushCritical = this[Keys.pushCritical] ?: true,
         pushWarning = this[Keys.pushWarning] ?: true,
+        lastScanAt = this[Keys.lastScanAt] ?: 0,
         themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
     )
 
@@ -79,6 +84,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.pushCritical] = new.pushCritical
             p[Keys.pushWarning] = new.pushWarning
             p[Keys.themeMode] = new.themeMode.name
+            p[Keys.lastScanAt] = new.lastScanAt
         }
     }
 }

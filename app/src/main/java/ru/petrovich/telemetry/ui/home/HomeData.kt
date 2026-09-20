@@ -9,7 +9,8 @@ import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.common.time
 import java.time.LocalDate
 
-enum class BriefTone { RED, YELLOW, GREEN }
+/** NEUTRAL — данные ещё ни разу не проверялись: говорить «всё в порядке» рано. */
+enum class BriefTone { RED, YELLOW, GREEN, NEUTRAL }
 
 /** Порядок в списках: сначала ждущие решения, затем срочные, затем свежие. */
 val AnomalyOrder: Comparator<Anomaly> =
@@ -18,7 +19,12 @@ val AnomalyOrder: Comparator<Anomaly> =
         .thenByDescending { it.eventTime }
 
 /** Цифры для сводки и виджетов — всё считается из сохранённых аномалий. */
-class HomeData(anomalies: List<Anomaly>, val vehicleCount: Int?, today: LocalDate = LocalDate.now()) {
+class HomeData(
+    anomalies: List<Anomaly>,
+    val vehicleCount: Int?,
+    val scanned: Boolean,
+    today: LocalDate = LocalDate.now(),
+) {
     val pending: List<Anomaly> = anomalies.filter { it.isNew }.sortedWith(AnomalyOrder)
     val urgent: List<Anomaly> = pending.filter { it.severity == Severity.CRITICAL }
     val pendingCount = pending.size
@@ -44,13 +50,15 @@ class HomeData(anomalies: List<Anomaly>, val vehicleCount: Int?, today: LocalDat
     val vehiclesWithIssues: Int = pending.map { it.vehicleId }.distinct().size
 
     val tone: BriefTone = when {
-        pendingCount == 0 -> BriefTone.GREEN
-        urgentCount > 0 -> BriefTone.RED
-        else -> BriefTone.YELLOW
+        pendingCount > 0 && urgentCount > 0 -> BriefTone.RED
+        pendingCount > 0 -> BriefTone.YELLOW
+        !scanned -> BriefTone.NEUTRAL
+        else -> BriefTone.GREEN
     }
 
     val verdict: String = when (tone) {
         BriefTone.GREEN -> "Всё в порядке"
+        BriefTone.NEUTRAL -> "Ещё не проверял данные"
         BriefTone.RED -> "$urgentCount ${plural(urgentCount, "срочный случай", "срочных случая", "срочных случаев")}"
         BriefTone.YELLOW -> "Срочного нет, $pendingCount ${plural(pendingCount, "замечание", "замечания", "замечаний")}"
     }
@@ -62,6 +70,7 @@ class HomeData(anomalies: List<Anomaly>, val vehicleCount: Int?, today: LocalDat
     /** Текст для озвучки. */
     fun speech(): String = buildString {
         append("Доклад Петровича. ").append(verdict).append(". ")
+        if (tone == BriefTone.NEUTRAL) return@buildString
         if (tone == BriefTone.GREEN) {
             append(if (vehicleCount != null && vehicleCount > 0) "Все $vehicleCount ${plural(vehicleCount, "машина", "машины", "машин")} без замечаний." else "Замечаний нет.")
         } else {

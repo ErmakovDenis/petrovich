@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -79,7 +80,7 @@ private val FalseAlarmReasons = listOf("Штатная работа", "Ошиб�
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -> Unit) {
+fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -> Unit, onOpenCharts: (String) -> Unit) {
     val store = ServiceLocator.anomalyStore
     val anomalies by store.anomalies.collectAsStateWithLifecycle()
     val anomaly = anomalies.firstOrNull { it.id == anomalyId }
@@ -102,6 +103,7 @@ fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -
                 onFalseAlarm = { reasons = true },
                 onReopen = { scope.launch { store.reopen(anomaly.id) } },
                 onAsk = { onAsk(anomaly.id) },
+                onCharts = { onOpenCharts(anomaly.vehicleId) },
             )
         },
     ) { padding ->
@@ -242,7 +244,7 @@ private suspend fun loadEvidence(a: Anomaly, at: LocalDateTime): EvidenceState.R
 }
 
 @Composable
-private fun ActionsBar(anomaly: Anomaly, onConfirm: () -> Unit, onFalseAlarm: () -> Unit, onReopen: () -> Unit, onAsk: () -> Unit) {
+private fun ActionsBar(anomaly: Anomaly, onConfirm: () -> Unit, onFalseAlarm: () -> Unit, onReopen: () -> Unit, onAsk: () -> Unit, onCharts: () -> Unit) {
     val c = Petrovich.colors
     Column(
         Modifier.fillMaxWidth().background(c.bg).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -264,6 +266,9 @@ private fun ActionsBar(anomaly: Anomaly, onConfirm: () -> Unit, onFalseAlarm: ()
                 }
             }
         }
-        SoftButton("Спросить у Петровича", onAsk, Modifier.fillMaxWidth(), container = c.ink, content = c.bg, leading = Icons.Outlined.ChatBubbleOutline)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SoftButton("Графики машины", onCharts, Modifier.weight(1f), leading = Icons.Outlined.ShowChart)
+            SoftButton("Спросить", onAsk, Modifier.weight(1f), container = c.ink, content = c.bg, leading = Icons.Outlined.ChatBubbleOutline)
+        }
     }
 }

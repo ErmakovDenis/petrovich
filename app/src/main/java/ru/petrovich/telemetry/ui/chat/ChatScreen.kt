@@ -119,6 +119,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
         topBar = {
             AppTopBar(
                 title = "Петрович",
+                subtitle = if (ServiceLocator.chatAgent.connected) null else "Агент не подключён · ответы-заглушки",
                 onBack = onBack,
                 actions = { IconButton(onClick = vm::clear) { Icon(Icons.Filled.DeleteSweep, "Очистить чат") } },
             )

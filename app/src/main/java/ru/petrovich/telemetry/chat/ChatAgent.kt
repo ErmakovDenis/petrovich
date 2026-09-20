@@ -19,11 +19,16 @@ data class ChatMessage(
  * Для контекста агенту можно передавать аномалии из AnomalyStore и данные TelemetryRepository.
  */
 interface ChatAgent {
+    /** false — заглушка: интерфейс должен честно сказать, что настоящего агента нет. */
+    val connected: Boolean get() = true
+
     suspend fun reply(history: List<ChatMessage>): String
 }
 
 /** Заглушка до подключения настоящего агента. */
 class StubChatAgent : ChatAgent {
+    override val connected = false
+
     override suspend fun reply(history: List<ChatMessage>): String {
         delay(700)
         return "ИИ-агент пока не подключён. Здесь появится ответ о состоянии машин и выявленных аномалиях."

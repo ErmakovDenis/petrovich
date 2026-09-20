@@ -195,25 +195,6 @@ fun SoftButton(
     }
 }
 
-/** Переключение между машинами. */
-@Composable
-fun VehicleSelector(vehicles: List<Vehicle>, selectedId: String?, onSelect: (String) -> Unit) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(selectedId, vehicles) {
-        val idx = vehicles.indexOfFirst { it.id == selectedId }
-        if (idx >= 0) listState.animateScrollToItem(idx)
-    }
-    LazyRow(
-        state = listState,
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(vehicles, key = { it.id }) { v ->
-            PChip(v.name, selected = v.id == selectedId, onClick = { onSelect(v.id) }, leading = Icons.Filled.LocalShipping)
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PeriodSelector(selected: Period, onSelect: (Period) -> Unit, modifier: Modifier = Modifier) {
@@ -238,7 +219,7 @@ fun PeriodSelector(selected: Period, onSelect: (Period) -> Unit, modifier: Modif
 @Composable
 fun TelemetryHeader(state: TelemetryUiState, vm: TelemetryViewModel) {
     Column(Modifier.fillMaxWidth()) {
-        VehicleSelector(state.vehicles, state.selectedVehicleId, vm::selectVehicle)
+        VehiclePicker(state.vehicles, state.selectedVehicleId, vm::selectVehicle)
         Spacer(Modifier.height(8.dp))
         PeriodSelector(state.period, vm::selectPeriod)
         Spacer(Modifier.height(8.dp))

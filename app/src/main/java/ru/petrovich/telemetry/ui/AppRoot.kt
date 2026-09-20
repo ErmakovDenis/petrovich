@@ -177,6 +177,7 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
                     anomalyId = entry.arguments?.getString("id").orEmpty(),
                     onBack = { nav.popBackStack() },
                     onAsk = ::openChat,
+                    onOpenCharts = { vehicleId -> telemetryVm.selectVehicle(vehicleId); push(CHARTS) },
                 )
             }
             composable(REPORT) { ReportScreen(onBack = { nav.popBackStack() }, onOpenCard = ::openCard, onAsk = { openChat(null) }) }

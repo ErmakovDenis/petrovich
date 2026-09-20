@@ -72,7 +72,10 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
     /** Сохраняет настройку; [reload] — если она меняет источник данных (демо/API, схема). */
     fun save(reload: Boolean = true, transform: (AppSettings) -> AppSettings) = scope.launch {
         repo.update(transform)
-        if (reload) onChanged()
+        if (reload) {
+            ServiceLocator.onDataSourceChanged()
+            onChanged()
+        }
     }
 
     Scaffold(
@@ -106,7 +109,7 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
 
             SwitchRow(
                 title = "Демо-режим",
-                subtitle = "Синтетические данные 10 машин без обращения к API",
+                subtitle = "Условные машины и аномалии без обращения к API — чтобы посмотреть, как всё выглядит",
                 checked = s.demoMode,
                 onChecked = { v -> save { it.copy(demoMode = v) } },
             )
@@ -140,6 +143,7 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                                     )
                                 }
                                 status = "Вход выполнен. Схем: ${list.size}"
+                                ServiceLocator.onDataSourceChanged()
                                 onChanged()
                             }
                             .onFailure { status = "Ошибка: ${it.message ?: it}" }

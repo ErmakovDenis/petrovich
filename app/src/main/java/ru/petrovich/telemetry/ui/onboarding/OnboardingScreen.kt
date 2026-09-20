@@ -65,8 +65,11 @@ fun OnboardingScreen(onConnected: () -> Unit) {
 
     fun finish(demo: Boolean) {
         scope.launch {
-            ServiceLocator.settings.update { it.copy(demoMode = demo, onboarded = true) }
+            // Порядок важен: после onboarded=true этот экран уходит из композиции и корутина отменяется.
+            ServiceLocator.settings.update { it.copy(demoMode = demo) }
+            ServiceLocator.onDataSourceChanged()
             onConnected()
+            ServiceLocator.settings.update { it.copy(onboarded = true) }
         }
     }
 
@@ -103,7 +106,7 @@ fun OnboardingScreen(onConnected: () -> Unit) {
         Text("Подключите телеметрию — дальше Петрович докладывает сам", fontSize = 22.sp, lineHeight = 27.sp, fontWeight = FontWeight.Bold)
         Text("Утром короткий доклад, о срочных случаях — сразу.", style = MaterialTheme.typography.bodyLarge, color = c.muted)
         Option(mode == Mode.API, "Войти в AutoGRAPH", "Данные обновляются автоматически") { mode = Mode.API }
-        Option(mode == Mode.DEMO, "Посмотреть на демо-данных", "10 условных машин со встроенными аномалиями") { mode = Mode.DEMO }
+        Option(mode == Mode.DEMO, "Посмотреть на демо-данных", "Условные машины со встроенными аномалиями — только чтобы посмотреть") { mode = Mode.DEMO }
         if (mode == Mode.API) {
             OutlinedTextField(
                 value = user, onValueChange = { user = it }, label = { Text("Логин AutoGRAPH") },
