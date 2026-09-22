@@ -14,3 +14,9 @@
 *.jks
 *.keystore
 keystore.properties
+
+# Локальные инструкции для Claude Code
+/CLAUDE.md
+
+# Локальные настройки Claude Code для ML-сессий
+/.claude-ml/
