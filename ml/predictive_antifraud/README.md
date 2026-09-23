@@ -15,8 +15,8 @@ FastAPI-сервис для «Петрович Телеметрия». Прин�
 ```bash
 cd ml/predictive_antifraud
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn predictive_antifraud.main:app --reload     # http://127.0.0.1:8000/docs
+pip install -r requirements.txt          # или pip install -e ".[dev]"
+uvicorn predictive_antifraud.main:app --app-dir src --reload     # http://127.0.0.1:8000/docs
 pytest
 ```
 
