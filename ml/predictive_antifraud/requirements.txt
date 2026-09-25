@@ -1,0 +1,16 @@
+# Зависимости сервиса predictive_antifraud.
+# Установка: pip install -r requirements.txt
+# Нижние границы выбраны так, чтобы были готовые колёса для Python 3.14 (окружение fuel_antifrod).
+
+# Веб-сервис
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.12
+pydantic-settings>=2.4
+
+# Признаки
+numpy>=2.3.3
+
+# Тесты
+pytest>=8
+httpx>=0.27
