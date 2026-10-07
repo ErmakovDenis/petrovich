@@ -5,12 +5,17 @@ from typing import Literal
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .rules.thresholds import RuleThresholds
+
 
 class Settings(BaseSettings):
     """Настройки стенда из переменных окружения с префиксом FS_ (или файла .env). Описание — в .env.example."""
 
     # env_ignore_empty: пустая переменная (FS_X= из .env.example) — значение по умолчанию.
-    model_config = SettingsConfigDict(env_prefix="FS_", env_file=".env", extra="ignore", env_ignore_empty=True)
+    # env_nested_delimiter: вложенные настройки (пороги правил) — FS_RULES__FUEL_DROP_MIN_LITERS и т. п.
+    model_config = SettingsConfigDict(
+        env_prefix="FS_", env_file=".env", extra="ignore", env_ignore_empty=True, env_nested_delimiter="__",
+    )
 
     app_name: str = "Петрович: стенд ассистента и аналитики"
     log_level: str = "INFO"
@@ -70,9 +75,20 @@ class Settings(BaseSettings):
     # Самый длинный период одного запроса телеметрии (в приложении — 7 дней).
     telemetry_max_period_hours: int = Field(168, ge=1)
 
-    # Tools ассистента: сколько машин отдаёт list_vehicles и предел размера ответа одного tool в символах JSON.
+    # Tools ассистента: сколько машин отдаёт list_vehicles, сколько аномалий — check_vehicle, и предел размера
+    # ответа одного tool в символах JSON.
     tool_max_vehicles: int = Field(50, ge=1)
+    tool_max_anomalies: int = Field(20, ge=1)
     tool_max_result_chars: int = Field(16000, ge=1000)
+
+    # Сервис predictive_antifraud (предиктивная аналитика и антифрод). Пустой адрес — аналитика не вызывается.
+    predictive_url: str = "http://predictive_antifraud:8000"
+    # Ключ X-API-Key сервиса (PA_API_KEY в его .env); пусто — заголовок не передаётся.
+    predictive_api_key: SecretStr | None = None
+    predictive_timeout_seconds: float = Field(30, gt=0)
+
+    # Пороги правил аномалий: FS_RULES__<ИМЯ>, по умолчанию — как в приложении (rules/thresholds.py).
+    rules: RuleThresholds = Field(default_factory=RuleThresholds)
 
     @property
     def llm_configured(self) -> bool:

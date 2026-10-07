@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Сквозной сценарий стенда без реальных ключей: docker compose (fleet_service + predictive_antifraud + подставные
-# OpenRouter и AutoGRAPH) → /health → машины → телеметрия → вопрос в /v1/chat с вызовом tool.
+# OpenRouter и AutoGRAPH; predictive_antifraud настоящий, без моделей) → /health → машины → телеметрия → вопрос
+# с вызовом tool → проверка машины → вопросы об аномалиях → проверка при остановленной аналитике.
 # Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
 # Порты на хосте: SMOKE_FLEET_PORT (18080), SMOKE_PREDICTIVE_PORT (18001). KEEP=1 — не останавливать стенд.
 set -euo pipefail
@@ -70,9 +71,36 @@ reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION
 echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d.get("reply", "")' || fail "ответ без данных tool: $reply"
 echo "  ответ: $reply"
 
+CHECK='{"vehicleId":"veh-2","from":"2026-09-16T06:00:00","to":"2026-09-16T12:00:00","utcOffsetMinutes":300}'
+step "POST /v1/anomalies/check → правила нашли перегрев, модели аналитики не загружены"
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$CHECK" "$BASE/v1/anomalies/check" | json_check \
+    'd["rulesAnomalies"] == 6 and d["anomalies"][0]["id"] == "rule|overheat|veh-2|TemperatureCOOL|2026-09-16T06:30"
+     and d["analytics"]["predictive"]["status"] == "not_ready" and d["modelsReady"] is False' \
+    || fail "проверка veh-2"
+
+step "POST /v1/chat «есть ли аномалии» → найдены (check_vehicle)"
+ASK_URAL='{"messages":[{"role":"user","content":"Есть ли аномалии у Урал?"}],"utcOffsetMinutes":300}'
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$ASK_URAL" "$BASE/v1/chat")
+echo "$reply" | json_check '"найдено аномалий" in d.get("reply", "") and "Предиктивная проверка недоступна" in d["reply"]' \
+    || fail "ответ об аномалиях: $reply"
+echo "  ответ: $reply"
+
+step "POST /v1/chat «проверь FAW» → нарушений по правилам нет, предиктивная проверка недоступна"
+ASK_FAW='{"messages":[{"role":"user","content":"Проверь FAW на нарушения"}],"utcOffsetMinutes":300}'
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$ASK_FAW" "$BASE/v1/chat")
+echo "$reply" | json_check '"предиктивная проверка недоступна" in d.get("reply", "")' || fail "ответ о FAW: $reply"
+echo "  ответ: $reply"
+
+step "predictive_antifraud остановлен → проверка по правилам работает, аналитика unavailable"
+"${COMPOSE[@]}" stop predictive_antifraud >/dev/null 2>&1
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$CHECK" "$BASE/v1/anomalies/check" | json_check \
+    'd["rulesAnomalies"] == 6 and d["analytics"]["antifraud"]["status"] == "unavailable"' \
+    || fail "проверка без аналитики"
+
 logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
-step "вызов tool виден в логе стенда"
+step "вызовы tools видны в логе стенда"
 grep -q 'модель вызывает tool get_vehicle_summary' <<<"$logs" || fail "в логе нет вызова get_vehicle_summary"
+grep -q 'модель вызывает tool check_vehicle' <<<"$logs" || fail "в логе нет вызова check_vehicle"
 
 step "в логах стенда нет токена и ключа"
 if grep -qE 'valid-token|other-token|test-key' <<<"$logs"; then

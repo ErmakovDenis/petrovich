@@ -1,4 +1,4 @@
-"""Tools ассистента по телеметрии: list_vehicles и get_vehicle_summary.
+"""Tools ассистента: list_vehicles, get_vehicle_summary (телеметрия) и check_vehicle (правила и аналитика).
 
 Все числа считает код: модель получает готовые агрегаты по параметрам, а не ряды по точкам, поэтому размер ответа
 зависит от числа параметров, но не от длины периода. «Нет данных» и «0» различаются явно: агрегаты считаются только
@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..config import Settings
+from ..rules.check import AnomalyCheckService, CheckResult
 from ..telemetry.mapper import BuildResult
 from ..telemetry.service import TelemetryService, VehicleNotFound
 from .tools import Tool, ToolContext
@@ -74,7 +75,54 @@ def summarize(result: BuildResult) -> dict[str, Any]:
     return summary
 
 
-def build_fleet_tools(settings: Settings, service: TelemetryService) -> list[Tool]:
+def _kind(anomaly_id: str) -> str:
+    """Тип из id `<источник>|<тип>|…` (как Anomaly.kind в приложении); id аналитики без «|» — пустой тип."""
+    parts = anomaly_id.split("|")
+    return parts[1] if len(parts) > 1 else ""
+
+
+def check_summary(result: CheckResult, max_anomalies: int) -> dict[str, Any]:
+    """Итог проверки для модели: один из трёх исходов и явное поле о доступности аналитики."""
+    r = result.response
+    t = result.telemetry.telemetry
+    analytics = {
+        name: {"status": s.status, "detail": s.detail, "anomaliesFound": s.anomalies_found,
+               "modelVersion": s.model_version}
+        for name, s in (("predictive", r.analytics.predictive), ("antifraud", r.analytics.antifraud))
+    }
+    available = r.models_ready
+    if r.anomalies:
+        outcome = "anomalies_found"
+    elif available:
+        outcome = "no_anomalies"
+    else:
+        outcome = "analytics_unavailable"
+    summary: dict[str, Any] = {
+        "vehicle": {"id": t.vehicle.id, "name": t.vehicle.name, "group": t.vehicle.group},
+        "period": {"from": t.from_.strftime(_TIME), "to": t.to.strftime(_TIME)},
+        "outcome": outcome,
+        "total": len(r.anomalies),
+        "rulesAnomalies": r.rules_anomalies,
+        "anomalies": [
+            {"type": _kind(a.id), "title": a.title, "severity": a.severity.value, "eventTime": a.event_time,
+             "parameter": a.parameter_caption, "value": a.value, "description": a.description, "source": a.source}
+            for a in r.anomalies[:max_anomalies]
+        ],
+        "truncated": len(r.anomalies) > max_anomalies,
+        "predictiveCheckAvailable": available,
+        "analytics": analytics,
+    }
+    if not available:
+        reasons = "; ".join(s["detail"] for s in analytics.values() if s["detail"])
+        summary["message"] = (
+            "Проверка выполнена только по правилам: предиктивная проверка недоступна"
+            + (f" ({reasons})" if reasons else "")
+            + ". Отсутствие аномалий по правилам не означает, что нарушений нет."
+        )
+    return summary
+
+
+def build_fleet_tools(settings: Settings, service: TelemetryService, checks: AnomalyCheckService) -> list[Tool]:
     async def list_vehicles(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         vehicles = await service.vehicles(ctx.session, ctx.schema_id)
         query = str(args.get("query") or "").strip().lower()
@@ -87,7 +135,7 @@ def build_fleet_tools(settings: Settings, service: TelemetryService) -> list[Too
             "truncated": len(vehicles) > limit,
         }
 
-    async def get_vehicle_summary(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    async def vehicle_and_period(args: dict[str, Any], ctx: ToolContext) -> tuple[str, datetime, datetime]:
         vehicle_id = str(args.get("vehicle_id") or "").strip()
         if not vehicle_id:
             raise ValueError("не указан vehicle_id")
@@ -101,12 +149,25 @@ def build_fleet_tools(settings: Settings, service: TelemetryService) -> list[Too
         now = (datetime.now(timezone.utc) + timedelta(minutes=ctx.utc_offset_minutes)).replace(tzinfo=None)
         to = _parse_time(args.get("to"), "to") or now.replace(second=0, microsecond=0)
         from_ = _parse_time(args.get("from"), "from") or to - timedelta(hours=24)
+        return vehicle_id, from_, to
+
+    async def get_vehicle_summary(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        vehicle_id, from_, to = await vehicle_and_period(args, ctx)
         result = await service.telemetry(
             ctx.session, ctx.schema_id, vehicle_id, from_, to, ctx.utc_offset_minutes
         )
         return summarize(result)
 
+    async def check_vehicle(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        vehicle_id, from_, to = await vehicle_and_period(args, ctx)
+        result = await checks.check(ctx.session, ctx.schema_id, vehicle_id, from_, to, ctx.utc_offset_minutes)
+        return check_summary(result, settings.tool_max_anomalies)
+
     max_hours = settings.telemetry_max_period_hours
+    period = {
+        "from": {"type": "string", "description": "Начало периода, местное время (необязательно)"},
+        "to": {"type": "string", "description": "Конец периода, местное время (необязательно)"},
+    }
     return [
         Tool(
             name="list_vehicles",
@@ -130,13 +191,25 @@ def build_fleet_tools(settings: Settings, service: TelemetryService) -> list[Too
             f"По умолчанию — последние 24 часа; период не длиннее {max_hours} ч.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "vehicle_id": {"type": "string", "description": "id машины из list_vehicles"},
-                    "from": {"type": "string", "description": "Начало периода, местное время (необязательно)"},
-                    "to": {"type": "string", "description": "Конец периода, местное время (необязательно)"},
-                },
+                "properties": {"vehicle_id": {"type": "string", "description": "id машины из list_vehicles"}, **period},
                 "required": ["vehicle_id"],
             },
             handler=get_vehicle_summary,
+        ),
+        Tool(
+            name="check_vehicle",
+            description="Проверка машины на аномалии за период: пороговые правила (слив и резкое падение топлива, "
+            "пропадание питания, напряжение, перегрев, давление масла, тормоза) и сервисы аналитики (предиктивная "
+            "аналитика и антифрод). outcome: anomalies_found — аномалии найдены (список в anomalies); "
+            "no_anomalies — правила и аналитика отработали и ничего не нашли; analytics_unavailable — правила ничего "
+            "не нашли, но предиктивная проверка или антифрод недоступны (predictiveCheckAvailable=false, причина в "
+            "analytics) — в этом случае нельзя утверждать, что нарушений нет. Время — местное время пользователя, "
+            f"по умолчанию последние 24 часа; период не длиннее {max_hours} ч.",
+            parameters={
+                "type": "object",
+                "properties": {"vehicle_id": {"type": "string", "description": "id машины из list_vehicles"}, **period},
+                "required": ["vehicle_id"],
+            },
+            handler=check_vehicle,
         ),
     ]

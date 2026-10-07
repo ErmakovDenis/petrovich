@@ -9,7 +9,7 @@ from fleet_service.agent.llm import Message
 from fleet_service.config import Settings
 from fleet_service.main import create_app
 
-from .fakes import FAKE_LLM_KEY, SCHEMA_ID, VALID_TOKEN, create_fakes
+from .fakes import FAKE_LLM_KEY, FAKE_PA_KEY, SCHEMA_ID, VALID_TOKEN, create_fakes
 
 AUTH = {"Authorization": f"Bearer {VALID_TOKEN}", "X-Schema-Id": SCHEMA_ID}
 
@@ -21,6 +21,8 @@ def test_settings(**overrides: Any) -> Settings:
         "openrouter_base_url": "http://fakes/openrouter/api/v1",
         "llm_model": "fake/model",
         "autograph_base_url": "http://fakes/autograph/ServiceJSON/",
+        "predictive_url": "http://fakes/predictive",
+        "predictive_api_key": FAKE_PA_KEY,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)

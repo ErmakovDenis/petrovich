@@ -9,7 +9,12 @@ AutoGRAPH `/autograph/ServiceJSON/`:
 - `EnumSchemas?session=` — `valid-token` и `other-token` → схема `schema-1`; `down` → 500; остальное → 401.
 - `EnumDevices` — `valid-token`: veh-1, veh-2 и veh-3 (Allowed=false); `other-token`: только veh-1.
 - `EnumParameters`, `GetTripTables` — детерминированные данные (точка в минуту): у veh-1 топливо 250 л, у veh-2 —
-  180 л; обороты всегда 0, давление масла не приходит вовсе (нет данных). Ответы сжимаются gzip. Число обращений — `app.state.calls`,
+  180 л и перегрев с 30-й по 39-ю минуту каждого часа; обороты всегда 0, давление масла не приходит вовсе.
+
+predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1/antifraud/check` (ключ `pa-key`):
+режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down.
+
+С tools модель ведёт сценарий: вопрос об аномалиях/нарушениях/проверке → check_vehicle, иначе get_vehicle_summary. Ответы сжимаются gzip. Число обращений — `app.state.calls`,
   параметры запросов GetTripTables — `app.state.trip_requests`.
 """
 
@@ -29,6 +34,12 @@ SCHEMA_ID = "schema-1"
 NO_DATA_REPLY = "Данных о парке у меня пока нет: инструменты для телеметрии и аномалий ещё не подключены."
 
 FUEL = {"veh-1": 250.0, "veh-2": 180.0}
+OVERHEAT = {"veh-2"}
+
+FAKE_PA_KEY = "pa-key"
+# Режимы подставного predictive_antifraud (app.state.analytics): not_ready — моделей нет (как настоящий сервис без
+# моделей), ready — модели отработали без аномалий, found — модель нашла аномалию, down — 500.
+ANALYTICS_MODES = ("not_ready", "ready", "found", "down")
 
 DEVICES = {
     VALID_TOKEN: [
@@ -67,7 +78,8 @@ def trip_tables(vehicle_id: str, sd: datetime, ed: datetime, names: list[str]) -
         "Power": [1] * len(times),
         "DIgnition": [True] * len(times),
         "Rotation": [0] * len(times),
-        "TemperatureCOOL": [85.0] * len(times),
+        # У veh-2 каждый час с 30-й по 39-ю минуту перегрев 108 °C — правило overheat (CRITICAL).
+        "TemperatureCOOL": [108.0 if vehicle_id in OVERHEAT and 30 <= t.minute < 40 else 85.0 for t in times],
     }
     values = [{"Name": n, "Values": series[n]} for n in names if n in series]
     return {vehicle_id: {"ID": vehicle_id, "Trips": [
@@ -83,7 +95,10 @@ def golden_trip_tables(app: FastAPI, case_file: Path, vehicle_id: str) -> None:
 
 
 def _scripted_reply(messages: list[dict]) -> dict:
-    """Сценарий модели с tools: list_vehicles → get_vehicle_summary → ответ числом из сводки."""
+    """Сценарий модели с tools: list_vehicles → get_vehicle_summary (или check_vehicle, если вопрос об аномалиях)
+    → ответ по результату. Машина — та, чьё первое слово названия есть в вопросе, иначе первая в списке."""
+    question = next(m["content"] for m in reversed(messages) if m.get("role") == "user").lower()
+    about_anomalies = any(w in question for w in ("аномал", "наруш", "провер"))
     results = [json.loads(m["content"]) for m in messages if m.get("role") == "tool"]
     if not results:
         return _call("call-1", "list_vehicles", {})
@@ -93,7 +108,21 @@ def _scripted_reply(messages: list[dict]) -> dict:
     if "vehicles" in last:
         if not last["vehicles"]:
             return {"role": "assistant", "content": "Машин в схеме нет."}
-        return _call("call-2", "get_vehicle_summary", {"vehicle_id": last["vehicles"][0]["id"]})
+        vehicle = next((v for v in last["vehicles"] if v["name"].split()[0].lower() in question), last["vehicles"][0])
+        tool = "check_vehicle" if about_anomalies else "get_vehicle_summary"
+        return _call("call-2", tool, {"vehicle_id": vehicle["id"]})
+    if "outcome" in last:
+        name = last["vehicle"]["name"]
+        if last["outcome"] == "anomalies_found":
+            titles = ", ".join(sorted({a["title"] for a in last["anomalies"]}))
+            text = f"{name}: найдено аномалий — {last['total']} ({titles})."
+        elif last["outcome"] == "no_anomalies":
+            text = f"{name}: правила и аналитика нарушений не нашли."
+        else:
+            text = f"{name}: по правилам нарушений нет, но предиктивная проверка недоступна."
+        if last["outcome"] == "anomalies_found" and not last["predictiveCheckAvailable"]:
+            text += " Предиктивная проверка недоступна."
+        return {"role": "assistant", "content": text}
     fuel = next((p for p in last.get("parameters", []) if p["name"] == "TankMainFuelLevel"), None)
     if fuel is None:
         return {"role": "assistant", "content": "Данных о топливе за этот период у меня нет."}
@@ -117,6 +146,34 @@ def create_fakes() -> FastAPI:
     app.state.trip_requests = []
     app.state.parameters = {}
     app.state.raw_trip_tables = {}
+    app.state.analytics = "not_ready"
+    app.state.analytics_requests = []
+
+    @app.post("/predictive/v1/{service}/{action}")
+    async def analytics(service: str, action: str, request: Request) -> JSONResponse:
+        if f"{service}/{action}" not in ("predictive/analyze", "antifraud/check"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if request.headers.get("x-api-key") != FAKE_PA_KEY:
+            return JSONResponse({"detail": "Неверный или отсутствующий X-API-Key"}, status_code=401)
+        body = await request.json()
+        app.state.analytics_requests.append((service, body))
+        mode = app.state.analytics
+        if mode == "down":
+            return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        if mode == "not_ready":
+            return JSONResponse({"ready": False, "modelVersion": None, "anomalies": []})
+        anomalies = []
+        if mode == "found" and service == "antifraud":
+            vid, first = body["vehicle"]["id"], next(iter(body["tables"].values()))["timestamps"][0]
+            anomalies.append({
+                "id": f"ml|fraud|{vid}|TankMainFuelLevel|{first}", "vehicleId": vid,
+                "vehicleName": body["vehicle"]["name"], "category": "FUEL", "parameterName": "TankMainFuelLevel",
+                "parameterCaption": "Уровень топлива", "eventTime": first, "detectedAt": 1788000000000,
+                "severity": "WARNING", "title": "Антифрод: Уровень топлива",
+                "description": "Модель оценила состояние как аномальное (score=0.91)", "value": 250.0, "score": 0.91,
+                "source": "Антифрод (ML)",
+            })
+        return JSONResponse({"ready": True, "modelVersion": "fake-1", "anomalies": anomalies})
 
     @app.post("/openrouter/api/v1/chat/completions")
     async def completions(request: Request) -> JSONResponse:

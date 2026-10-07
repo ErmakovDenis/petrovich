@@ -1,7 +1,7 @@
 """Контракт данных приложения: `VehicleTelemetry` (data/Models.kt) и `Anomaly` (anomaly/Anomaly.kt).
 
-Дословная копия схем из `ml/predictive_antifraud/src/predictive_antifraud/schemas/` (telemetry.py и Anomaly из
-results.py). Совпадение проверяет tests/test_contract.py — при изменении схем там поправьте и здесь.
+Дословная копия схем из `ml/predictive_antifraud/src/predictive_antifraud/schemas/` (telemetry.py, Anomaly и
+DetectionResponse из results.py — ответ /v1/predictive/analyze и /v1/antifraud/check). Совпадение проверяет tests/test_contract.py — при изменении схем там поправьте и здесь.
 """
 
 from datetime import datetime
@@ -92,3 +92,10 @@ class Anomaly(CamelModel):
     value: float | None = None
     score: float | None = None
     source: str
+
+
+class DetectionResponse(CamelModel):
+    # false — модель не загружена, список аномалий пуст (аналог isReady в приложении).
+    ready: bool
+    model_version: str | None = None
+    anomalies: list[Anomaly] = Field(default_factory=list)

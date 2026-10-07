@@ -42,13 +42,13 @@ def test_reply_through_openrouter(make_client, fakes):
     assert body["model"] == "fake/model"
     assert body["temperature"] == 0.2 and body["max_tokens"] == 1024
     assert body["provider"] == {"require_parameters": True, "data_collection": "deny"}
-    assert [t["function"]["name"] for t in body["tools"]] == ["list_vehicles", "get_vehicle_summary"]
+    assert [t["function"]["name"] for t in body["tools"]] == ["list_vehicles", "get_vehicle_summary", "check_vehicle"]
     system, clock, question = body["messages"]
     assert system["role"] == "system"
     prompt = " ".join(system["content"].split())
     assert "бери только из результатов инструментов (tools)" in prompt
     assert "так и скажи: «данных об этом у меня нет»" in prompt
-    assert "Инструментов для проверки машин и списка аномалий у тебя пока нет" in prompt
+    assert "analytics_unavailable — правила ничего не нашли, но предиктивная проверка недоступна" in prompt
     assert clock["role"] == "system" and "UTC+05:00" in clock["content"]
     assert question == {"role": "user", "content": "Сколько топлива у машин?"}
     assert len(fakes.state.llm_requests) == 3

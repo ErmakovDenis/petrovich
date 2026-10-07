@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.data.AutoGraphParameters
 import ru.petrovich.telemetry.data.TripTablesMapper
 import ru.petrovich.telemetry.data.Vehicle
@@ -84,6 +85,18 @@ object TripTablesGolden {
         put("parameters", ApiFactory.json.encodeToJsonElement(ListSerializer(RParameter.serializer()), parameters))
         putJsonArray("inputs") { inputNames.forEach { add(JsonPrimitive(it)) } }
         put("expected", ApiFactory.json.encodeToJsonElement(VehicleTelemetry.serializer(), expected))
+    }
+
+    /** Аномалия для сверки с правилами стенда; detectedAt (время запуска) и описание (зависит от локали) не пишутся. */
+    fun anomalyJson(a: Anomaly): JsonElement = buildJsonObject {
+        put("id", a.id)
+        put("kind", a.kind)
+        put("severity", a.severity.name)
+        put("eventTime", a.eventTime)
+        put("parameterName", a.parameterName)
+        put("title", a.title)
+        put("value", a.value)
+        put("source", a.source)
     }
 
     /** JSON с отступами, но массивы чисел и строк — в одну строку: эталон остаётся небольшим и читаемым в diff. */

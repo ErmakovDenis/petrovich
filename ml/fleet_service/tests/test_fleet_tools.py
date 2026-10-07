@@ -23,7 +23,7 @@ def run_tool(client: TestClient, name: str, args: dict, ctx: ToolContext = CTX) 
     """Вызов tool как из цикла агента: через реестр стенда, результат — JSON-строка для модели."""
     settings = client.app.state.settings
     registry = ToolRegistry(max_result_chars=settings.tool_max_result_chars)
-    for tool in build_fleet_tools(settings, client.app.state.telemetry_service):
+    for tool in build_fleet_tools(settings, client.app.state.telemetry_service, client.app.state.check_service):
         registry.register(tool)
     return json.loads(client.portal.call(registry.execute, name, json.dumps(args), ctx))
 

@@ -15,6 +15,7 @@ import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.ServerTelemetryRepository
 import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandException
+import ru.petrovich.telemetry.data.StandRequests
 import ru.petrovich.telemetry.data.StandSession
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
 import ru.petrovich.telemetry.data.TelemetryRepository
@@ -135,11 +136,11 @@ class ServerTelemetryRepositoryTest {
         val at = LocalDateTime.of(2026, 9, 16, 10, 0, 30, 500)
         // Обычный случай (to = сейчас, from = to − N ч): секунды одинаковые — усекаем.
         assertEquals(at.withSecond(0).withNano(0) to at.plusHours(6).withSecond(0).withNano(0),
-            ServerTelemetryRepository.period(at, at.plusHours(6)))
+            StandRequests.period(at, at.plusHours(6)))
         // 10:00:00 — 16:00:30 — это больше 6 ч (интервал 2 мин); усечение дало бы ровно 6 ч (1 мин) — шлём как есть.
         val from = LocalDateTime.of(2026, 9, 16, 10, 0)
         val to = LocalDateTime.of(2026, 9, 16, 16, 0, 30)
-        assertEquals(from to to, ServerTelemetryRepository.period(from, to))
+        assertEquals(from to to, StandRequests.period(from, to))
     }
 
     @Test

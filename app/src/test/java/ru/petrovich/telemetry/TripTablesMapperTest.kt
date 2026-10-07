@@ -1,6 +1,8 @@
 package ru.petrovich.telemetry
 
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -11,6 +13,8 @@ import ru.petrovich.telemetry.data.AutoGraphParameters
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.TripTablesMapper
 import ru.petrovich.telemetry.data.Vehicle
+import ru.petrovich.telemetry.data.VehicleTelemetry
+import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.api.RParameter
 import java.io.File
 import java.time.Duration
@@ -106,6 +110,12 @@ class TripTablesMapperTest {
             val case = TripTablesGolden.caseJson(vehicle, from, from.plusHours(24), null, parameters, listOf(file.absolutePath), t)
             File(out, "${file.nameWithoutExtension}.case.json")
                 .writeText(TripTablesGolden.format(case) + "\n")
+            // Правила на той же телеметрии — для сверки с правилами стенда (tests/test_rules_golden.py).
+            val rules = buildJsonObject {
+                put("telemetry", ApiFactory.json.encodeToJsonElement(VehicleTelemetry.serializer(), t))
+                put("expected", JsonArray(anomalies.map(TripTablesGolden::anomalyJson)))
+            }
+            File(out, "${file.nameWithoutExtension}.anomalies.json").writeText(TripTablesGolden.format(rules) + "\n")
         }
     }
 }

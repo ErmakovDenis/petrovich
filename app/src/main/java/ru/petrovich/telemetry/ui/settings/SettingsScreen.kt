@@ -238,10 +238,34 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
 
             Text("Аномалии", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Детектор: ${ServiceLocator.anomalyDetector.name}. " +
-                    if (ServiceLocator.mlDetector.isReady) "ML-модель загружена." else "ML-модель не найдена (assets/models/anomaly.tflite).",
+                if (s.anomaliesOnServer) {
+                    "Проверку выполняет стенд: правила и сервис аналитики. Если модели аналитики не загружены, проверка идёт только по правилам."
+                } else {
+                    "Детектор: ${ServiceLocator.anomalyDetector.name}. " +
+                        if (ServiceLocator.mlDetector.isReady) "ML-модель загружена." else "ML-модель не найдена (assets/models/anomaly.tflite)."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
+            SwitchRow(
+                title = "Аномалии со стенда",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — проверяет устройство"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Проверка машин — на стенде; лента, уведомления и решения остаются в приложении. Выключено — проверяет устройство"
+                },
+                checked = s.anomaliesViaServer,
+                // id аномалий у стенда и устройства одинаковые (тот же алгоритм), поэтому ленту не сбрасываем.
+                onChecked = { v -> save(reload = false) { it.copy(anomaliesViaServer = v) } },
+            )
+            if (BuildConfig.DEBUG) {
+                SwitchRow(
+                    title = "Сравнивать с устройством (отладка)",
+                    subtitle = "Проверка идёт и на устройстве, и на стенде; расхождения — в logcat (AnomalyCompare). " +
+                        "В ленту попадает результат по переключателю выше",
+                    checked = s.anomalyCompare,
+                    onChecked = { v -> save(reload = false) { it.copy(anomalyCompare = v) } },
+                )
+            }
             OutlinedButton(onClick = { scope.launch { ServiceLocator.anomalyStore.clear() } }) {
                 Text("Очистить историю аномалий")
             }

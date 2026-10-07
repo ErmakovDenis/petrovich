@@ -12,10 +12,13 @@ import java.time.LocalDateTime
 
 data class ScanResult(val checkedVehicles: Int, val newAnomalies: List<Anomaly>, val errors: List<String>)
 
-/** Загружает данные по всем машинам, прогоняет через детектор и сохраняет новые аномалии. */
+/**
+ * Проверяет все машины ([checker]: детектор на устройстве или стенд — по переключателю) и сохраняет новые аномалии.
+ * Хранилище, дедупликация по id и уведомления — на устройстве при любом источнике.
+ */
 class AnomalyScanner(
     private val repository: TelemetryRepository,
-    private val detector: AnomalyDetector,
+    private val checker: VehicleChecker,
     private val store: AnomalyStore,
     private val notifier: AnomalyNotifier,
     private val settings: SettingsRepository,
@@ -30,7 +33,7 @@ class AnomalyScanner(
         val found = vehicles.map { v ->
             async {
                 limit.withPermit {
-                    runCatchingCancellable { detector.detect(repository.telemetry(v, from, to)) }
+                    runCatchingCancellable { checker.check(v, from, to) }
                         .onFailure { synchronized(errors) { errors += "${v.name}: ${it.message}" } }
                         .getOrDefault(emptyList())
                 }

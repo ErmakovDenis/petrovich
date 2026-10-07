@@ -30,7 +30,7 @@
 разбором (ijson). Сетка, свёртка, округление, скрытие пустых и дублирующихся столбцов совпадают с Kotlin: это держат
 эталоны `testdata/golden/trip-tables/` (их пишет `TripTablesGoldenTest`, сверяет `ml/fleet_service/tests/test_golden.py`).
 На сохранённых реальных ответах сверка запускается `ml/fleet_service/scripts/compare_real.sh <каталог>`.
-Пока стенд только отдаёт телеметрию; правила по ней считает приложение.
+Правила по этой телеметрии стенд тоже умеет считать (шаг 3, раздел 5).
 
 ### 1.2. Демо-данные (`DemoTelemetryRepository`, режим по умолчанию)
 
@@ -158,6 +158,15 @@ AnomalyWorker (каждые 15 мин, окно 3 ч)  ─┐
 
 `lastScanAt` не обновляется, если ответа не получено ни по одной машине.
 
+С шага 3 плана проверку машины можно перенести на стенд (переключатель «Аномалии со стенда»): `AnomalyScanner`
+вызывает `VehicleChecker` — на устройстве это прежний путь «телеметрия → CompositeAnomalyDetector», на стенде —
+`POST /v1/anomalies/check` по машине и периоду. Стенд сам берёт телеметрию, применяет перенос
+`BaselineAnomalyDetector` (`ml/fleet_service/src/fleet_service/rules/`: те же типы, пороги, эпизоды и формат id;
+пороги — настройки `FS_RULES__*`) и вызывает `predictive_antifraud` (`/v1/predictive/analyze`, `/v1/antifraud/check`).
+Недоступность или неготовность аналитики не ломает проверку по правилам: её статус возвращается в ответе
+(`analytics`, `modelsReady`). Хранилище, дедупликация и уведомления остаются на устройстве; результат на стенде не
+сохраняется (хранилище — шаг 4).
+
 **Обратная связь** (будущая разметка для ML): на карточке аномалии владелец отмечает её как `CONFIRMED` или `FALSE_ALARM`
 с причиной (`AnomalyStore.resolve`). Эти метки хранятся только локально на устройстве и никуда не выгружаются.
 
@@ -170,7 +179,8 @@ AnomalyWorker (каждые 15 мин, окно 3 ч)  ─┐
 | Правила на демо-данных: 10 машин, нет ложных срабатываний на `demo-0`, подмешанные аномалии находятся, id уникальны | `AnomalyDetectionTest` |
 | Разбор ответов `GetTripTables` | `TripTablesMapperTest` |
 | Агрегация на стенде совпадает с приложением (эталоны `testdata/golden/trip-tables/`) | `TripTablesGoldenTest` + `ml/fleet_service/tests/test_golden.py` |
-| То же на сохранённых реальных ответах | `ml/fleet_service/scripts/compare_real.sh /dir` |
+| Правила на стенде совпадают с приложением по id, типу, важности и времени (эталоны `testdata/golden/anomalies/`) | `AnomalyGoldenTest` + `ml/fleet_service/tests/test_rules_golden.py` |
+| То же на сохранённых реальных ответах (агрегация и правила) | `ml/fleet_service/scripts/compare_real.sh /dir` |
 | Правила на сохранённых реальных данных | `REAL_TRIP_TABLES=/dir ./gradlew testDebugUnitTest` |
 | Признаки и API сервиса | `ml/predictive_antifraud/tests` (8 тестов, модель-заглушка) |
 

@@ -23,11 +23,22 @@ def predictive_schemas():
     return telemetry, results
 
 
-@pytest.mark.parametrize("name, module", [("VehicleTelemetry", 0), ("Anomaly", 1)])
+@pytest.mark.parametrize("name, module", [("VehicleTelemetry", 0), ("Anomaly", 1), ("DetectionResponse", 1)])
 def test_schema_matches_predictive_antifraud(predictive_schemas, name, module):
     theirs = getattr(predictive_schemas[module], name).model_json_schema(by_alias=True)
     ours = getattr(contract, name).model_json_schema(by_alias=True)
     assert ours == theirs
+
+
+def test_check_request_and_response_fixtures():
+    """testdata/contract/check-*.json: запрос — ровно то, что шлёт ServerVehicleChecker; ответ — ровно то, что отдаёт
+    стенд (те же поля), его разбирает VehicleCheckerTest приложения."""
+    from fleet_service.schemas.anomalies import CheckRequest, CheckResponse
+
+    request = CheckRequest.model_validate(json.loads((REPO / "testdata/contract/check-request.json").read_text("utf-8")))
+    assert request.vehicle_id == "42" and request.utc_offset_minutes == 300 and request.from_.hour == 18
+    raw = json.loads((REPO / "testdata/contract/check-response.json").read_text(encoding="utf-8"))
+    assert CheckResponse.model_validate(raw).model_dump(by_alias=True, mode="json") == raw
 
 
 def test_chat_request_from_app_fixture():

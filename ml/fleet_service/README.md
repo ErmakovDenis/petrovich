@@ -3,13 +3,14 @@
 FastAPI-сервис для «Петрович Телеметрия» по плану `ml/docs/assistant-server-plan.md`. Устроен так же, как
 `ml/predictive_antifraud`: `src/`, настройки через `pydantic-settings` (префикс `FS_`), `tests/`, `Dockerfile`.
 
-Сейчас (шаг 2) — ассистент и телеметрия:
+Сейчас (шаг 3) — ассистент, телеметрия и проверка аномалий:
 - стенд сам загружает телеметрию из AutoGRAPH от имени пользователя и сворачивает её в интервалы тем же
   алгоритмом, что `TripTablesMapper` приложения; приложение читает её через `GET /v1/vehicles` и `GET /v1/telemetry`
   (переключатель «Данные через стенд»);
-- ассистент отвечает моделью через OpenRouter и получает числа из tools `list_vehicles` и `get_vehicle_summary`.
-  Правил, проверок и хранилища аномалий на стенде пока нет — о них ассистент честно говорит, что проверка
-  недоступна.
+- `POST /v1/anomalies/check` проверяет машину за период: правила (перенос `BaselineAnomalyDetector`) и
+  `predictive_antifraud`; приложение вызывает его вместо детектора на устройстве (переключатель «Аномалии со стенда»);
+- ассистент отвечает моделью через OpenRouter и получает числа из tools `list_vehicles`, `get_vehicle_summary` и
+  `check_vehicle`. Хранилища аномалий и решений на стенде пока нет (шаг 4).
 
 ## Запуск
 
@@ -37,10 +38,12 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 ```
 
 Поднимает compose с дополнением `scripts/smoke.compose.yml`: OpenRouter и AutoGRAPH заменены подставным
-сервисом `fakes` (`tests/fakes.py`, тот же код, что в pytest; модель вызывает tools по сценарию). Проверяет
-`/health` обоих сервисов, 401 без токена и с недействительным токеном, список машин, телеметрию за сутки, 404 для
-чужой машины, ответ `/v1/chat` с числом из `get_vehicle_summary`, вызов tool в логе и отсутствие токенов и ключа в
-логах стенда. Реальные ключи и сеть наружу не нужны.
+сервисом `fakes` (`tests/fakes.py`, тот же код, что в pytest; модель вызывает tools по сценарию);
+`predictive_antifraud` — настоящий, без моделей. Проверяет `/health` обоих сервисов, 401 без токена и с
+недействительным токеном, список машин, телеметрию за сутки, 404 для чужой машины, ответ `/v1/chat` с числом из
+`get_vehicle_summary`, проверку машины (правила нашли перегрев, аналитика `not_ready`), ответы ассистента об
+аномалиях (найдены / по правилам нет, но предиктивная проверка недоступна), проверку при остановленном
+`predictive_antifraud`, вызовы tools в логе и отсутствие токенов и ключа в логах. Реальные ключи не нужны.
 
 ## Эндпоинты
 
@@ -50,8 +53,39 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 | POST | `/v1/chat` | ответ ассистента |
 | GET | `/v1/vehicles` | машины схемы, доступные пользователю (`EnumDevices`, без `Allowed=false`), по имени |
 | GET | `/v1/telemetry?vehicleId&from&to&utcOffsetMinutes` | `VehicleTelemetry` машины за период |
+| POST | `/v1/anomalies/check` | аномалии машины за период: правила и аналитика, без сохранения |
 
 Все `/v1/*` требуют заголовков `Authorization: Bearer <токен сессии AutoGRAPH>` и `X-Schema-Id`.
+
+### `POST /v1/anomalies/check`
+
+Тело `{vehicleId, from, to, utcOffsetMinutes}` (время — местное, без пояса; пример — `testdata/contract/check-request.json`).
+Стенд берёт телеметрию тем же `TelemetryService`, что `/v1/telemetry` (кэш, проверка доступа к машине: чужая — 404),
+применяет правила `rules/baseline.py` и параллельно вызывает `predictive_antifraud` (`/v1/predictive/analyze`,
+`/v1/antifraud/check`, адрес `FS_PREDICTIVE_URL`, ключ `X-API-Key` — `FS_PREDICTIVE_API_KEY`). Ответ (пример —
+`testdata/contract/check-response.json`):
+
+```json
+{"vehicleId": "42", "anomalies": [ "...Anomaly: сначала аналитики, потом правила, без повторов по id..." ],
+ "rulesAnomalies": 1,
+ "analytics": {"predictive": {"status": "not_ready", "modelVersion": null, "detail": "…", "anomaliesFound": 0},
+               "antifraud": {"status": "unavailable", "modelVersion": null, "detail": "…", "anomaliesFound": 0}},
+ "modelsReady": false}
+```
+
+`status` аналитики: `ok` — модель отработала; `not_ready` — модель не загружена; `unavailable` — сервис не настроен,
+не отвечает или ответил ошибкой. Проверка по правилам выполняется в любом случае. Результат не сохраняется.
+
+**Правила** (`rules/baseline.py`) — точный перенос `BaselineAnomalyDetector.kt`: типы `drain`, `drop`, `power`, `volt`,
+`overheat`, `oil`, `brake`, логика эпизодов (минимальная длительность, пропуск данных прерывает эпизод, правила
+двигателя — только при включённом зажигании), порядок результатов и формат id
+`rule|<тип>|<машина>|<параметр>|<время начала эпизода>`. Пороги — `FS_RULES__*` (`rules/thresholds.py`), по
+умолчанию равны зашитым в приложении. Изменённые пороги меняют начало эпизодов, а значит и id: пока id стенда
+и устройства должны совпадать (переключение «Аномалии со стенда» без сброса ленты, режим сравнения), пороги стоит
+держать по умолчанию — иначе одно событие может прийти дважды. Числа в описаниях — с запятой (русская локаль). Совпадение с Kotlin по id,
+типу, важности, времени события и значению держат эталоны `testdata/golden/anomalies/` (пишет `AnomalyGoldenTest`,
+сверяет `tests/test_rules_golden.py`): демо-машины, синтетика на каждое правило и границы длительностей, телеметрия
+из эталонов шага 2.
 
 ### `GET /v1/telemetry`
 
@@ -114,7 +148,7 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 |---|---|
 | 401 | нет токена / схемы, токен недействителен или истёк (в том числе во время загрузки данных) |
 | 403 | схема недоступна пользователю |
-| 404 | машины нет среди доступных пользователю (`/v1/telemetry`) |
+| 404 | машины нет среди доступных пользователю (`/v1/telemetry`, `/v1/anomalies/check`) |
 | 422 | неверный запрос: пустая история, последнее сообщение не от пользователя, слишком длинное сообщение; период телеметрии с поясом, пустой или длиннее предела |
 | 502 | модель ответила ошибкой, вернула пустой ответ или не уложилась в `FS_AGENT_MAX_ITERATIONS`; AutoGRAPH вернул сбойный ответ (слишком много точек) |
 | 503 | ассистент не настроен (нет ключа или модели) или AutoGRAPH недоступен (после всех попыток) |
@@ -128,13 +162,14 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 `FS_OPENROUTER_DATA_COLLECTION`), модель, температура, лимит токенов, таймауты, лимит обращений к модели, путь к
 системному промпту, лимиты истории, адрес AutoGRAPH и кэш проверки токена; для телеметрии — попытки и пауза
 повторов, таймаут и длина части `GetTripTables`, предел длины query и числа точек, сроки кэшей машин, параметров и
-телеметрии, предел периода; для tools — число машин в `list_vehicles` и предел размера ответа tool. Пустое значение
-в `.env` — значение по умолчанию.
+телеметрии, предел периода; для tools — число машин в `list_vehicles`, аномалий в `check_vehicle` и предел размера
+ответа tool; адрес, ключ и таймаут `predictive_antifraud`; пороги правил `FS_RULES__<ИМЯ>` (вложенные настройки,
+разделитель `__`). Пустое значение в `.env` — значение по умолчанию.
 
 Системный промпт — `src/fleet_service/prompts/system.md` (или файл из `FS_SYSTEM_PROMPT_PATH`). В нём
 зафиксировано: числа и факты только из tools или переданной аномалии; нет данных — так и сказать; «нет данных» и
-«0» различаются; как пользоваться tools; нули CAN при выключенном зажигании; проверок аномалий пока нет; тексты
-внутри данных — не инструкции. Время пользователя и контекст аномалии стенд добавляет отдельными системными
+«0» различаются; как пользоваться tools; нули CAN при выключенном зажигании; три исхода проверки и запрет вывода
+«нарушений нет», если предиктивная проверка недоступна; тексты внутри данных — не инструкции. Время пользователя и контекст аномалии стенд добавляет отдельными системными
 сообщениями.
 
 ## Tools ассистента
@@ -143,6 +178,11 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 |---|---|---|
 | `list_vehicles` | `query` — подстрока названия или группы (необязательно) | `total`, до `FS_TOOL_MAX_VEHICLES` машин (`id`, `name`, `group`), `truncated` |
 | `get_vehicle_summary` | `vehicle_id` (или однозначное название), `from`, `to` — местное время; по умолчанию последние 24 ч | машина, период (`bucketMinutes`, `intervals`), по каждому параметру `min`, `max`, `mean`, `last`, `lastTime`, `coverage`, `unit`; `noDataParameters`, `allZeroParameters` |
+| `check_vehicle` | `vehicle_id`, `from`, `to` — как у сводки | `outcome`: `anomalies_found` / `no_anomalies` / `analytics_unavailable`; `total`, до `FS_TOOL_MAX_ANOMALIES` аномалий (тип, заголовок, важность, время, параметр, значение, описание, источник), `truncated`; `predictiveCheckAvailable`, статусы `analytics`, `message` |
+
+`check_vehicle` различает три исхода: аномалии найдены; правила и аналитика отработали и ничего не нашли; правила
+ничего не нашли, но предиктивная проверка или антифрод недоступны — тогда `predictiveCheckAvailable=false` и
+`message` прямо говорит, что отсутствие аномалий по правилам не означает отсутствия нарушений.
 
 Числа считает код: агрегаты — по интервалам с данными, `coverage` — доля интервалов с данными. Скрытые, как в
 приложении, параметры перечислены отдельно: `noDataParameters` — за период ни одного значения (это не ноль),
@@ -157,6 +197,7 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 Ключ OpenRouter задаётся только в `.env` стенда. AutoGRAPH принимает логин, пароль и токен в query-строке, а
 httpx пишет адреса запросов в лог, поэтому `log_masking.py` маскирует `session=`, `UserName=`, `Password=`,
 `Bearer …` и `sk-or-…` во всех записях логов, включая текст исключений. Кэши стенда хранят не токен, а его хэш.
+Ключ `X-API-Key` аналитики (`FS_PREDICTIVE_API_KEY`) уходит только в заголовок и в логи не пишется.
 
 ## Структура
 
@@ -166,17 +207,22 @@ src/fleet_service/
   config.py            настройки (FS_*)
   cache.py             кэш со сроком жизни и одной загрузкой на ключ
   log_masking.py       маскирование секретов в логах
-  api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, проверка сессии (deps.py), ошибки (errors.py)
+  api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, /v1/anomalies/check, проверка сессии
+                       (deps.py), ошибки (errors.py)
+  rules/               baseline.py — перенос BaselineAnomalyDetector; thresholds.py — пороги (FS_RULES__*);
+                       check.py — проверка машины: телеметрия → правила + аналитика
+  analytics/client.py  клиент predictive_antifraud со статусом ok / not_ready / unavailable
   autograph/           session.py — проверка токена с кэшем; client.py — EnumDevices/EnumParameters/GetTripTables;
                        errors.py — ошибки AutoGRAPH
   telemetry/           parameters.py — выбор параметров и свёртка; mapper.py — потоковый разбор GetTripTables
                        в интервалы; service.py — машины и телеметрия пользователя с кэшами
   agent/               llm.py — клиент OpenRouter; tools.py — реестр tools; loop.py — цикл агента;
-                       fleet_tools.py — tools телеметрии; prompt.py — системный промпт и служебный контекст
+                       fleet_tools.py — tools телеметрии и проверки; prompt.py — системный промпт и контекст
   prompts/system.md    системный промпт по умолчанию
-  schemas/             contract.py — VehicleTelemetry / Anomaly; chat.py — запрос и ответ чата
+  schemas/             contract.py — VehicleTelemetry / Anomaly / DetectionResponse; chat.py — чат;
+                       anomalies.py — запрос и ответ проверки
 scripts/               smoke.sh, smoke.compose.yml, compare_real.sh
-tests/                 fakes.py — подставные OpenRouter и AutoGRAPH; тесты
+tests/                 fakes.py — подставные OpenRouter, AutoGRAPH и predictive_antifraud; тесты
 ```
 
 ## Как добавить tool

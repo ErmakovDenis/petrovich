@@ -5,6 +5,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from ..agent.loop import Agent
 from ..autograph.session import AutoGraphSessionChecker, AutoGraphUnavailable, SchemaForbidden, SessionInvalid
+from ..rules.check import AnomalyCheckService
 from ..telemetry.service import TelemetryService
 
 
@@ -26,6 +27,10 @@ def get_agent(request: Request) -> Agent:
 
 def get_telemetry_service(request: Request) -> TelemetryService:
     return request.app.state.telemetry_service
+
+
+def get_check_service(request: Request) -> AnomalyCheckService:
+    return request.app.state.check_service
 
 
 def get_system_prompt(request: Request) -> str:

@@ -87,7 +87,7 @@ _LONG_MAX = 2**63 - 1
 _LONG_MIN = -(2**63)
 
 
-def _java_round(x: float) -> float:
+def java_round(x: float) -> float:
     """Math.round(x) (половина — вверх) как число: floor(x) и +1, если дробная часть не меньше 0,5.
     Сбойные значения — как в Java: NaN → 0, ±∞ и выход за long — границы long."""
     if math.isnan(x):
@@ -128,9 +128,9 @@ class _Accumulator:
             if n == 0:
                 out.append(None)
             elif mean:
-                out.append(_java_round(s / n * 10) / 10.0)
+                out.append(java_round(s / n * 10) / 10.0)
             else:
-                out.append(_java_round(s * 10) / 10.0)
+                out.append(java_round(s * 10) / 10.0)
         return out
 
 

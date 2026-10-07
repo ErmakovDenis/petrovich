@@ -18,13 +18,63 @@ import okhttp3.Response
 import okhttp3.logging.HttpLoggingInterceptor
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.data.api.ApiFactory
+import kotlinx.serialization.KSerializer
 import java.io.IOException
+import java.time.DateTimeException
+import java.time.Duration
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** Ошибка стенда с текстом, который можно показать пользователю. */
 class StandException(message: String) : Exception(message)
+
+/** Общее для запросов данных стенда: пояс пользователя, формат и период запроса, разбор ответа. */
+object StandRequests {
+    private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+
+    /**
+     * Ответ на телеметрию или проверку стенд отдаёт, когда загрузит весь период: 7 дней — 28 частей по 6 ч, каждая —
+     * запрос к AutoGRAPH.
+     */
+    const val LONG_TIMEOUT_SECONDS = 300L
+
+    /** Смещение пояса устройства от UTC в минутах — то же, что UTCOffset при входе в AutoGRAPH. */
+    fun utcOffsetMinutes(): Int = ZoneId.systemDefault().rules.getOffset(Instant.now()).totalSeconds / 60
+
+    /** Время для запроса: местное, без пояса, с секундами. */
+    fun format(time: LocalDateTime): String = time.format(TIME)
+
+    /**
+     * Период запроса без секунд: одинаковые периоды попадают в кэш стенда, а сетка интервалов не меняется (начало
+     * и так усекается до минуты, AutoGRAPH принимает время с точностью до минуты). Если усечение меняет длину
+     * интервала ([TripTablesMapper.bucketFor]: начало и конец с разными секундами на границе 6 ч / 24 ч / 3 дней),
+     * период уходит как есть.
+     */
+    fun period(from: LocalDateTime, to: LocalDateTime): Pair<LocalDateTime, LocalDateTime> {
+        val f = from.truncatedTo(ChronoUnit.MINUTES)
+        val t = to.truncatedTo(ChronoUnit.MINUTES)
+        val same = TripTablesMapper.bucketFor(Duration.between(f, t)) == TripTablesMapper.bucketFor(Duration.between(from, to))
+        return if (same) f to t else from to to
+    }
+
+    /** Ответ стенда в модель приложения; неожиданный формат — понятная ошибка, а не исключение разбора. */
+    fun <T> decode(serializer: KSerializer<T>, text: String): T =
+        try {
+            ApiFactory.json.decodeFromString(serializer, text)
+        } catch (e: IllegalArgumentException) {
+            // SerializationException — наследник IllegalArgumentException.
+            throw StandException("Стенд вернул данные в неожиданном формате")
+        } catch (e: DateTimeException) {
+            // Время не в виде местного без пояса (LocalDateTimeSerializer).
+            throw StandException("Стенд вернул данные в неожиданном формате")
+        }
+}
 
 /**
  * HTTP-доступ к стенду fleet_service от имени пользователя: токен сессии AutoGRAPH и id схемы в заголовках.
@@ -45,7 +95,8 @@ class StandClient(
         call(url(path, query), null, readTimeoutSeconds)
 
     /** POST JSON на `<стенд>/<path>`; тело ответа 200. */
-    suspend fun post(path: String, json: String): String = call(url(path, emptyMap()), json, null)
+    suspend fun post(path: String, json: String, readTimeoutSeconds: Long? = null): String =
+        call(url(path, emptyMap()), json, readTimeoutSeconds)
 
     private suspend fun url(path: String, query: Map<String, String>): HttpUrl {
         val base = serverUrl().trim().trimEnd('/').toHttpUrlOrNull()

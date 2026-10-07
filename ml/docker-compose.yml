@@ -1,6 +1,7 @@
 # Стенд «Петрович Телеметрия»: fleet_service (ассистент, далее — телеметрия и аномалии) и predictive_antifraud.
 #   cd ml && docker compose up -d --build
 # Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
+# Ключ X-API-Key аналитики: PA_API_KEY и FS_PREDICTIVE_API_KEY задаются одним значением.
 # Порты на хосте: FLEET_SERVICE_PORT (8080) и PREDICTIVE_PORT (8001) — переменные окружения docker compose.
 services:
   fleet_service:
@@ -10,8 +11,13 @@ services:
         required: false
     ports:
       - "${FLEET_SERVICE_PORT:-8080}:8000"
-    # depends_on на predictive_antifraud появится на шаге 3, когда стенд начнёт его вызывать:
-    # сбой аналитики не должен останавливать чат.
+    # Стенд вызывает predictive_antifraud (FS_PREDICTIVE_URL, по умолчанию http://predictive_antifraud:8000) при
+    # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
+    # останавливать чат и проверку по правилам.
+    depends_on:
+      predictive_antifraud:
+        condition: service_started
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 5s
