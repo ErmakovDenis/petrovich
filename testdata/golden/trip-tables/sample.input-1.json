@@ -1,0 +1,9 @@
+{"v1":{"ID":"v1","Name":"FAW №1","Serial":1,"Trips":[{"Index":0,"SD":"2026-09-16T05:00:05Z","ED":"2026-09-16T05:02:00Z",
+  "DT":["2026-09-16T10:00:05","2026-09-16T10:00:05","2026-09-16T10:00:35","2026-09-16T10:01:10","2026-09-16T10:03:10"],
+  "Values":[
+    {"Values":[200.0,200.0,199.0,198.0,150.0],"Name":"TankMainFuelLevel","Caption":"Уровень","Unit":"л"},
+    {"Name":"FL1","Caption":"ДУТ 1 шасси","Unit":"л","Values":[200.0,200.0,199.0,198.0,150.0]},
+    {"Values":[1,1,0,1,1],"Name":"Power","Caption":"Питание"},
+    {"Name":"TemperatureOIL","Caption":"Температура масла","Unit":"°C","Values":[0.0,0.0,0.0,0.0,0.0]},
+    {"Name":"DIgnition","Caption":"Зажигание","Values":[true,true,false,true,true]}
+  ]}]}}

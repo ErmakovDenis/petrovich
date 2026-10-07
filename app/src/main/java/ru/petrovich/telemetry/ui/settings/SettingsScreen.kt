@@ -198,7 +198,11 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                         // HTTP без TLS разрешён только в debug-сборке (app/src/debug, network security config).
                         serverStatus = "Нужен адрес https:// — без шифрования стенд доступен только в отладочной сборке"
                     } else {
-                        save(reload = false) { it.copy(serverUrl = normalizedUrl) }
+                        scope.launch {
+                            repo.update { it.copy(serverUrl = normalizedUrl) }
+                            // С «Данными через стенд» адрес решает, откуда грузятся данные: экраны перечитываем.
+                            if (s.telemetryViaServer && !s.demoMode) onChanged()
+                        }
                         serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
                     }
                 },
@@ -213,6 +217,22 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 },
                 checked = s.assistantViaServer,
                 onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
+            )
+            SwitchRow(
+                title = "Данные через стенд",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — данные демо"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Таблицы, графики и проверка аномалий берут данные со стенда; выключено — из AutoGRAPH напрямую"
+                },
+                checked = s.telemetryViaServer,
+                // Машины те же (id AutoGRAPH), поэтому найденные аномалии не сбрасываем — только перезагружаем данные.
+                onChecked = { v ->
+                    scope.launch {
+                        repo.update { it.copy(telemetryViaServer = v) }
+                        onChanged()
+                    }
+                },
             )
             HorizontalDivider()
 

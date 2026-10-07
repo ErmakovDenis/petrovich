@@ -23,9 +23,9 @@ import ru.petrovich.telemetry.chat.ChatMessage
 import ru.petrovich.telemetry.chat.ChatRequest
 import ru.petrovich.telemetry.chat.ContextualChatAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
-import ru.petrovich.telemetry.chat.StandException
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.MetricCategory
+import ru.petrovich.telemetry.data.StandException
 import ru.petrovich.telemetry.data.StandSession
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.AppSettings

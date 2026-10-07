@@ -46,6 +46,34 @@ class Settings(BaseSettings):
     auth_cache_ttl_seconds: float = Field(60, ge=0)
     auth_cache_max_entries: int = Field(1000, ge=1)
 
+    # AutoGRAPH: загрузка телеметрии (EnumDevices, EnumParameters, GetTripTables).
+    # Всего попыток запроса при сетевой ошибке и пауза перед n-й повторной попыткой (n × значение).
+    autograph_retries: int = Field(3, ge=1)
+    autograph_retry_delay_seconds: float = Field(1, ge=0)
+    # GetTripTables отвечает медленно и много: отдельный таймаут и длина одной части периода.
+    autograph_trip_tables_timeout_seconds: float = Field(60, gt=0)
+    autograph_chunk_hours: int = Field(6, ge=1, le=24)
+    # Предел длины адреса запроса; длиннее — параметры (onlineParams) запрашиваются пачками.
+    autograph_max_query_chars: int = Field(1900, ge=200)
+    # Защита от сбойного ответа: больше точек в одном треке — ответ отвергается.
+    trip_tables_max_points: int = Field(500_000, ge=1)
+
+    # Телеметрия стенда: кэши и пределы.
+    # Список машин пользователя (EnumDevices) — по токену и схеме.
+    devices_cache_ttl_seconds: float = Field(300, ge=0)
+    # Набор параметров прибора (EnumParameters) — по схеме и машине.
+    parameters_cache_ttl_seconds: float = Field(3600, ge=0)
+    parameters_cache_max_entries: int = Field(5000, ge=1)
+    # Готовая телеметрия — по схеме, машине, периоду и поясу, общая для всех пользователей схемы.
+    telemetry_cache_ttl_seconds: float = Field(120, ge=0)
+    telemetry_cache_max_entries: int = Field(200, ge=1)
+    # Самый длинный период одного запроса телеметрии (в приложении — 7 дней).
+    telemetry_max_period_hours: int = Field(168, ge=1)
+
+    # Tools ассистента: сколько машин отдаёт list_vehicles и предел размера ответа одного tool в символах JSON.
+    tool_max_vehicles: int = Field(50, ge=1)
+    tool_max_result_chars: int = Field(16000, ge=1000)
+
     @property
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""

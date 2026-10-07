@@ -24,6 +24,14 @@
 - ответ читается потоково (`JsonReader`) и сразу сворачивается в интервалы (`TripTablesMapper`), дерево JSON не строится;
 - защита от сбойного ответа: не больше 500 000 точек на трек.
 
+С шага 2 плана `ml/docs/assistant-server-plan.md` тот же путь есть на стенде `ml/fleet_service` (переключатель
+«Данные через стенд» в приложении): `autograph/client.py` (части по 6 ч, gzip, 3 попытки, длинный список параметров —
+пачками по длине query) и `telemetry/` — порт `AutoGraphParameters` и `TripTablesMapper` на Python с потоковым
+разбором (ijson). Сетка, свёртка, округление, скрытие пустых и дублирующихся столбцов совпадают с Kotlin: это держат
+эталоны `testdata/golden/trip-tables/` (их пишет `TripTablesGoldenTest`, сверяет `ml/fleet_service/tests/test_golden.py`).
+На сохранённых реальных ответах сверка запускается `ml/fleet_service/scripts/compare_real.sh <каталог>`.
+Пока стенд только отдаёт телеметрию; правила по ней считает приложение.
+
 ### 1.2. Демо-данные (`DemoTelemetryRepository`, режим по умолчанию)
 
 10 синтетических грузовиков (`demo-0` … `demo-9`) с шагом 5 мин. Генерация детерминирована: зерно `Random`
@@ -161,6 +169,8 @@ AnomalyWorker (каждые 15 мин, окно 3 ч)  ─┐
 |---|---|
 | Правила на демо-данных: 10 машин, нет ложных срабатываний на `demo-0`, подмешанные аномалии находятся, id уникальны | `AnomalyDetectionTest` |
 | Разбор ответов `GetTripTables` | `TripTablesMapperTest` |
+| Агрегация на стенде совпадает с приложением (эталоны `testdata/golden/trip-tables/`) | `TripTablesGoldenTest` + `ml/fleet_service/tests/test_golden.py` |
+| То же на сохранённых реальных ответах | `ml/fleet_service/scripts/compare_real.sh /dir` |
 | Правила на сохранённых реальных данных | `REAL_TRIP_TABLES=/dir ./gradlew testDebugUnitTest` |
 | Признаки и API сервиса | `ml/predictive_antifraud/tests` (8 тестов, модель-заглушка) |
 

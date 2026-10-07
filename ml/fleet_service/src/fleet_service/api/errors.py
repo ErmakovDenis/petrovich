@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..agent.llm import LLMError, LLMTimeout
 from ..agent.loop import AgentIterationLimit
+from ..autograph.errors import AutoGraphUnavailable, SessionInvalid, TripTablesTooLarge
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,25 @@ def install_error_handlers(app: FastAPI) -> None:
     async def iteration_limit(_: Request, e: AgentIterationLimit) -> JSONResponse:
         log.warning("агент: превышен лимит обращений к модели (%d)", e.limit)
         return _detail(status.HTTP_502_BAD_GATEWAY, str(e))
+
+    @app.exception_handler(SessionInvalid)
+    async def session_invalid(_: Request, e: SessionInvalid) -> JSONResponse:
+        # Токен истёк между проверкой сессии и запросом данных: приложение войдёт заново и повторит запрос.
+        return JSONResponse(
+            {"detail": str(e)},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    @app.exception_handler(AutoGraphUnavailable)
+    async def autograph_unavailable(_: Request, e: AutoGraphUnavailable) -> JSONResponse:
+        log.warning("AutoGRAPH: %s", e)
+        return _detail(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
+
+    @app.exception_handler(TripTablesTooLarge)
+    async def too_large(_: Request, e: TripTablesTooLarge) -> JSONResponse:
+        log.warning("AutoGRAPH: %s", e)
+        return _detail(status.HTTP_502_BAD_GATEWAY, f"AutoGRAPH вернул сбойный ответ: {e}")
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(_: Request, e: RequestValidationError) -> JSONResponse:

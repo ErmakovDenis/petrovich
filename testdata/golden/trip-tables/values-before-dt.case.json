@@ -1,0 +1,43 @@
+{
+  "vehicle": {
+    "id": "v1",
+    "name": "FAW №1"
+  },
+  "from": "2026-09-16T10:00",
+  "to": "2026-09-16T10:02",
+  "bucketSeconds": 60,
+  "parameters": [
+    {
+      "Name": "Speed",
+      "Caption": "Текущая",
+      "Unit": "км/ч",
+      "ReturnType": 4
+    }
+  ],
+  "inputs": ["values-before-dt.input-1.json"],
+  "expected": {
+    "vehicle": {
+      "id": "v1",
+      "name": "FAW №1"
+    },
+    "from": "2026-09-16T10:00:00",
+    "to": "2026-09-16T10:02:00",
+    "tables": {
+      "MOTION": {
+        "category": "MOTION",
+        "timestamps": ["2026-09-16T10:00:00", "2026-09-16T10:01:00", "2026-09-16T10:02:00"],
+        "columns": [
+          {
+            "parameter": {
+              "name": "Speed",
+              "caption": "Скорость",
+              "unit": "км/ч",
+              "category": "MOTION"
+            },
+            "values": [15.0, null, null]
+          }
+        ]
+      }
+    }
+  }
+}

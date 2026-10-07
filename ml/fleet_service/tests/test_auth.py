@@ -23,7 +23,7 @@ def test_missing_or_malformed_token_is_401(make_client, fakes):
             assert r.headers["www-authenticate"] == "Bearer"
             assert r.json()["detail"]
     # Без токена в AutoGRAPH не ходим.
-    assert fakes.state.enum_schemas_calls == 0
+    assert fakes.state.calls["EnumSchemas"] == 0
 
 
 def test_invalid_token_is_401(make_client):
@@ -65,18 +65,18 @@ def test_verification_is_cached(make_client, fakes):
         # Отказ тоже кэшируется: повтор с тем же плохим токеном не ходит в AutoGRAPH.
         for _ in range(2):
             client.post("/v1/chat", json=ask(), headers={**AUTH, "Authorization": "Bearer expired"})
-    assert fakes.state.enum_schemas_calls == 2
+    assert fakes.state.calls["EnumSchemas"] == 2
 
 
 def test_cache_can_be_disabled(make_client, fakes):
     with make_client(test_settings(auth_cache_ttl_seconds=0)) as client:
         for _ in range(2):
             assert client.post("/v1/chat", json=ask(), headers=AUTH).status_code == 200
-    assert fakes.state.enum_schemas_calls == 2
+    assert fakes.state.calls["EnumSchemas"] == 2
 
 
 def test_unavailability_is_not_cached(make_client, fakes):
     with make_client() as client:
         for _ in range(2):
             client.post("/v1/chat", json=ask(), headers={**AUTH, "Authorization": "Bearer down"})
-    assert fakes.state.enum_schemas_calls == 2
+    assert fakes.state.calls["EnumSchemas"] == 2

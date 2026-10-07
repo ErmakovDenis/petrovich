@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Сквозной сценарий стенда без реальных ключей: docker compose (fleet_service + predictive_antifraud + подставные
-# OpenRouter и AutoGRAPH) → /health → /v1/chat. Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
+# OpenRouter и AutoGRAPH) → /health → машины → телеметрия → вопрос в /v1/chat с вызовом tool.
+# Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
 # Порты на хосте: SMOKE_FLEET_PORT (18080), SMOKE_PREDICTIVE_PORT (18001). KEEP=1 — не останавливать стенд.
 set -euo pipefail
 
@@ -49,14 +50,32 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json
     -H "Authorization: Bearer expired" -H "X-Schema-Id: schema-1" -d "$QUESTION" "$BASE/v1/chat")
 [ "$code" = 401 ] || fail "ожидался 401, получен $code"
 
-step "POST /v1/chat → непустой ответ модели"
+step "GET /v1/vehicles → машины пользователя"
+vehicles=$(curl -fsS "${AUTH[@]}" "$BASE/v1/vehicles")
+echo "$vehicles" | json_check '[v["id"] for v in d] == ["veh-1", "veh-2"]' || fail "список машин: $vehicles"
+
+step "GET /v1/telemetry → VehicleTelemetry за сутки"
+PERIOD="from=2026-09-16T00:00:00&to=2026-09-17T00:00:00&utcOffsetMinutes=300"
+curl -fsS "${AUTH[@]}" "$BASE/v1/telemetry?vehicleId=veh-1&$PERIOD" | json_check \
+    'len(d["tables"]["FUEL"]["timestamps"]) == 721 and set(d["tables"]["FUEL"]["columns"][0]["values"]) == {250.0}' \
+    || fail "телеметрия veh-1"
+
+step "GET /v1/telemetry чужой машины → 404"
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer other-token" -H "X-Schema-Id: schema-1" \
+    "$BASE/v1/telemetry?vehicleId=veh-2&$PERIOD")
+[ "$code" = 404 ] || fail "ожидался 404, получен $code"
+
+step "POST /v1/chat → ответ с числом из tool get_vehicle_summary"
 reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
-echo "$reply" | json_check 'isinstance(d.get("reply"), str) and d["reply"].strip()' || fail "пустой ответ: $reply"
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d.get("reply", "")' || fail "ответ без данных tool: $reply"
 echo "  ответ: $reply"
 
-step "в логах стенда нет токена и ключа"
 logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
-if grep -qE 'valid-token|test-key' <<<"$logs"; then
+step "вызов tool виден в логе стенда"
+grep -q 'модель вызывает tool get_vehicle_summary' <<<"$logs" || fail "в логе нет вызова get_vehicle_summary"
+
+step "в логах стенда нет токена и ключа"
+if grep -qE 'valid-token|other-token|test-key' <<<"$logs"; then
     fail "токен или ключ попал в лог fleet_service"
 fi
 

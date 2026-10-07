@@ -34,9 +34,13 @@ data class AppSettings(
     val serverUrl: String = "",
     /** Чат «Петрович» отвечает через стенд (модель на стенде), а не заглушкой. */
     val assistantViaServer: Boolean = false,
+    /** Телеметрия (таблицы, графики, сводка, проверка аномалий) загружается со стенда, а не из AutoGRAPH напрямую. */
+    val telemetryViaServer: Boolean = false,
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
+
+    val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
 }
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -58,6 +62,7 @@ class SettingsRepository(private val context: Context) {
         val lastScanAt = longPreferencesKey("last_scan_at")
         val serverUrl = stringPreferencesKey("server_url")
         val assistantViaServer = booleanPreferencesKey("assistant_via_server")
+        val telemetryViaServer = booleanPreferencesKey("telemetry_via_server")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -75,6 +80,7 @@ class SettingsRepository(private val context: Context) {
         themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
         serverUrl = this[Keys.serverUrl].orEmpty(),
         assistantViaServer = this[Keys.assistantViaServer] ?: false,
+        telemetryViaServer = this[Keys.telemetryViaServer] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -98,6 +104,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.lastScanAt] = new.lastScanAt
             p[Keys.serverUrl] = new.serverUrl
             p[Keys.assistantViaServer] = new.assistantViaServer
+            p[Keys.telemetryViaServer] = new.telemetryViaServer
         }
     }
 }

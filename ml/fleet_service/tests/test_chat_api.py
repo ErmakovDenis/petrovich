@@ -35,22 +35,32 @@ def test_reply_through_openrouter(make_client, fakes):
     with make_client() as client:
         r = client.post("/v1/chat", json=ask(), headers=AUTH)
     assert r.status_code == 200
-    assert r.json() == {"reply": NO_DATA_REPLY}
+    # Подставная модель с tools: list_vehicles → get_vehicle_summary → число из сводки.
+    assert r.json()["reply"].startswith("FAW №1: средний уровень топлива 250.0 л")
 
-    [body] = fakes.state.llm_requests
+    body = fakes.state.llm_requests[0]
     assert body["model"] == "fake/model"
     assert body["temperature"] == 0.2 and body["max_tokens"] == 1024
     assert body["provider"] == {"require_parameters": True, "data_collection": "deny"}
-    # Без tools ключ не передаётся вовсе.
-    assert "tools" not in body
+    assert [t["function"]["name"] for t in body["tools"]] == ["list_vehicles", "get_vehicle_summary"]
     system, clock, question = body["messages"]
     assert system["role"] == "system"
     prompt = " ".join(system["content"].split())
     assert "бери только из результатов инструментов (tools)" in prompt
     assert "так и скажи: «данных об этом у меня нет»" in prompt
-    assert "Сейчас инструментов для получения телеметрии и аномалий у тебя нет" in prompt
+    assert "Инструментов для проверки машин и списка аномалий у тебя пока нет" in prompt
     assert clock["role"] == "system" and "UTC+05:00" in clock["content"]
     assert question == {"role": "user", "content": "Сколько топлива у машин?"}
+    assert len(fakes.state.llm_requests) == 3
+
+
+def test_without_tools_key_is_omitted(make_client, fakes):
+    with make_client(tools=ToolRegistry()) as client:
+        r = client.post("/v1/chat", json=ask(), headers=AUTH)
+    assert r.json() == {"reply": NO_DATA_REPLY}
+    [body] = fakes.state.llm_requests
+    # Без tools ключ не передаётся вовсе: часть провайдеров отвергает пустой список.
+    assert "tools" not in body
 
 
 def test_fs_settings_change_request_without_code(make_client, fakes, tmp_path, monkeypatch):
@@ -73,7 +83,7 @@ def test_fs_settings_change_request_without_code(make_client, fakes, tmp_path, m
     settings = Settings(_env_file=None)
     assert settings.llm_timeout_seconds == 12 and settings.agent_max_iterations == 2
 
-    with make_client(settings) as client:
+    with make_client(settings, tools=ToolRegistry()) as client:
         assert client.post("/v1/chat", json=ask(), headers=AUTH).status_code == 200
     [body] = fakes.state.llm_requests
     assert body["model"] == "vendor/other-model"
@@ -204,10 +214,10 @@ def test_no_data_answer_without_tools(make_client):
 
     def honest(messages):
         system = " ".join(messages[0]["content"].split())
-        return text(NO_DATA_REPLY if "инструментов для получения телеметрии" in system else "Топлива 300 л.")
+        return text(NO_DATA_REPLY if "данных об этом у меня нет" in system else "Топлива 300 л.")
 
     llm = FakeLLM(honest)
-    with make_client(llm=llm) as client:
+    with make_client(llm=llm, tools=ToolRegistry()) as client:
         r = client.post("/v1/chat", json=ask("Сколько топлива у машины 42?"), headers=AUTH)
     assert r.json() == {"reply": NO_DATA_REPLY}
     assert llm.calls[0][1] == []

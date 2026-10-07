@@ -15,20 +15,11 @@ from enum import Enum
 import httpx
 
 from ..config import Settings
+from .errors import AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 
 log = logging.getLogger(__name__)
 
-
-class SessionInvalid(Exception):
-    pass
-
-
-class SchemaForbidden(Exception):
-    pass
-
-
-class AutoGraphUnavailable(Exception):
-    pass
+__all__ = ["AutoGraphSessionChecker", "AutoGraphUnavailable", "SchemaForbidden", "SessionInvalid"]
 
 
 class _Outcome(Enum):

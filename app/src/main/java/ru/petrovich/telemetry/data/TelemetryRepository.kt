@@ -7,13 +7,24 @@ interface TelemetryRepository {
     suspend fun telemetry(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): VehicleTelemetry
 }
 
-/** Выбирает источник данных (демо или реальный API) в момент каждого вызова по текущим настройкам. */
+/**
+ * Выбирает источник данных в момент каждого вызова по текущим настройкам: демо, стенд
+ * ([ru.petrovich.telemetry.data.settings.AppSettings.telemetryOnServer]) или AutoGRAPH напрямую, как раньше.
+ */
 class SwitchingTelemetryRepository(
-    private val settings: ru.petrovich.telemetry.data.settings.SettingsRepository,
+    private val settings: suspend () -> ru.petrovich.telemetry.data.settings.AppSettings,
     private val demo: TelemetryRepository,
     private val remote: TelemetryRepository,
+    private val server: TelemetryRepository,
 ) : TelemetryRepository {
-    private suspend fun current() = if (settings.current().demoMode) demo else remote
+    private suspend fun current(): TelemetryRepository {
+        val s = settings()
+        return when {
+            s.demoMode -> demo
+            s.telemetryOnServer -> server
+            else -> remote
+        }
+    }
 
     override suspend fun vehicles() = current().vehicles()
 

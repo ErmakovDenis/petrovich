@@ -17,6 +17,8 @@ import ru.petrovich.telemetry.chat.StubChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
+import ru.petrovich.telemetry.data.ServerTelemetryRepository
+import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
 import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.api.ApiFactory
@@ -34,8 +36,17 @@ object ServiceLocator {
 
     val autoGraph by lazy { AutoGraphTelemetryRepository(ApiFactory.create(), settings) }
 
+    /** Доступ к стенду от имени пользователя: токен сессии AutoGRAPH, не логин и пароль. */
+    private val stand by lazy {
+        StandClient(
+            serverUrl = { settings.current().serverUrl },
+            session = { rejectedToken -> autoGraph.standSession(rejectedToken) },
+        )
+    }
+
+    // Переключатель «Данные через стенд»: выключен — AutoGRAPH напрямую, как раньше.
     val telemetry: TelemetryRepository by lazy {
-        SwitchingTelemetryRepository(settings, DemoTelemetryRepository(), autoGraph)
+        SwitchingTelemetryRepository({ settings.current() }, DemoTelemetryRepository(), autoGraph, ServerTelemetryRepository(stand))
     }
 
     val mlDetector by lazy { MlAnomalyDetector(appContext) }
@@ -59,13 +70,8 @@ object ServiceLocator {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** Ассистент на стенде; доступ — токен сессии AutoGRAPH пользователя, не логин и пароль. */
-    val remoteChatAgent by lazy {
-        RemoteChatAgent(
-            serverUrl = { settings.current().serverUrl },
-            session = { rejectedToken -> autoGraph.standSession(rejectedToken) },
-        )
-    }
+    /** Ассистент на стенде; тот же доступ к стенду, что у телеметрии. */
+    val remoteChatAgent by lazy { RemoteChatAgent(stand) }
 
     // Переключатель «Ассистент через стенд»: выключен — заглушка, как раньше.
     val chatAgent: ChatAgent by lazy { SwitchingChatAgent(settings.settings, StubChatAgent(), remoteChatAgent, appScope) }

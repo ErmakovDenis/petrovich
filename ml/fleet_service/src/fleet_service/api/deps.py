@@ -5,6 +5,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from ..agent.loop import Agent
 from ..autograph.session import AutoGraphSessionChecker, AutoGraphUnavailable, SchemaForbidden, SessionInvalid
+from ..telemetry.service import TelemetryService
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,10 @@ def get_session_checker(request: Request) -> AutoGraphSessionChecker:
 
 def get_agent(request: Request) -> Agent:
     return request.app.state.agent
+
+
+def get_telemetry_service(request: Request) -> TelemetryService:
+    return request.app.state.telemetry_service
 
 
 def get_system_prompt(request: Request) -> str:

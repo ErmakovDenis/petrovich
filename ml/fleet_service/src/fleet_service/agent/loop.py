@@ -47,7 +47,10 @@ class Agent:
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = str(fn.get("name"))
-                log.info("итерация %d: модель вызывает tool %s", iteration, name)
+                # Аргументы tools — id машин и периоды, секретов в них нет; длинные обрезаются.
+                arguments = " ".join(str(fn.get("arguments") or "").split())
+                log.info("итерация %d: модель вызывает tool %s(%s)", iteration, name,
+                         arguments if len(arguments) <= 200 else arguments[:200] + "…")
                 called.append(name)
                 result = await self._tools.execute(name, fn.get("arguments"), ctx)
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result})

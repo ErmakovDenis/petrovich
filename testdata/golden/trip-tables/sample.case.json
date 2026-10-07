@@ -1,0 +1,92 @@
+{
+  "vehicle": {
+    "id": "v1",
+    "name": "FAW №1"
+  },
+  "from": "2026-09-16T10:00",
+  "to": "2026-09-16T10:04",
+  "bucketSeconds": 60,
+  "parameters": [
+    {
+      "Name": "TankMainFuelLevel",
+      "Caption": "Уровень",
+      "Unit": "л",
+      "ReturnType": 4
+    },
+    {
+      "Name": "FL1",
+      "Caption": "ДУТ 1 шасси",
+      "Unit": "л",
+      "ReturnType": 4
+    },
+    {
+      "Name": "Power",
+      "Caption": "Питание",
+      "ReturnType": 0
+    },
+    {
+      "Name": "TemperatureOIL",
+      "Caption": "Температура масла",
+      "Unit": "°C",
+      "ReturnType": 4
+    },
+    {
+      "Name": "DIgnition",
+      "Caption": "Зажигание",
+      "ReturnType": 0
+    },
+    {
+      "Name": "DIgnitionOnParks",
+      "Caption": "Накоп. МЧ ост.",
+      "ReturnType": 6
+    }
+  ],
+  "inputs": ["sample.input-1.json"],
+  "expected": {
+    "vehicle": {
+      "id": "v1",
+      "name": "FAW №1"
+    },
+    "from": "2026-09-16T10:00:00",
+    "to": "2026-09-16T10:04:00",
+    "tables": {
+      "FUEL": {
+        "category": "FUEL",
+        "timestamps": ["2026-09-16T10:00:00", "2026-09-16T10:01:00", "2026-09-16T10:02:00", "2026-09-16T10:03:00", "2026-09-16T10:04:00"],
+        "columns": [
+          {
+            "parameter": {
+              "name": "TankMainFuelLevel",
+              "caption": "Уровень топлива",
+              "unit": "л",
+              "category": "FUEL"
+            },
+            "values": [199.7, 198.0, null, 150.0, null]
+          }
+        ]
+      },
+      "POWER": {
+        "category": "POWER",
+        "timestamps": ["2026-09-16T10:00:00", "2026-09-16T10:01:00", "2026-09-16T10:02:00", "2026-09-16T10:03:00", "2026-09-16T10:04:00"],
+        "columns": [
+          {
+            "parameter": {
+              "name": "Power",
+              "caption": "Питание (1 — есть)",
+              "category": "POWER"
+            },
+            "values": [0.0, 1.0, null, 1.0, null]
+          },
+          {
+            "parameter": {
+              "name": "DIgnition",
+              "caption": "Зажигание",
+              "category": "POWER"
+            },
+            "values": [1.0, 1.0, null, 1.0, null]
+          }
+        ]
+      }
+    }
+  }
+}

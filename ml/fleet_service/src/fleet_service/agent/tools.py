@@ -35,8 +35,10 @@ class Tool:
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, max_result_chars: int | None = None) -> None:
         self._tools: dict[str, Tool] = {}
+        # Предохранитель FS_TOOL_MAX_RESULT_CHARS: слишком большой ответ tool не уходит модели целиком.
+        self._max_result_chars = max_result_chars
 
     def register(self, tool: Tool) -> None:
         if tool.name in self._tools:
@@ -70,8 +72,12 @@ class ToolRegistry:
         except Exception as e:  # noqa: BLE001 — сбой tool не должен ронять ответ ассистента
             log.warning("tool %s: ошибка за %.0f мс: %s", name, (time.monotonic() - start) * 1000, e)
             return _error(f"{name} не выполнен: {e}")
-        log.info("tool %s: выполнен за %.0f мс", name, (time.monotonic() - start) * 1000)
-        return json.dumps(result, ensure_ascii=False, default=str)
+        text = json.dumps(result, ensure_ascii=False, default=str)
+        log.info("tool %s: выполнен за %.0f мс, %d символов", name, (time.monotonic() - start) * 1000, len(text))
+        if self._max_result_chars is not None and len(text) > self._max_result_chars:
+            log.warning("tool %s: ответ %d символов больше предела %d", name, len(text), self._max_result_chars)
+            return _error(f"{name}: ответ слишком большой, уточните запрос")
+        return text
 
 
 def _error(message: str) -> str:
