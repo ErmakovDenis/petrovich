@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.Schema
@@ -61,11 +62,13 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var initialized by remember { mutableStateOf(false) }
+    var serverUrl by remember { mutableStateOf("") }
+    var serverStatus by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(settings) {
         val s = settings ?: return@LaunchedEffect
         if (!initialized) {
-            user = s.userName; password = s.password; initialized = true
+            user = s.userName; password = s.password; serverUrl = s.serverUrl; initialized = true
         }
     }
 
@@ -171,6 +174,46 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                     Text(schema.name, Modifier.padding(start = 8.dp))
                 }
             }
+            HorizontalDivider()
+
+            Text("Стенд", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH, логин и пароль на стенд не передаются.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = serverUrl, onValueChange = { serverUrl = it; serverStatus = null },
+                label = { Text("Адрес стенда") }, placeholder = { Text("https://stand.example.ru") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            val normalizedUrl = serverUrl.trim().trimEnd('/')
+            OutlinedButton(
+                enabled = normalizedUrl != s.serverUrl,
+                onClick = {
+                    val parsed = normalizedUrl.toHttpUrlOrNull()
+                    if (normalizedUrl.isNotEmpty() && parsed == null) {
+                        serverStatus = "Адрес должен начинаться с http:// или https://"
+                    } else if (parsed != null && !parsed.isHttps && !BuildConfig.DEBUG) {
+                        // HTTP без TLS разрешён только в debug-сборке (app/src/debug, network security config).
+                        serverStatus = "Нужен адрес https:// — без шифрования стенд доступен только в отладочной сборке"
+                    } else {
+                        save(reload = false) { it.copy(serverUrl = normalizedUrl) }
+                        serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
+                    }
+                },
+            ) { Text("Сохранить адрес") }
+            serverStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            SwitchRow(
+                title = "Ассистент через стенд",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — отвечает заглушка"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Чат «Петрович» отвечает моделью на стенде; выключено — заглушка"
+                },
+                checked = s.assistantViaServer,
+                onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
+            )
             HorizontalDivider()
 
             Text("Аномалии", style = MaterialTheme.typography.titleMedium)

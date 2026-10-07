@@ -1,0 +1,13 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+
+from ..config import Settings, get_settings
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
+def health(settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, str | bool]:
+    """Liveness. llmConfigured=false — не заданы FS_OPENROUTER_API_KEY или FS_LLM_MODEL."""
+    return {"status": "ok", "llmConfigured": settings.llm_configured}

@@ -1,0 +1,36 @@
+# Стенд «Петрович Телеметрия»: fleet_service (ассистент, далее — телеметрия и аномалии) и predictive_antifraud.
+#   cd ml && docker compose up -d --build
+# Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
+# Порты на хосте: FLEET_SERVICE_PORT (8080) и PREDICTIVE_PORT (8001) — переменные окружения docker compose.
+services:
+  fleet_service:
+    build: ./fleet_service
+    env_file:
+      - path: ./fleet_service/.env
+        required: false
+    ports:
+      - "${FLEET_SERVICE_PORT:-8080}:8000"
+    # depends_on на predictive_antifraud появится на шаге 3, когда стенд начнёт его вызывать:
+    # сбой аналитики не должен останавливать чат.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  predictive_antifraud:
+    build: ./predictive_antifraud
+    env_file:
+      - path: ./predictive_antifraud/.env
+        required: false
+    ports:
+      - "${PREDICTIVE_PORT:-8001}:8000"
+    volumes:
+      - ./predictive_antifraud/models:/srv/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped

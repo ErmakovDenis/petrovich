@@ -1,6 +1,9 @@
 package ru.petrovich.telemetry
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import ru.petrovich.telemetry.anomaly.AnomalyDetector
 import ru.petrovich.telemetry.anomaly.AnomalyNotifier
 import ru.petrovich.telemetry.anomaly.AnomalyScanner
@@ -9,7 +12,9 @@ import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
 import ru.petrovich.telemetry.anomaly.MlAnomalyDetector
 import ru.petrovich.telemetry.chat.ChatAgent
+import ru.petrovich.telemetry.chat.RemoteChatAgent
 import ru.petrovich.telemetry.chat.StubChatAgent
+import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
@@ -52,6 +57,16 @@ object ServiceLocator {
         settings.update { it.copy(lastScanAt = 0) }
     }
 
-    // Точка подключения ИИ-агента.
-    val chatAgent: ChatAgent by lazy { StubChatAgent() }
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** Ассистент на стенде; доступ — токен сессии AutoGRAPH пользователя, не логин и пароль. */
+    val remoteChatAgent by lazy {
+        RemoteChatAgent(
+            serverUrl = { settings.current().serverUrl },
+            session = { rejectedToken -> autoGraph.standSession(rejectedToken) },
+        )
+    }
+
+    // Переключатель «Ассистент через стенд»: выключен — заглушка, как раньше.
+    val chatAgent: ChatAgent by lazy { SwitchingChatAgent(settings.settings, StubChatAgent(), remoteChatAgent, appScope) }
 }

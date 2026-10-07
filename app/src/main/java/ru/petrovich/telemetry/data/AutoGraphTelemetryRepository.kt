@@ -15,6 +15,9 @@ import java.time.format.DateTimeFormatter
 
 class AuthException(message: String) : Exception(message)
 
+/** Доступ к стенду от имени пользователя: токен сессии AutoGRAPH и выбранная схема (логин и пароль не передаются). */
+data class StandSession(val token: String, val schemaId: String)
+
 /** Реальные данные из AutoGRAPH API. */
 class AutoGraphTelemetryRepository(
     private val api: AutoGraphApi,
@@ -67,6 +70,16 @@ class AutoGraphTelemetryRepository(
             ?: throw IllegalStateException("Нет доступных схем")
         settings.update { it.copy(schemaId = first.id, schemaName = first.name ?: first.id) }
         return first.id
+    }
+
+    /**
+     * Сессия для запросов к стенду. [rejectedToken] — токен, который стенд отверг (истёк): входим заново, только
+     * если он всё ещё текущий, — параллельные запросы и телеметрия не перелогиниваются повторно.
+     */
+    suspend fun standSession(rejectedToken: String? = null): StandSession {
+        if (rejectedToken != null) mutex.withLock { if (token == rejectedToken) token = null }
+        val s = session()
+        return StandSession(s, schemaId(s))
     }
 
     /** Повторяет запрос один раз после переавторизации, если сессия истекла. */
