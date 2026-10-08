@@ -54,6 +54,9 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
+import ru.petrovich.telemetry.chat.ContextualChatAgent
+import ru.petrovich.telemetry.chat.SwitchingChatAgent
+import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.time
@@ -72,12 +75,19 @@ class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : V
     private val _state = MutableStateFlow(ChatUiState(listOf(greeting)))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    fun send(text: String) {
+    /** false — отвечает заглушка; следует за переключателем «Ассистент через стенд». */
+    val connected: StateFlow<Boolean> = (agent as? SwitchingChatAgent)?.connectedState ?: MutableStateFlow(agent.connected)
+
+    /** [context] — аномалия, из карточки которой открыт чат; уходит агенту вместе с историей. */
+    fun send(text: String, context: Anomaly? = null) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _state.value.agentTyping) return
         _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = trimmed), agentTyping = true) }
         viewModelScope.launch {
-            val reply = runCatchingCancellable { agent.reply(_state.value.messages) }
+            val history = _state.value.messages
+            val reply = runCatchingCancellable {
+                if (agent is ContextualChatAgent) agent.reply(history, context) else agent.reply(history)
+            }
                 .fold(
                     onSuccess = { ChatMessage(author = Author.AGENT, text = it) },
                     onFailure = { ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true) },
@@ -106,6 +116,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
     val state by vm.state.collectAsStateWithLifecycle()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val context = anomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
+    val connected by vm.connected.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val c = Petrovich.colors
@@ -119,7 +130,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
         topBar = {
             AppTopBar(
                 title = "Петрович",
-                subtitle = if (ServiceLocator.chatAgent.connected) null else "Агент не подключён · ответы-заглушки",
+                subtitle = if (connected) null else "Агент не подключён · ответы-заглушки",
                 onBack = onBack,
                 actions = { IconButton(onClick = vm::clear) { Icon(Icons.Filled.DeleteSweep, "Очистить чат") } },
             )
@@ -152,7 +163,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.padding(bottom = 8.dp),
                 ) {
-                    items(if (context != null) contextSuggestions else suggestions) { s -> PChip(s, selected = false, onClick = { vm.send(s) }) }
+                    items(if (context != null) contextSuggestions else suggestions) { s -> PChip(s, selected = false, onClick = { vm.send(s, context) }) }
                 }
             }
             Row(
@@ -173,7 +184,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
                     ),
                 )
                 FilledIconButton(
-                    onClick = { vm.send(input); input = "" },
+                    onClick = { vm.send(input, context); input = "" },
                     enabled = input.isNotBlank() && !state.agentTyping,
                     modifier = Modifier.size(48.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.accent, contentColor = c.onAccent),

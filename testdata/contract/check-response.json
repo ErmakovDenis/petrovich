@@ -1,0 +1,27 @@
+{
+  "vehicleId": "42",
+  "anomalies": [
+    {
+      "id": "rule|overheat|42|TemperatureCOOL|2026-09-16T10:30",
+      "vehicleId": "42",
+      "vehicleName": "Урал NEXT А001АА",
+      "category": "ENGINE",
+      "parameterName": "TemperatureCOOL",
+      "parameterCaption": "Температура ОЖ",
+      "eventTime": "2026-09-16T10:30",
+      "detectedAt": 1788000000000,
+      "severity": "CRITICAL",
+      "title": "Перегрев двигателя",
+      "description": "Температура охлаждающей жидкости 108 °C (норма до 100 °C).",
+      "value": 108.0,
+      "score": null,
+      "source": "Базовые правила"
+    }
+  ],
+  "rulesAnomalies": 1,
+  "analytics": {
+    "predictive": {"status": "not_ready", "modelVersion": null, "detail": "предиктивная аналитика: модель не загружена", "anomaliesFound": 0},
+    "antifraud": {"status": "unavailable", "modelVersion": null, "detail": "антифрод: сервис аналитики не отвечает", "anomaliesFound": 0}
+  },
+  "modelsReady": false
+}

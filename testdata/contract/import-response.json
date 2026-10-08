@@ -1,0 +1,20 @@
+{
+  "decisions": 2,
+  "applied": 1,
+  "alreadyResolved": 0,
+  "unmatched": [
+    {
+      "localId": "rule|drain|42|FuelDrainVolume|2026-09-15T22:14",
+      "vehicleId": "42",
+      "vehicleName": "Урал NEXT А001АА",
+      "title": "Слив топлива",
+      "eventTime": "2026-09-15T22:14:00",
+      "resolution": "CONFIRMED",
+      "reason": null,
+      "why": "стенд не нашёл это событие при проверке того же периода"
+    }
+  ],
+  "restored": 3,
+  "notFound": 1,
+  "scanErrors": []
+}

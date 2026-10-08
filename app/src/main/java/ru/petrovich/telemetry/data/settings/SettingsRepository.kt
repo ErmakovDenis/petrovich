@@ -30,7 +30,29 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** Когда последняя проверка данных завершилась успешно (epoch millis); 0 — ещё не проверяли. */
     val lastScanAt: Long = 0,
-)
+    /** Адрес стенда fleet_service, например `https://stand.example.ru`; пусто — стенд не используется. */
+    val serverUrl: String = "",
+    /** Чат «Петрович» отвечает через стенд (модель на стенде), а не заглушкой. */
+    val assistantViaServer: Boolean = false,
+    /** Телеметрия (таблицы, графики, сводка, проверка аномалий) загружается со стенда, а не из AutoGRAPH напрямую. */
+    val telemetryViaServer: Boolean = false,
+    /** Аномалии при проверке считает стенд (правила и аналитика), а не детектор на устройстве. */
+    val anomaliesViaServer: Boolean = false,
+    /** Отладка: считать аномалии и на устройстве, и на стенде, расхождения — в лог (только debug-сборка). */
+    val anomalyCompare: Boolean = false,
+    /** Аномалии и решения хранятся на стенде: лента — со стенда, решения — на стенд, проверка — с сохранением. */
+    val anomalyStoreViaServer: Boolean = false,
+) {
+    /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
+    val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
+
+    val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
+
+    val anomaliesOnServer: Boolean get() = !demoMode && anomaliesViaServer && serverUrl.isNotBlank()
+
+    /** Хранилище на стенде — продолжение «Аномалий со стенда»: без него не действует. */
+    val anomalyStoreOnServer: Boolean get() = anomaliesOnServer && anomalyStoreViaServer
+}
 
 private val Context.dataStore by preferencesDataStore("settings")
 
@@ -49,6 +71,12 @@ class SettingsRepository(private val context: Context) {
         val pushWarning = booleanPreferencesKey("push_warning")
         val themeMode = stringPreferencesKey("theme_mode")
         val lastScanAt = longPreferencesKey("last_scan_at")
+        val serverUrl = stringPreferencesKey("server_url")
+        val assistantViaServer = booleanPreferencesKey("assistant_via_server")
+        val telemetryViaServer = booleanPreferencesKey("telemetry_via_server")
+        val anomaliesViaServer = booleanPreferencesKey("anomalies_via_server")
+        val anomalyCompare = booleanPreferencesKey("anomaly_compare")
+        val anomalyStoreViaServer = booleanPreferencesKey("anomaly_store_via_server")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -64,6 +92,12 @@ class SettingsRepository(private val context: Context) {
         pushWarning = this[Keys.pushWarning] ?: true,
         lastScanAt = this[Keys.lastScanAt] ?: 0,
         themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
+        serverUrl = this[Keys.serverUrl].orEmpty(),
+        assistantViaServer = this[Keys.assistantViaServer] ?: false,
+        telemetryViaServer = this[Keys.telemetryViaServer] ?: false,
+        anomaliesViaServer = this[Keys.anomaliesViaServer] ?: false,
+        anomalyCompare = this[Keys.anomalyCompare] ?: false,
+        anomalyStoreViaServer = this[Keys.anomalyStoreViaServer] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -85,6 +119,12 @@ class SettingsRepository(private val context: Context) {
             p[Keys.pushWarning] = new.pushWarning
             p[Keys.themeMode] = new.themeMode.name
             p[Keys.lastScanAt] = new.lastScanAt
+            p[Keys.serverUrl] = new.serverUrl
+            p[Keys.assistantViaServer] = new.assistantViaServer
+            p[Keys.telemetryViaServer] = new.telemetryViaServer
+            p[Keys.anomaliesViaServer] = new.anomaliesViaServer
+            p[Keys.anomalyCompare] = new.anomalyCompare
+            p[Keys.anomalyStoreViaServer] = new.anomalyStoreViaServer
         }
     }
 }

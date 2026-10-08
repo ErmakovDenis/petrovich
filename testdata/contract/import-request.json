@@ -1,0 +1,25 @@
+{
+  "utcOffsetMinutes": 300,
+  "items": [
+    {
+      "localId": "rule|overheat|42|TemperatureCOOL|2026-09-16T10:30",
+      "vehicleId": "42",
+      "vehicleName": "Урал NEXT А001АА",
+      "kind": "overheat",
+      "parameterName": "TemperatureCOOL",
+      "title": "Перегрев двигателя",
+      "eventTime": "2026-09-16T10:30",
+      "resolution": "FALSE_ALARM",
+      "reason": "Ошибка датчика"
+    },
+    {
+      "localId": "rule|power|42|Power|2026-09-16T08:12",
+      "vehicleId": "42",
+      "vehicleName": "Урал NEXT А001АА",
+      "kind": "power",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "eventTime": "2026-09-16T08:12"
+    }
+  ]
+}

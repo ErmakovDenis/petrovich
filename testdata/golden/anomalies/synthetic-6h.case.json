@@ -1,0 +1,365 @@
+{
+  "telemetry": "trip-tables/synthetic-6h.case.json",
+  "expected": [
+    {
+      "id": "rule|drop|dev-2|TankMainFuelLevel|2026-09-16T12:32",
+      "kind": "drop",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T12:32",
+      "parameterName": "TankMainFuelLevel",
+      "title": "Резкое падение уровня топлива",
+      "value": 213.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T08:41",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T08:41",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T08:55",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T08:55",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T09:19",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T09:19",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T10:12",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T10:12",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T10:19",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T10:19",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T10:38",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T10:38",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:10",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:10",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:15",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:15",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:26",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:26",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:32",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:32",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:43",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:43",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T11:56",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T11:56",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T12:21",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T12:21",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T12:39",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T12:39",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T12:59",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T12:59",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T13:27",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T13:27",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|dev-2|Power|2026-09-16T13:51",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T13:51",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T08:00",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T08:00",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.6,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T09:35",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T09:35",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.3,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T12:40",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T12:40",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.3,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T13:35",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T13:35",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.1,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T13:47",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T13:47",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.7,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|oil|dev-2|PressureOIL|2026-09-16T13:54",
+      "kind": "oil",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T13:54",
+      "parameterName": "PressureOIL",
+      "title": "Низкое давление масла",
+      "value": 3.3,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC1|2026-09-16T08:00",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T08:00",
+      "parameterName": "PressureVSBC1",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.7,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC1|2026-09-16T09:35",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T09:35",
+      "parameterName": "PressureVSBC1",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.9,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC1|2026-09-16T12:40",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T12:40",
+      "parameterName": "PressureVSBC1",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.9,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC1|2026-09-16T13:35",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T13:35",
+      "parameterName": "PressureVSBC1",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.9,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T08:00",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T08:00",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.6,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T09:35",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T09:35",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.8,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T11:24",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T11:24",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.7,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T11:44",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T11:44",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.7,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T12:49",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T12:49",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.6,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T13:10",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T13:10",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.8,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T13:22",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T13:22",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.5,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|brake|dev-2|PressureVSBC2|2026-09-16T13:36",
+      "kind": "brake",
+      "severity": "WARNING",
+      "eventTime": "2026-09-16T13:36",
+      "parameterName": "PressureVSBC2",
+      "title": "Низкое давление в тормозной системе",
+      "value": 7.6,
+      "source": "Базовые правила"
+    }
+  ]
+}

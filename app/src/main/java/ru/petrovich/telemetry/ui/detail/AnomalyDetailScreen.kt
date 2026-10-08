@@ -73,7 +73,9 @@ import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDateTime
+import java.time.ZoneId
 import kotlin.math.abs
 
 private val FalseAlarmReasons = listOf("Штатная работа", "Ошибка датчика", "Уже известно", "Другое")
@@ -82,6 +84,8 @@ private val FalseAlarmReasons = listOf("Штатная работа", "Ошиб�
 @Composable
 fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -> Unit, onOpenCharts: (String) -> Unit) {
     val store = ServiceLocator.anomalyStore
+    // Решения — через синхронизацию: при хранилище на стенде они уходят на стенд, иначе остаются на устройстве.
+    val sync = ServiceLocator.anomalySync
     val anomalies by store.anomalies.collectAsStateWithLifecycle()
     val anomaly = anomalies.firstOrNull { it.id == anomalyId }
     val scope = rememberCoroutineScope()
@@ -98,10 +102,19 @@ fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -
             if (anomaly != null) ActionsBar(
                 anomaly = anomaly,
                 onConfirm = {
-                    scope.launch { store.resolve(anomaly.id, Resolution.CONFIRMED); snackbar.showSnackbar("Отмечено: подтверждено") }
+                    scope.launch {
+                        val msg = runCatchingCancellable { sync.resolve(anomaly.id, Resolution.CONFIRMED) }
+                            .fold({ "Отмечено: подтверждено" }, { "Решение не сохранено: ${it.message}" })
+                        snackbar.showSnackbar(msg)
+                    }
                 },
                 onFalseAlarm = { reasons = true },
-                onReopen = { scope.launch { store.reopen(anomaly.id) } },
+                onReopen = {
+                    scope.launch {
+                        runCatchingCancellable { sync.reopen(anomaly.id) }
+                            .onFailure { snackbar.showSnackbar("Решение не изменено: ${it.message}") }
+                    }
+                },
                 onAsk = { onAsk(anomaly.id) },
                 onCharts = { onOpenCharts(anomaly.vehicleId) },
             )
@@ -161,8 +174,9 @@ fun AnomalyDetailScreen(anomalyId: String, onBack: () -> Unit, onAsk: (String) -
                         onClick = {
                             reasons = false
                             scope.launch {
-                                store.resolve(anomaly.id, Resolution.FALSE_ALARM, reason)
-                                snackbar.showSnackbar("Отмечено как ложная тревога")
+                                val msg = runCatchingCancellable { sync.resolve(anomaly.id, Resolution.FALSE_ALARM, reason) }
+                                    .fold({ "Отмечено как ложная тревога" }, { "Решение не сохранено: ${it.message}" })
+                                snackbar.showSnackbar(msg)
                             }
                         },
                     ) { Text(reason, Modifier.padding(15.dp), style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium) }
@@ -243,6 +257,14 @@ private suspend fun loadEvidence(a: Anomaly, at: LocalDateTime): EvidenceState.R
     return EvidenceState.Ready(table.timestamps, column.values, column.parameter.unit, idx)
 }
 
+private fun decidedBy(a: Anomaly): String? {
+    val at = a.resolvedAt?.let {
+        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime()
+        "${t.toLocalDate().title()}, ${t.hhmm()}"
+    }
+    return listOfNotNull(a.resolvedBy, at).takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
 @Composable
 private fun ActionsBar(anomaly: Anomaly, onConfirm: () -> Unit, onFalseAlarm: () -> Unit, onReopen: () -> Unit, onAsk: () -> Unit, onCharts: () -> Unit) {
     val c = Petrovich.colors
@@ -258,9 +280,11 @@ private fun ActionsBar(anomaly: Anomaly, onConfirm: () -> Unit, onFalseAlarm: ()
         } else {
             SurfaceCard(shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         if (anomaly.resolution == Resolution.CONFIRMED) Pill("Подтверждено", c.high, c.highSoft)
                         else Pill("Ложная тревога" + (anomaly.falseAlarmReason?.let { " · $it" } ?: ""), c.muted, c.surface2)
+                        // Хранилище на стенде: решение общее для схемы — видно, кто и когда его принял.
+                        decidedBy(anomaly)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = c.muted) }
                     }
                     TextButton(onClick = onReopen) { Text("Изменить", color = c.accent, fontWeight = FontWeight.SemiBold) }
                 }
