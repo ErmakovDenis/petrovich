@@ -49,3 +49,35 @@ def test_chat_request_from_app_fixture():
     assert request.utc_offset_minutes == 300
     assert request.anomaly is not None and request.anomaly.severity.value == "CRITICAL"
     assert request.anomaly.score is None and request.anomaly.value == 80.0
+
+
+def _fixture(name: str):
+    return json.loads((REPO / "testdata" / "contract" / name).read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("name, model", [
+    ("anomalies-response.json", "AnomalyList"),
+    ("scan-response.json", "ScanResponse"),
+    ("import-response.json", "ImportResponse"),
+])
+def test_store_responses_are_exactly_what_stand_returns(name, model):
+    """Ответы хранилища: те же поля, что отдаёт стенд; их разбирает StandAnomaliesTest приложения."""
+    from fleet_service.schemas import store
+
+    raw = _fixture(name)
+    assert getattr(store, model).model_validate(raw).model_dump(by_alias=True, mode="json") == raw
+
+
+def test_store_requests_from_app_fixtures():
+    """Запросы хранилища — ровно то, что сериализует StandAnomalies приложения (Kotlin-тест сверяет то же)."""
+    from fleet_service.schemas.store import ImportRequest, Resolution, ResolveRequest, ScanRequest
+
+    resolve = ResolveRequest.model_validate(_fixture("resolve-request.json"))
+    assert resolve.resolution is Resolution.FALSE_ALARM and resolve.reason == "Ошибка датчика"
+    scan = ScanRequest.model_validate(_fixture("scan-request.json"))
+    assert scan.vehicle_ids == ["42"] and scan.from_.hour == 18 and scan.utc_offset_minutes == 300
+    items = ImportRequest.model_validate(_fixture("import-request.json")).items
+    assert [(i.kind, i.resolution) for i in items] == [("overheat", Resolution.FALSE_ALARM), ("power", None)]
+    assert items[0].event_time.hour == 10 and items[1].reason is None
+    chat = ChatRequest.model_validate(_fixture("chat-request-anomaly-id.json"))
+    assert chat.anomaly is None and chat.anomaly_id == "rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z"

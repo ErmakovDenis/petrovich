@@ -82,13 +82,17 @@ class TelemetryService:
             raise PeriodInvalid(f"Период длиннее {limit} ч")
 
     async def telemetry(
-        self, session: str, schema_id: str, vehicle_id: str, from_: datetime, to: datetime, utc_offset_minutes: int
+        self, session: str, schema_id: str, vehicle_id: str, from_: datetime, to: datetime, utc_offset_minutes: int,
+        bucket: timedelta | None = None,
     ) -> BuildResult:
+        """[bucket] — шаг интервалов; по умолчанию зависит от длины периода, как в приложении (bucket_for)."""
         self.check_period(from_, to)
         vehicle = await self.vehicle(session, schema_id, vehicle_id)
-        key = (schema_id, vehicle_id, from_, to, utc_offset_minutes)
+        key = (schema_id, vehicle_id, from_, to, utc_offset_minutes, bucket)
 
-        return await _shared(self._telemetry, key, lambda: self._load(session, schema_id, vehicle, from_, to))
+        return await _shared(
+            self._telemetry, key, lambda: self._load(session, schema_id, vehicle, from_, to, bucket)
+        )
 
     async def _selected(self, session: str, schema_id: str, vehicle_id: str) -> _Selected:
         async def load() -> _Selected:
@@ -97,11 +101,13 @@ class TelemetryService:
 
         return await _shared(self._parameters, (schema_id, vehicle_id), load)
 
-    async def _load(self, session: str, schema_id: str, vehicle: Vehicle, from_: datetime, to: datetime) -> BuildResult:
+    async def _load(
+        self, session: str, schema_id: str, vehicle: Vehicle, from_: datetime, to: datetime, bucket: timedelta | None
+    ) -> BuildResult:
         started = time.monotonic()
         selected = await self._selected(session, schema_id, vehicle.id)
         builder = TripTablesBuilder(
-            vehicle, from_, to, selected.parameters, selected.aggregation,
+            vehicle, from_, to, selected.parameters, selected.aggregation, bucket=bucket,
             max_points=self._settings.trip_tables_max_points,
         )
         if selected.parameters:

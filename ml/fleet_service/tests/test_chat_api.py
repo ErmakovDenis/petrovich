@@ -42,7 +42,9 @@ def test_reply_through_openrouter(make_client, fakes):
     assert body["model"] == "fake/model"
     assert body["temperature"] == 0.2 and body["max_tokens"] == 1024
     assert body["provider"] == {"require_parameters": True, "data_collection": "deny"}
-    assert [t["function"]["name"] for t in body["tools"]] == ["list_vehicles", "get_vehicle_summary", "check_vehicle"]
+    assert [t["function"]["name"] for t in body["tools"]] == [
+        "list_vehicles", "get_vehicle_summary", "check_vehicle", "list_anomalies", "get_anomaly",
+    ]
     system, clock, question = body["messages"]
     assert system["role"] == "system"
     prompt = " ".join(system["content"].split())

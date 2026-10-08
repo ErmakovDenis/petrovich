@@ -78,19 +78,23 @@ class ServerVehicleChecker(
 }
 
 /**
- * Выбирает проверку на каждый вызов по настройкам: стенд ([AppSettings.anomaliesOnServer]) или устройство, как раньше.
- * Режим сравнения ([compareAllowed] — только отладочная сборка, и [AppSettings.anomalyCompare]): считаются оба
- * варианта, расхождения пишутся в [log], пользователю возвращается результат по переключателю.
+ * Выбирает проверку на каждый вызов по настройкам: проверка с сохранением на стенде ([AppSettings.anomalyStoreOnServer],
+ * [stored]), проверка на стенде ([AppSettings.anomaliesOnServer]) или устройство, как раньше.
+ * Режим сравнения ([compareAllowed] — только отладочная сборка, и [AppSettings.anomalyCompare]; не при хранилище на
+ * стенде — там другие id): считаются оба варианта, расхождения пишутся в [log], пользователю возвращается результат
+ * по переключателю.
  */
 class SwitchingVehicleChecker(
     private val settings: suspend () -> AppSettings,
     private val local: VehicleChecker,
     private val server: VehicleChecker,
     private val compareAllowed: Boolean,
+    private val stored: VehicleChecker? = null,
     private val log: (String) -> Unit,
 ) : VehicleChecker {
     override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
         val s = settings()
+        if (s.anomalyStoreOnServer && stored != null) return stored.check(vehicle, from, to)
         val onServer = s.anomaliesOnServer
         val compare = compareAllowed && s.anomalyCompare && !s.demoMode && s.serverUrl.isNotBlank()
         if (!compare) return (if (onServer) server else local).check(vehicle, from, to)

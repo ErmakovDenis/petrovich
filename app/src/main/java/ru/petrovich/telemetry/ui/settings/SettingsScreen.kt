@@ -22,6 +22,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +40,8 @@ import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.anomaly.ImportReport
+import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.Schema
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.ThemeMode
@@ -47,7 +50,11 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.ui.common.hhmm
+import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.Instant
+import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -64,6 +71,9 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
     var initialized by remember { mutableStateOf(false) }
     var serverUrl by remember { mutableStateOf("") }
     var serverStatus by remember { mutableStateOf<String?>(null) }
+    var storeStatus by remember { mutableStateOf<String?>(null) }
+    var storeBusy by remember { mutableStateOf(false) }
+    val importReport by ServiceLocator.anomalySync.lastImport.collectAsStateWithLifecycle()
 
     LaunchedEffect(settings) {
         val s = settings ?: return@LaunchedEffect
@@ -257,6 +267,33 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 // id аномалий у стенда и устройства одинаковые (тот же алгоритм), поэтому ленту не сбрасываем.
                 onChecked = { v -> save(reload = false) { it.copy(anomaliesViaServer = v) } },
             )
+            SwitchRow(
+                title = "Хранить аномалии на стенде",
+                subtitle = when {
+                    !s.anomaliesOnServer -> "Сначала включите «Аномалии со стенда»"
+                    else -> "Лента и решения — на стенде, общие для всех пользователей схемы; в приложении — копия для " +
+                        "показа без сети. При включении история с устройства переносится на стенд. Выключено — всё на устройстве"
+                },
+                checked = s.anomalyStoreViaServer,
+                enabled = s.anomaliesOnServer && !storeBusy,
+                onChecked = { v ->
+                    storeStatus = null
+                    scope.launch {
+                        repo.update { it.copy(anomalyStoreViaServer = v) }
+                        // Выключено: записи стенда уходят из копии ленты — у проверки на устройстве другие id.
+                        if (!v) runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
+                        if (v) {
+                            storeBusy = true
+                            storeStatus = "Переносим историю на стенд и загружаем ленту…"
+                            storeStatus = runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
+                                .fold({ "Лента загружена со стенда" }, { "Не получилось: ${it.message}. Повторим при следующем обновлении ленты" })
+                            storeBusy = false
+                        }
+                    }
+                },
+            )
+            storeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            importReport?.let { ImportReportText(it) }
             if (BuildConfig.DEBUG) {
                 SwitchRow(
                     title = "Сравнивать с устройством (отладка)",
@@ -267,19 +304,51 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 )
             }
             OutlinedButton(onClick = { scope.launch { ServiceLocator.anomalyStore.clear() } }) {
-                Text("Очистить историю аномалий")
+                // С хранилищем на стенде очищается только копия на устройстве: лента вернётся при обновлении.
+                Text(if (s.anomalyStoreOnServer) "Очистить копию ленты на устройстве" else "Очистить историю аномалий")
             }
         }
     }
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit, enabled: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
+    }
+}
+
+/** Отчёт о переносе истории на стенд: несопоставленные решения перечислены, а не потеряны молча. */
+@Composable
+private fun ImportReportText(report: ImportReport) {
+    var expanded by remember { mutableStateOf(false) }
+    val r = report.result
+    val at = Instant.ofEpochMilli(report.at).atZone(ZoneId.systemDefault()).toLocalDateTime()
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Перенос истории на стенд (${at.toLocalDate().title()}, ${at.hhmm()}): записей ${report.sent}, решений ${r.decisions} — " +
+                "перенесено ${r.applied}, на стенде уже были ${r.alreadyResolved}, без пары ${r.unmatched.size}. " +
+                "Аномалий без решения найдено на стенде ${r.restored}, не найдено ${r.notFound}.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        (report.failed + r.scanErrors).forEach {
+            Text("Не перенесено, повторим при обновлении ленты: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (r.unmatched.isNotEmpty()) {
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Скрыть решения без пары" else "Показать решения без пары (${r.unmatched.size})")
+            }
+            if (expanded) r.unmatched.forEach { u ->
+                val decision = if (u.resolution == Resolution.CONFIRMED) "подтверждено" else "ложная тревога" + (u.reason?.let { " ($it)" } ?: "")
+                Text(
+                    "${u.vehicleName.ifBlank { u.vehicleId }}: ${u.title}, ${u.eventTime.replace('T', ' ')} — $decision. ${u.why}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }

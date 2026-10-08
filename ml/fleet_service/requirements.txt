@@ -13,5 +13,9 @@ httpx>=0.27
 # Потоковый разбор GetTripTables (C-бэкенд yajl2_c из колеса)
 ijson>=3.3
 
+# Хранилище аномалий и решений: SQLite через SQLAlchemy, миграции схемы — Alembic
+sqlalchemy>=2.0
+alembic>=1.13
+
 # Тесты
 pytest>=8

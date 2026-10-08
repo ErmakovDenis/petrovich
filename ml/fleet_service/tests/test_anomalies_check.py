@@ -2,6 +2,7 @@
 и три исхода ответа ассистента (найдены / не найдены / проверка недоступна) на подставной модели."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -153,17 +154,19 @@ def test_anomaly_kind_tolerates_foreign_id_format():
     assert _kind("3f1c2a9e-uuid-без-разделителей") == ""
 
 
+# Период по умолчанию — последние сутки от текущего времени: число часовых эпизодов перегрева veh-2 (24 или 25)
+# зависит от минуты запуска теста.
 @pytest.mark.parametrize("mode, question, reply", [
     ("not_ready", "Есть ли аномалии у Урал за сутки?",
-     "Урал NEXT А001АА: найдено аномалий — 24 (Перегрев двигателя). Предиктивная проверка недоступна."),
-    ("ready", "Проверь FAW на нарушения", "FAW №1: правила и аналитика нарушений не нашли."),
-    ("not_ready", "Проверь FAW на нарушения", "FAW №1: по правилам нарушений нет, но предиктивная проверка недоступна."),
+     r"Урал NEXT А001АА: найдено аномалий — 2[45] \(Перегрев двигателя\)\. Предиктивная проверка недоступна\."),
+    ("ready", "Проверь FAW на нарушения", r"FAW №1: правила и аналитика нарушений не нашли\."),
+    ("not_ready", "Проверь FAW на нарушения", r"FAW №1: по правилам нарушений нет, но предиктивная проверка недоступна\."),
 ])
 def test_assistant_distinguishes_three_outcomes(make_client, fakes, mode, question, reply):
     fakes.state.analytics = mode
     with make_client() as client:
         r = client.post("/v1/chat", json=ask(question), headers=AUTH)
     assert r.status_code == 200
-    assert r.json()["reply"] == reply
+    assert re.fullmatch(reply, r.json()["reply"]), r.json()["reply"]
     called = [c["function"]["name"] for m in fakes.state.llm_requests[-1]["messages"] for c in m.get("tool_calls") or []]
     assert called == ["list_vehicles", "check_vehicle"]

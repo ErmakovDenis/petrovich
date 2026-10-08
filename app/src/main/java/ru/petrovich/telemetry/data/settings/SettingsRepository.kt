@@ -40,6 +40,8 @@ data class AppSettings(
     val anomaliesViaServer: Boolean = false,
     /** Отладка: считать аномалии и на устройстве, и на стенде, расхождения — в лог (только debug-сборка). */
     val anomalyCompare: Boolean = false,
+    /** Аномалии и решения хранятся на стенде: лента — со стенда, решения — на стенд, проверка — с сохранением. */
+    val anomalyStoreViaServer: Boolean = false,
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
@@ -47,6 +49,9 @@ data class AppSettings(
     val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
 
     val anomaliesOnServer: Boolean get() = !demoMode && anomaliesViaServer && serverUrl.isNotBlank()
+
+    /** Хранилище на стенде — продолжение «Аномалий со стенда»: без него не действует. */
+    val anomalyStoreOnServer: Boolean get() = anomaliesOnServer && anomalyStoreViaServer
 }
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -71,6 +76,7 @@ class SettingsRepository(private val context: Context) {
         val telemetryViaServer = booleanPreferencesKey("telemetry_via_server")
         val anomaliesViaServer = booleanPreferencesKey("anomalies_via_server")
         val anomalyCompare = booleanPreferencesKey("anomaly_compare")
+        val anomalyStoreViaServer = booleanPreferencesKey("anomaly_store_via_server")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -91,6 +97,7 @@ class SettingsRepository(private val context: Context) {
         telemetryViaServer = this[Keys.telemetryViaServer] ?: false,
         anomaliesViaServer = this[Keys.anomaliesViaServer] ?: false,
         anomalyCompare = this[Keys.anomalyCompare] ?: false,
+        anomalyStoreViaServer = this[Keys.anomalyStoreViaServer] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -117,6 +124,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.telemetryViaServer] = new.telemetryViaServer
             p[Keys.anomaliesViaServer] = new.anomaliesViaServer
             p[Keys.anomalyCompare] = new.anomalyCompare
+            p[Keys.anomalyStoreViaServer] = new.anomalyStoreViaServer
         }
     }
 }

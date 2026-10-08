@@ -30,6 +30,30 @@ def _parse_time(value: Any, name: str) -> datetime | None:
     return dt
 
 
+def local_now(ctx: ToolContext) -> datetime:
+    """Текущее местное время пользователя без пояса, с точностью до минуты."""
+    now = datetime.now(timezone.utc) + timedelta(minutes=ctx.utc_offset_minutes)
+    return now.replace(tzinfo=None, second=0, microsecond=0)
+
+
+def period_args(args: dict[str, Any], ctx: ToolContext) -> tuple[datetime, datetime]:
+    """Период из аргументов from/to (местное время); по умолчанию — последние 24 часа."""
+    to = _parse_time(args.get("to"), "to") or local_now(ctx)
+    from_ = _parse_time(args.get("from"), "from") or to - timedelta(hours=24)
+    return from_, to
+
+
+async def find_vehicle_id(service: TelemetryService, ctx: ToolContext, vehicle_id: str) -> str:
+    """id машины пользователя. Модель могла передать название вместо id — принимаем только однозначное совпадение."""
+    vehicles = await service.vehicles(ctx.session, ctx.schema_id)
+    if any(v.id == vehicle_id for v in vehicles):
+        return vehicle_id
+    by_name = [v for v in vehicles if v.name.strip().lower() == vehicle_id.lower()]
+    if len(by_name) != 1:
+        raise VehicleNotFound()
+    return by_name[0].id
+
+
 def _round(x: float) -> float:
     return round(x, 1)
 
@@ -139,17 +163,8 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
         vehicle_id = str(args.get("vehicle_id") or "").strip()
         if not vehicle_id:
             raise ValueError("не указан vehicle_id")
-        vehicles = await service.vehicles(ctx.session, ctx.schema_id)
-        if all(v.id != vehicle_id for v in vehicles):
-            # Модель могла передать название вместо id — принимаем только однозначное совпадение.
-            by_name = [v for v in vehicles if v.name.strip().lower() == vehicle_id.lower()]
-            if len(by_name) != 1:
-                raise VehicleNotFound()
-            vehicle_id = by_name[0].id
-        now = (datetime.now(timezone.utc) + timedelta(minutes=ctx.utc_offset_minutes)).replace(tzinfo=None)
-        to = _parse_time(args.get("to"), "to") or now.replace(second=0, microsecond=0)
-        from_ = _parse_time(args.get("from"), "from") or to - timedelta(hours=24)
-        return vehicle_id, from_, to
+        from_, to = period_args(args, ctx)
+        return await find_vehicle_id(service, ctx, vehicle_id), from_, to
 
     async def get_vehicle_summary(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         vehicle_id, from_, to = await vehicle_and_period(args, ctx)

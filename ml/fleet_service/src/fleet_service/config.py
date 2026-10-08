@@ -90,6 +90,26 @@ class Settings(BaseSettings):
     # Пороги правил аномалий: FS_RULES__<ИМЯ>, по умолчанию — как в приложении (rules/thresholds.py).
     rules: RuleThresholds = Field(default_factory=RuleThresholds)
 
+    # Хранилище аномалий и решений (SQLite через SQLAlchemy, миграции Alembic в store/migrations).
+    # В docker compose файл базы лежит в томе, чтобы данные переживали перезапуск контейнера.
+    db_url: str = "sqlite:///./data/fleet.db"
+    # Применять миграции схемы базы при старте стенда (иначе — вручную: python -m fleet_service.store.migrate).
+    db_auto_migrate: bool = True
+    # Шаг канонической сетки проверок с сохранением, мин. Сетка привязана к началу эпохи (UTC) и не зависит от
+    # окна и момента запуска, поэтому одно событие получает один id. Изменение шага меняет id новых аномалий.
+    scan_bucket_minutes: int = Field(1, ge=1, le=60)
+    # Сколько машин проверяется параллельно в одном запросе /v1/anomalies/scan (в приложении — 2).
+    scan_concurrency: int = Field(2, ge=1, le=16)
+    # Сколько дней хранить аномалии и решения (по времени события).
+    store_retention_days: int = Field(180, ge=1)
+    # Больше записей за один запрос GET /v1/anomalies не отдаётся.
+    anomalies_max_limit: int = Field(500, ge=1)
+    # Перенос решений с устройства: допуск по времени события при сопоставлении, мин; запас окна проверки вокруг
+    # времени перенесённых аномалий, мин; сколько записей принимается за один запрос.
+    import_time_tolerance_minutes: int = Field(10, ge=0)
+    import_scan_margin_minutes: int = Field(60, ge=0)
+    import_max_items: int = Field(1000, ge=1)
+
     @property
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""

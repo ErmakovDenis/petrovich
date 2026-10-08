@@ -10,7 +10,9 @@ from ..agent.prompt import build_messages
 from ..agent.tools import ToolContext
 from ..config import Settings, get_settings
 from ..schemas.chat import ChatRequest, ChatResponse
-from .deps import UserSession, get_agent, get_system_prompt, require_session
+from ..store.repository import AnomalyRepository
+from ..telemetry.service import TelemetryService
+from .deps import UserSession, get_agent, get_store, get_system_prompt, get_telemetry_service, require_session
 from .errors import UNPROCESSABLE
 
 log = logging.getLogger(__name__)
@@ -25,6 +27,8 @@ async def chat(
     settings: Annotated[Settings, Depends(get_settings)],
     agent: Annotated[Agent, Depends(get_agent)],
     system_prompt: Annotated[str, Depends(get_system_prompt)],
+    store: Annotated[AnomalyRepository, Depends(get_store)],
+    telemetry: Annotated[TelemetryService, Depends(get_telemetry_service)],
 ) -> ChatResponse:
     """Ответ ассистента на последнее сообщение пользователя с учётом истории и контекста аномалии."""
     if not settings.llm_configured:
@@ -47,9 +51,16 @@ async def chat(
 
     started = time.monotonic()
     ctx = ToolContext(user.session, user.schema_id, request.utc_offset_minutes)
+    stored = None
+    if request.anomaly_id:
+        # Чат из карточки при хранилище на стенде: приложение передаёт только id, данные и решение — отсюда.
+        visible = {v.id for v in await telemetry.vehicles(user.session, user.schema_id)}
+        record = await store.get(user.schema_id, request.anomaly_id, visible)
+        if record is not None:
+            stored = record.to_api(request.utc_offset_minutes).model_dump(by_alias=True, mode="json")
     try:
         async with asyncio.timeout(settings.chat_timeout_seconds):
-            result = await agent.run(build_messages(system_prompt, trimmed), ctx)
+            result = await agent.run(build_messages(system_prompt, trimmed, stored_anomaly=stored), ctx)
     except TimeoutError:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,

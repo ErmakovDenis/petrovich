@@ -14,6 +14,8 @@ dependencies = [
     "pydantic-settings>=2.4",
     "httpx>=0.27",
     "ijson>=3.3",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +27,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-fleet_service = ["prompts/*.md"]
+fleet_service = ["prompts/*.md", "store/migrations/*.py", "store/migrations/*.mako", "store/migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

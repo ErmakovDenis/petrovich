@@ -1,14 +1,15 @@
 """Проверка машины за период: телеметрия со стенда → правила → предиктивная аналитика и антифрод.
 
-Результат не сохраняется (хранилище — шаг 4). Сбой или неготовность аналитики не ломает проверку по правилам:
-статус каждого сервиса аналитики возвращается вместе с аномалиями.
+`POST /v1/anomalies/check` результат не сохраняет; проверку с сохранением (store/scan.py) делает тот же код на
+канонической сетке. Сбой или неготовность аналитики не ломает проверку по правилам: статус каждого сервиса аналитики
+возвращается вместе с аномалиями.
 """
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..analytics.client import AnalyticsClient
 from ..config import Settings
@@ -24,6 +25,8 @@ log = logging.getLogger(__name__)
 class CheckResult:
     response: CheckResponse
     telemetry: BuildResult
+    # Конец эпизода по id аномалии правил (rules.baseline.Episode); у аналитики эпизода нет — конец = начало.
+    ends: dict[str, datetime]
 
 
 class AnomalyCheckService:
@@ -33,12 +36,17 @@ class AnomalyCheckService:
         self._analytics = analytics
 
     async def check(
-        self, session: str, schema_id: str, vehicle_id: str, from_: datetime, to: datetime, utc_offset_minutes: int
+        self, session: str, schema_id: str, vehicle_id: str, from_: datetime, to: datetime, utc_offset_minutes: int,
+        bucket: timedelta | None = None,
     ) -> CheckResult:
+        """[bucket] — шаг интервалов; по умолчанию — как в приложении (зависит от длины периода)."""
         started = time.monotonic()
-        loaded = await self._telemetry.telemetry(session, schema_id, vehicle_id, from_, to, utc_offset_minutes)
+        loaded = await self._telemetry.telemetry(
+            session, schema_id, vehicle_id, from_, to, utc_offset_minutes, bucket
+        )
         telemetry = loaded.telemetry
-        rules = baseline.detect(telemetry, self._settings.rules)
+        episodes = baseline.detect_episodes(telemetry, self._settings.rules)
+        rules = [e.anomaly for e in episodes]
         payload = self._analytics.payload(telemetry)
         predictive, antifraud = await asyncio.gather(
             self._analytics.run("predictive", payload), self._analytics.run("antifraud", payload)
@@ -61,4 +69,4 @@ class AnomalyCheckService:
             schema_id, vehicle_id, from_, to, len(rules), predictive.status, antifraud.status, len(merged),
             time.monotonic() - started,
         )
-        return CheckResult(response, loaded)
+        return CheckResult(response, loaded, {e.anomaly.id: e.end for e in episodes})

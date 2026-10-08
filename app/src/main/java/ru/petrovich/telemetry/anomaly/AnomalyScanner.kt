@@ -14,7 +14,9 @@ data class ScanResult(val checkedVehicles: Int, val newAnomalies: List<Anomaly>,
 
 /**
  * Проверяет все машины ([checker]: детектор на устройстве или стенд — по переключателю) и сохраняет новые аномалии.
- * Хранилище, дедупликация по id и уведомления — на устройстве при любом источнике.
+ * Уведомления — на устройстве при любом источнике. Без хранилища на стенде новые — те, которых нет в [store]
+ * (дедупликация по id). При хранилище на стенде ([sync]) проверка сохраняет результат на стенде, лента после неё
+ * берётся со стенда, а новые — появившиеся на стенде после прошлого обновления ([AnomalySync.refresh]).
  */
 class AnomalyScanner(
     private val repository: TelemetryRepository,
@@ -22,8 +24,12 @@ class AnomalyScanner(
     private val store: AnomalyStore,
     private val notifier: AnomalyNotifier,
     private val settings: SettingsRepository,
+    private val sync: AnomalySync? = null,
 ) {
     suspend fun scan(lookbackHours: Long = 24, notify: Boolean = true): ScanResult = coroutineScope {
+        val onStand = sync?.active() == true
+        // Хранилище на стенде выключено: refresh только убирает его записи из кэша (id устройства другие).
+        if (!onStand) sync?.refresh()
         val to = LocalDateTime.now()
         val from = to.minusHours(lookbackHours)
         val vehicles = repository.vehicles()
@@ -40,7 +46,12 @@ class AnomalyScanner(
             }
         }.awaitAll().flatten()
 
-        val fresh = store.addAll(found)
+        val fresh = if (onStand) {
+            // Не вышло — кэш как был, новые придут со следующим обновлением (их время обнаружения позже отметки).
+            runCatchingCancellable { sync?.refresh() }.getOrNull().orEmpty()
+        } else {
+            store.addAll(found)
+        }
         // Если ни одна машина не ответила — проверкой это считать нельзя, иначе сводка скажет «всё в порядке».
         if (vehicles.isEmpty() || errors.size < vehicles.size) {
             settings.update { it.copy(lastScanAt = System.currentTimeMillis()) }

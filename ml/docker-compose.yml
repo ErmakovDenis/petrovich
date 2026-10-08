@@ -1,4 +1,4 @@
-# Стенд «Петрович Телеметрия»: fleet_service (ассистент, далее — телеметрия и аномалии) и predictive_antifraud.
+# Стенд «Петрович Телеметрия»: fleet_service (ассистент, телеметрия, аномалии и их хранилище) и predictive_antifraud.
 #   cd ml && docker compose up -d --build
 # Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
 # Ключ X-API-Key аналитики: PA_API_KEY и FS_PREDICTIVE_API_KEY задаются одним значением.
@@ -11,6 +11,9 @@ services:
         required: false
     ports:
       - "${FLEET_SERVICE_PORT:-8080}:8000"
+    # Хранилище аномалий и решений (FS_DB_URL, SQLite-файл) — в томе: переживает перезапуск и пересборку контейнера.
+    volumes:
+      - fleet_data:/srv/data
     # Стенд вызывает predictive_antifraud (FS_PREDICTIVE_URL, по умолчанию http://predictive_antifraud:8000) при
     # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
     # останавливать чат и проверку по правилам.
@@ -40,3 +43,6 @@ services:
       timeout: 5s
       retries: 12
     restart: unless-stopped
+
+volumes:
+  fleet_data:

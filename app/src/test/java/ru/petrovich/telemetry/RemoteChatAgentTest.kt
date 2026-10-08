@@ -26,6 +26,7 @@ import ru.petrovich.telemetry.chat.RemoteChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.StandException
+import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandSession
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.AppSettings
@@ -104,6 +105,28 @@ class RemoteChatAgentTest {
             Json.parseToJsonElement(fixture.readText()),
             ApiFactory.json.encodeToJsonElement(ChatRequest.serializer(), request),
         )
+    }
+
+    /** Хранилище на стенде: из карточки уходит только id аномалии стенда (testdata/contract/chat-request-anomaly-id.json). */
+    @Test
+    fun withStoreOnStandOnlyAnomalyIdIsSent() = runTest {
+        val fixture = File(TripTablesGolden.repoRoot(), "testdata/contract/chat-request-anomaly-id.json").readText()
+        val stored = anomaly.copy(id = "rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z")
+        val agent = RemoteChatAgent(
+            StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") }, OkHttpClient()),
+            utcOffsetMinutes = { 300 },
+            anomalyIdOnly = { true },
+        )
+        server.enqueue(reply(200, """{"reply":"Решили: ложная тревога."}"""))
+        server.enqueue(reply(200, """{"reply":"Нет данных."}"""))
+
+        agent.reply(listOf(ChatMessage(author = Author.USER, text = "Что решили по этой аномалии?")), stored)
+        assertEquals(Json.parseToJsonElement(fixture), Json.parseToJsonElement(server.takeRequest().body.readUtf8()))
+        // Аномалия с id устройства (ещё не перенесена на стенд) уходит целиком.
+        agent.reply(history, anomaly)
+        val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals(anomaly.id, body["anomaly"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+        assertFalse(body.containsKey("anomalyId"))
     }
 
     @Test

@@ -20,6 +20,7 @@ import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.data.api.ApiFactory
 import kotlinx.serialization.KSerializer
 import java.io.IOException
+import java.net.URLEncoder
 import java.time.DateTimeException
 import java.time.Duration
 import java.time.Instant
@@ -98,11 +99,17 @@ class StandClient(
     suspend fun post(path: String, json: String, readTimeoutSeconds: Long? = null): String =
         call(url(path, emptyMap()), json, readTimeoutSeconds)
 
-    private suspend fun url(path: String, query: Map<String, String>): HttpUrl {
+    /** POST JSON на путь из отдельных сегментов: сегмент кодируется целиком (id аномалии с «|» и «:»). */
+    suspend fun post(segments: List<String>, json: String, readTimeoutSeconds: Long? = null): String =
+        call(url(segments, emptyMap()), json, readTimeoutSeconds)
+
+    private suspend fun url(path: String, query: Map<String, String>): HttpUrl = url(path.trim('/').split('/'), query)
+
+    private suspend fun url(segments: List<String>, query: Map<String, String>): HttpUrl {
         val base = serverUrl().trim().trimEnd('/').toHttpUrlOrNull()
             ?: throw StandException("Неверный адрес стенда в настройках")
         return base.newBuilder()
-            .addPathSegments(path.trim('/'))
+            .apply { segments.forEach { addPathSegment(it) } }
             .apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }
             .build()
     }
@@ -128,6 +135,8 @@ class StandClient(
             .url(url)
             .header("Authorization", "Bearer ${session.token}")
             .header("X-Schema-Id", session.schemaId)
+            // Логин — для записи «кто принял решение» в хранилище стенда; заголовок только ASCII, поэтому URL-кодировка.
+            .apply { if (session.userName.isNotBlank()) header("X-User-Name", URLEncoder.encode(session.userName, "UTF-8").replace("+", "%20")) }
             .apply { if (json != null) post(json.toRequestBody(JSON)) }
             .build()
         return try {

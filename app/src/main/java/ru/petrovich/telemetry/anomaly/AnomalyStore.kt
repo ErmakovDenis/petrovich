@@ -12,9 +12,13 @@ import kotlinx.serialization.builtins.ListSerializer
 import ru.petrovich.telemetry.data.api.ApiFactory
 import java.io.File
 
-/** Хранит найденные аномалии в JSON-файле. */
-class AnomalyStore(context: Context) {
-    private val file = File(context.filesDir, "anomalies.json")
+/**
+ * Хранит найденные аномалии в JSON-файле. При хранилище на стенде ([AnomalySync]) — локальный кэш ленты со стенда
+ * для показа без сети; отметка «просмотрено» ([Anomaly.acknowledged]) остаётся локальной.
+ */
+class AnomalyStore(private val file: File) {
+    constructor(context: Context) : this(File(context.filesDir, "anomalies.json"))
+
     private val serializer = ListSerializer(Anomaly.serializer())
     private val mutex = Mutex()
     private val maxItems = 500
@@ -46,6 +50,30 @@ class AnomalyStore(context: Context) {
             save((fresh + current).sortedByDescending { it.eventTime }.take(maxItems))
         }
         fresh
+    }
+
+    /** Лента со стенда целиком вместо кэша; отметки «просмотрено» сохраняются по id. */
+    suspend fun replaceAll(items: List<Anomaly>) = mutex.withLock {
+        val seen = _anomalies.value.filter { it.acknowledged }.mapTo(HashSet()) { it.id }
+        save(items.map { it.copy(acknowledged = it.acknowledged || it.id in seen) }
+            .sortedByDescending { it.eventTime }.take(maxItems))
+    }
+
+    /**
+     * Обновляет аномалию (например, после решения на стенде) или добавляет её. [acknowledged] — новая отметка
+     * «просмотрено»; null — как была.
+     */
+    suspend fun upsert(anomaly: Anomaly, acknowledged: Boolean? = null) = mutex.withLock {
+        val current = _anomalies.value
+        val old = current.firstOrNull { it.id == anomaly.id }
+        val updated = anomaly.copy(acknowledged = acknowledged ?: (anomaly.acknowledged || old?.acknowledged == true))
+        save(if (old == null) (listOf(updated) + current).sortedByDescending { it.eventTime }.take(maxItems)
+             else current.map { if (it.id == anomaly.id) updated else it })
+    }
+
+    /** Убирает записи по id (локальная история, перенесённая на стенд). */
+    suspend fun removeAll(ids: Set<String>) = mutex.withLock {
+        save(_anomalies.value.filterNot { it.id in ids })
     }
 
     suspend fun acknowledge(id: String) = mutex.withLock {

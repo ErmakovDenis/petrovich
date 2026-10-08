@@ -15,8 +15,8 @@ import java.time.format.DateTimeFormatter
 
 class AuthException(message: String) : Exception(message)
 
-/** Доступ к стенду от имени пользователя: токен сессии AutoGRAPH и выбранная схема (логин и пароль не передаются). */
-data class StandSession(val token: String, val schemaId: String)
+/** Доступ к стенду: токен сессии AutoGRAPH, схема и логин (для записи «кто принял решение»; пароль не передаётся). */
+data class StandSession(val token: String, val schemaId: String, val userName: String = "")
 
 /** Реальные данные из AutoGRAPH API. */
 class AutoGraphTelemetryRepository(
@@ -79,7 +79,7 @@ class AutoGraphTelemetryRepository(
     suspend fun standSession(rejectedToken: String? = null): StandSession {
         if (rejectedToken != null) mutex.withLock { if (token == rejectedToken) token = null }
         val s = session()
-        return StandSession(s, schemaId(s))
+        return StandSession(s, schemaId(s), settings.current().userName)
     }
 
     /** Повторяет запрос один раз после переавторизации, если сессия истекла. */

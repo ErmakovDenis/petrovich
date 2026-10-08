@@ -6,19 +6,24 @@ OpenRouter `POST /openrouter/api/v1/chat/completions` принимает тол�
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
-- `EnumSchemas?session=` — `valid-token` и `other-token` → схема `schema-1`; `down` → 500; остальное → 401.
-- `EnumDevices` — `valid-token`: veh-1, veh-2 и veh-3 (Allowed=false); `other-token`: только veh-1.
+- `EnumSchemas?session=` — `valid-token` и `other-token` → схема `schema-1`, `foreign-token` → `schema-2`;
+  `down` → 500; остальное → 401.
+- `EnumDevices` — `valid-token`: veh-1, veh-2 и veh-3 (Allowed=false); `other-token`: только veh-1;
+  `foreign-token` (другая схема): veh-2 — та же машина в чужой схеме.
 - `EnumParameters`, `GetTripTables` — детерминированные данные (точка в минуту): у veh-1 топливо 250 л, у veh-2 —
   180 л и перегрев с 30-й по 39-ю минуту каждого часа; обороты всегда 0, давление масла не приходит вовсе.
 
 predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1/antifraud/check` (ключ `pa-key`):
 режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down.
 
-С tools модель ведёт сценарий: вопрос об аномалиях/нарушениях/проверке → check_vehicle, иначе get_vehicle_summary. Ответы сжимаются gzip. Число обращений — `app.state.calls`,
-  параметры запросов GetTripTables — `app.state.trip_requests`.
+С tools модель ведёт сценарий: вопрос об аномалиях/нарушениях/проверке → check_vehicle, иначе get_vehicle_summary;
+«какие аномалии [дд.мм]» → list_anomalies; «что решили» → get_anomaly по id аномалии из контекста карточки.
+Ответы сжимаются gzip. Число обращений — `app.state.calls`, параметры запросов GetTripTables —
+`app.state.trip_requests`; машины из `app.state.trip_tables_down` получают на GetTripTables 500.
 """
 
 import json
+import re
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,7 +35,10 @@ from fastapi.responses import JSONResponse, Response
 FAKE_LLM_KEY = "test-key"
 VALID_TOKEN = "valid-token"
 OTHER_TOKEN = "other-token"
+FOREIGN_TOKEN = "foreign-token"
 SCHEMA_ID = "schema-1"
+FOREIGN_SCHEMA_ID = "schema-2"
+SCHEMAS = {VALID_TOKEN: SCHEMA_ID, OTHER_TOKEN: SCHEMA_ID, FOREIGN_TOKEN: FOREIGN_SCHEMA_ID}
 NO_DATA_REPLY = "Данных о парке у меня пока нет: инструменты для телеметрии и аномалий ещё не подключены."
 
 FUEL = {"veh-1": 250.0, "veh-2": 180.0}
@@ -49,6 +57,9 @@ DEVICES = {
     ],
     OTHER_TOKEN: [
         {"ID": "veh-1", "ParentID": "g-1", "Name": "FAW №1", "Serial": 101, "Allowed": True},
+    ],
+    FOREIGN_TOKEN: [
+        {"ID": "veh-2", "Name": "Урал NEXT А001АА", "Serial": 102},
     ],
 }
 
@@ -101,10 +112,32 @@ def _scripted_reply(messages: list[dict]) -> dict:
     about_anomalies = any(w in question for w in ("аномал", "наруш", "провер"))
     results = [json.loads(m["content"]) for m in messages if m.get("role") == "tool"]
     if not results:
+        if "что решили" in question:
+            context = " ".join(m["content"] for m in messages if m.get("role") == "system")
+            found = re.search(r'"id": "([^"]+)"', context)
+            return _call("call-1", "get_anomaly", {"id": found.group(1) if found else "нет-в-контексте"})
+        if "какие аномалии" in question:
+            # «… 16.09» — за эти сутки 2026 года, иначе период по умолчанию.
+            day = re.search(r"(\d{2})\.(\d{2})", question)
+            period = {"from": f"2026-{day[2]}-{day[1]}T00:00", "to": f"2026-{day[2]}-{day[1]}T23:59"} if day else {}
+            return _call("call-1", "list_anomalies", period)
         return _call("call-1", "list_vehicles", {})
     last = results[-1]
     if "error" in last:
         return {"role": "assistant", "content": f"Данных об этом у меня нет: {last['error']}"}
+    if "decisions" in last:
+        a = last["anomaly"]
+        text = f"{a['vehicle']['name']}, {a['title']}: {a['status']}"
+        if a["falseAlarmReason"]:
+            text += f" ({a['falseAlarmReason']})"
+        if a["resolvedBy"]:
+            text += f", решил {a['resolvedBy']}"
+        return {"role": "assistant", "content": text + "."}
+    if "lastScanAt" in last:
+        if last.get("message") and not last["total"]:
+            return {"role": "assistant", "content": last["message"]}
+        titles = ", ".join(sorted({a["title"] for a in last["anomalies"]}))
+        return {"role": "assistant", "content": f"В хранилище аномалий за период: {last['total']} ({titles})."}
     if "vehicles" in last:
         if not last["vehicles"]:
             return {"role": "assistant", "content": "Машин в схеме нет."}
@@ -148,6 +181,7 @@ def create_fakes() -> FastAPI:
     app.state.raw_trip_tables = {}
     app.state.analytics = "not_ready"
     app.state.analytics_requests = []
+    app.state.trip_tables_down = set()
 
     @app.post("/predictive/v1/{service}/{action}")
     async def analytics(service: str, action: str, request: Request) -> JSONResponse:
@@ -200,14 +234,14 @@ def create_fakes() -> FastAPI:
     @app.get("/autograph/ServiceJSON/EnumSchemas")
     async def enum_schemas(session: str = "") -> JSONResponse:
         app.state.calls["EnumSchemas"] += 1
-        return check(session) or JSONResponse([{"ID": SCHEMA_ID, "Name": "Тестовая схема"}])
+        return check(session) or JSONResponse([{"ID": SCHEMAS[session], "Name": "Тестовая схема"}])
 
     @app.get("/autograph/ServiceJSON/EnumDevices")
     async def enum_devices(session: str = "", schemaID: str = "") -> JSONResponse:
         app.state.calls["EnumDevices"] += 1
         return check(session) or JSONResponse({
             "Groups": [{"ID": "g-1", "Name": "Колонна 1"}],
-            "Items": DEVICES[session] if schemaID == SCHEMA_ID else [],
+            "Items": DEVICES[session] if schemaID == SCHEMAS[session] else [],
         })
 
     @app.get("/autograph/ServiceJSON/EnumParameters")
@@ -224,6 +258,8 @@ def create_fakes() -> FastAPI:
         app.state.trip_requests.append({**request.query_params, "urlLength": len(str(request.url))})
         if (error := check(session)) is not None:
             return error
+        if IDs in app.state.trip_tables_down:
+            return JSONResponse({"Message": "Internal error"}, status_code=500)
         raw = app.state.raw_trip_tables.get(IDs)
         if raw is not None:
             return Response(raw[(app.state.calls["GetTripTables"] - 1) % len(raw)], media_type="application/json")

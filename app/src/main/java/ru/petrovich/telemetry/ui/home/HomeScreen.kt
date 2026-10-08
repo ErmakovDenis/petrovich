@@ -127,6 +127,8 @@ fun HomeScreen(
     }
     // Первая проверка запускается сама: пока её нет, сводке нечего сказать.
     LaunchedEffect(scanned) { if (!scanned) scan() }
+    // Хранилище на стенде: свежая лента для сводки; без сети — последняя загруженная (ошибку покажет лента).
+    LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.anomalySync.refresh() } }
     val layout = s.layout
     fun saveLayout(new: List<WidgetSlot>) {
         scope.launch { ServiceLocator.settings.update { it.copy(widgetLayout = serializeLayout(new)) } }

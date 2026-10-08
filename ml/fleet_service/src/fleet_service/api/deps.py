@@ -1,11 +1,14 @@
 from dataclasses import dataclass
 from typing import Annotated
+from urllib.parse import unquote
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from ..agent.loop import Agent
 from ..autograph.session import AutoGraphSessionChecker, AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 from ..rules.check import AnomalyCheckService
+from ..store.repository import AnomalyRepository
+from ..store.scan import ScanService
 from ..telemetry.service import TelemetryService
 
 
@@ -35,6 +38,21 @@ def get_check_service(request: Request) -> AnomalyCheckService:
 
 def get_system_prompt(request: Request) -> str:
     return request.app.state.system_prompt
+
+
+def get_store(request: Request) -> AnomalyRepository:
+    return request.app.state.store
+
+
+def get_scan_service(request: Request) -> ScanService:
+    return request.app.state.scan_service
+
+
+def user_name(x_user_name: Annotated[str | None, Header()] = None) -> str | None:
+    """Логин AutoGRAPH из `X-User-Name` (UTF-8 в URL-кодировке) — для записи «кто принял решение».
+    Стенд его не проверяет: доступ даёт только токен сессии. Не передан — None."""
+    name = unquote(x_user_name or "").strip()[:200]
+    return name or None
 
 
 def _unauthorized(detail: str) -> HTTPException:

@@ -5,6 +5,9 @@
 RuleThresholds (FS_RULES__*), по умолчанию равны зашитым в Kotlin. Совпадение по id, типу, важности и времени
 события проверяют эталоны `testdata/golden/anomalies` (tests/test_rules_golden.py).
 
+`detect_episodes` дополнительно отдаёт конец эпизода каждой аномалии (в приложении его нет, на результат `detect`
+он не влияет): по нему хранилище стенда узнаёт продолжение уже сохранённого события, обрезанное началом окна.
+
 Особенности данных: при выключенном зажигании AutoGRAPH держит последнее значение оборотов и шлёт нули по CAN,
 поэтому правила двигателя срабатывают только при включённом зажигании; 0 у давления масла и тормозных контуров,
 напряжение ниже voltage_min_value — «нет данных».
@@ -12,6 +15,7 @@ RuleThresholds (FS_RULES__*), по умолчанию равны зашитым 
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
@@ -48,12 +52,23 @@ class _Report(Enum):
     END = "end"
 
 
+@dataclass(frozen=True)
+class Episode:
+    """Аномалия и конец её эпизода: последний интервал, где выполнялось условие правила (для drop — время события).
+    Эпизод, дошедший до конца периода, заканчивается последним интервалом периода."""
+
+    anomaly: Anomaly
+    end: datetime
+
+
 class _Ctx:
     def __init__(self, t: VehicleTelemetry, times: list[datetime]):
         self.t = t
         self.times = times
         self.step = times[1] - times[0]
         self.now = int(time.time() * 1000)
+        # Конец эпизода по id аномалии (id уникален в пределах одной проверки).
+        self.ends: dict[str, datetime] = {}
 
     def episodes(
         self,
@@ -69,17 +84,20 @@ class _Ctx:
         result: list[Anomaly] = []
         values = c.values
         run_start = -1
-        reported = False
+        reported: Anomaly | None = None
 
         def close(end_exclusive: int) -> None:
             nonlocal run_start, reported
-            if run_start >= 0 and not reported and report is _Report.END:
+            if run_start >= 0 and reported is None and report is _Report.END:
                 # Длительность — от начала первого до начала последнего интервала серии: одиночный интервал = 0.
                 duration = self.step * (end_exclusive - 1 - run_start)
                 if duration >= min_duration:
-                    result.append(build(run_start, values[run_start], duration))
+                    reported = build(run_start, values[run_start], duration)
+                    result.append(reported)
+            if run_start >= 0 and reported is not None:
+                self.ends[reported.id] = self.times[end_exclusive - 1]
             run_start = -1
-            reported = False
+            reported = None
 
         for i, v in enumerate(values):
             if v is None or not condition(i, v):
@@ -88,9 +106,9 @@ class _Ctx:
             if run_start < 0:
                 run_start = i
             duration = self.step * (i - run_start + 1)
-            if report is _Report.START and not reported and duration >= min_duration:
-                result.append(build(run_start, values[run_start], duration))
-                reported = True
+            if report is _Report.START and reported is None and duration >= min_duration:
+                reported = build(run_start, values[run_start], duration)
+                result.append(reported)
         close(len(values))
         return result
 
@@ -116,6 +134,11 @@ class _Ctx:
 
 
 def detect(telemetry: VehicleTelemetry, th: RuleThresholds | None = None) -> list[Anomaly]:
+    return [e.anomaly for e in detect_episodes(telemetry, th)]
+
+
+def detect_episodes(telemetry: VehicleTelemetry, th: RuleThresholds | None = None) -> list[Episode]:
+    """Те же аномалии, что detect(), в том же порядке, с концом эпизода каждой."""
     th = th or RuleThresholds()
     columns = [c for table in telemetry.tables.values() for c in table.columns]
     first = next(iter(telemetry.tables.values()), None)
@@ -240,7 +263,7 @@ def detect(telemetry: VehicleTelemetry, th: RuleThresholds | None = None) -> lis
                     f"{th.brake_min_minutes} минут (обычно 600–1050 кПа)."),
                 min_duration=timedelta(minutes=th.brake_min_minutes),
             )
-    return out
+    return [Episode(a, ctx.ends.get(a.id, times[-1])) for a in out]
 
 
 def _fuel_drop(ctx: _Ctx, c: ParameterColumn, th: RuleThresholds) -> list[Anomaly]:
@@ -267,4 +290,5 @@ def _fuel_drop(ctx: _Ctx, c: ParameterColumn, th: RuleThresholds) -> list[Anomal
                 f"Уровень упал с {fmt(peak)} до {fmt(v)} {unit} (−{fmt(peak - v)}) за ≤{th.fuel_drop_window_minutes} "
                 "мин. Возможен слив."))
             cooldown_until = times[i] + timedelta(minutes=th.fuel_drop_cooldown_minutes)
+            ctx.ends[result[-1].id] = times[i]
     return result

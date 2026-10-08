@@ -59,6 +59,14 @@ def tool_call(call_id: str, name: str, arguments: str) -> Message:
             "tool_calls": [{"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}]}
 
 
+@pytest.fixture(autouse=True)
+def store_db(tmp_path, monkeypatch):
+    """Своя база хранилища на каждый тест (Settings читает FS_DB_URL из окружения)."""
+    path = tmp_path / "fleet.db"
+    monkeypatch.setenv("FS_DB_URL", f"sqlite:///{path}")
+    return path
+
+
 @pytest.fixture
 def fakes():
     return create_fakes()

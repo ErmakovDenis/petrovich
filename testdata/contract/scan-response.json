@@ -1,0 +1,62 @@
+{
+  "from": "2026-09-15T18:00:00",
+  "to": "2026-09-16T18:00:00",
+  "results": [
+    {
+      "vehicleId": "42",
+      "ok": true,
+      "error": null,
+      "anomalies": [
+        {
+          "id": "rule|overheat|42|TemperatureCOOL|2026-09-16T06:30Z",
+          "vehicleId": "42",
+          "vehicleName": "Урал NEXT А001АА",
+          "category": "ENGINE",
+          "parameterName": "TemperatureCOOL",
+          "parameterCaption": "Т ОЖ",
+          "eventTime": "2026-09-16T11:30",
+          "detectedAt": 1789003800000,
+          "severity": "CRITICAL",
+          "title": "Перегрев двигателя",
+          "description": "Температура охлаждающей жидкости 108 °C (норма до 100 °C).",
+          "value": 108.0,
+          "score": null,
+          "source": "Базовые правила",
+          "resolution": null,
+          "falseAlarmReason": null,
+          "resolvedBy": null,
+          "resolvedAt": null,
+          "episodeEnd": "2026-09-16T11:39",
+          "lastDetectedAt": 1789003800000
+        },
+        {
+          "id": "rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z",
+          "vehicleId": "42",
+          "vehicleName": "Урал NEXT А001АА",
+          "category": "ENGINE",
+          "parameterName": "TemperatureCOOL",
+          "parameterCaption": "Т ОЖ",
+          "eventTime": "2026-09-16T10:30",
+          "detectedAt": 1789000200000,
+          "severity": "CRITICAL",
+          "title": "Перегрев двигателя",
+          "description": "Температура охлаждающей жидкости 108 °C (норма до 100 °C).",
+          "value": 108.0,
+          "score": null,
+          "source": "Базовые правила",
+          "resolution": "FALSE_ALARM",
+          "falseAlarmReason": "Ошибка датчика",
+          "resolvedBy": "Петров",
+          "resolvedAt": 1789003800000,
+          "episodeEnd": "2026-09-16T10:39",
+          "lastDetectedAt": 1789003500000
+        }
+      ],
+      "newIds": [
+        "rule|overheat|42|TemperatureCOOL|2026-09-16T06:30Z"
+      ],
+      "modelsReady": false
+    }
+  ],
+  "lastScanAt": 1789003800000
+}

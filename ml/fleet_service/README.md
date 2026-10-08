@@ -3,14 +3,18 @@
 FastAPI-сервис для «Петрович Телеметрия» по плану `ml/docs/assistant-server-plan.md`. Устроен так же, как
 `ml/predictive_antifraud`: `src/`, настройки через `pydantic-settings` (префикс `FS_`), `tests/`, `Dockerfile`.
 
-Сейчас (шаг 3) — ассистент, телеметрия и проверка аномалий:
+Сейчас (шаг 4) — ассистент, телеметрия, проверка аномалий и их хранилище:
 - стенд сам загружает телеметрию из AutoGRAPH от имени пользователя и сворачивает её в интервалы тем же
   алгоритмом, что `TripTablesMapper` приложения; приложение читает её через `GET /v1/vehicles` и `GET /v1/telemetry`
   (переключатель «Данные через стенд»);
 - `POST /v1/anomalies/check` проверяет машину за период: правила (перенос `BaselineAnomalyDetector`) и
   `predictive_antifraud`; приложение вызывает его вместо детектора на устройстве (переключатель «Аномалии со стенда»);
-- ассистент отвечает моделью через OpenRouter и получает числа из tools `list_vehicles`, `get_vehicle_summary` и
-  `check_vehicle`. Хранилища аномалий и решений на стенде пока нет (шаг 4).
+- хранилище аномалий и решений (SQLite, `FS_DB_URL`): стенд — владелец id, проверка с сохранением
+  `POST /v1/anomalies/scan` идёт на канонической сетке, лента — `GET /v1/anomalies`, решения —
+  `POST /v1/anomalies/{id}/resolve`, разовый перенос истории с устройства — `POST /v1/anomalies/import`
+  (переключатель «Хранить аномалии на стенде»);
+- ассистент отвечает моделью через OpenRouter и получает числа из tools `list_vehicles`, `get_vehicle_summary`,
+  `check_vehicle`, `list_anomalies` и `get_anomaly`. Фоновой проверки на стенде пока нет (шаг 5).
 
 ## Запуск
 
@@ -29,7 +33,12 @@ cd ml && docker compose up -d --build      # fleet_service → :8080, predictive
 ```
 
 Порты на хосте меняются переменными `FLEET_SERVICE_PORT` и `PREDICTIVE_PORT`. Настройки сервисов читаются из
-`ml/fleet_service/.env` и `ml/predictive_antifraud/.env` (если файлов нет — значения по умолчанию).
+`ml/fleet_service/.env` и `ml/predictive_antifraud/.env` (если файлов нет — значения по умолчанию). База хранилища в
+compose — файл `/srv/data/fleet.db` в томе `fleet_data`: переживает перезапуск и пересборку контейнера
+(`docker compose down -v` её удаляет). Миграции схемы применяются при старте (`FS_DB_AUTO_MIGRATE`) или вручную:
+`python -m fleet_service.store.migrate` (`downgrade <версия>` — откат). Резервная копия — копия файла базы при
+остановленном стенде (или `sqlite3 fleet.db ".backup copy.db"`); учётных данных в базе нет, только логины тех, кто
+принимал решения.
 
 ## Сквозной сценарий
 
@@ -43,7 +52,10 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 недействительным токеном, список машин, телеметрию за сутки, 404 для чужой машины, ответ `/v1/chat` с числом из
 `get_vehicle_summary`, проверку машины (правила нашли перегрев, аналитика `not_ready`), ответы ассистента об
 аномалиях (найдены / по правилам нет, но предиктивная проверка недоступна), проверку при остановленном
-`predictive_antifraud`, вызовы tools в логе и отсутствие токенов и ключа в логах. Реальные ключи не нужны.
+`predictive_antifraud`, проверку с сохранением и повторную другим окном (те же id, новых нет), ленту без
+дубликатов, решение с `X-User-Name`, вопросы ассистенту о ленте и о решении (чат из карточки по `anomalyId`), перенос
+решений с устройства, перезапуск `fleet_service` (лента и решение на месте), вызовы tools в логе и отсутствие
+токенов и ключа в логах. Реальные ключи не нужны.
 
 ## Эндпоинты
 
@@ -54,8 +66,14 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 | GET | `/v1/vehicles` | машины схемы, доступные пользователю (`EnumDevices`, без `Allowed=false`), по имени |
 | GET | `/v1/telemetry?vehicleId&from&to&utcOffsetMinutes` | `VehicleTelemetry` машины за период |
 | POST | `/v1/anomalies/check` | аномалии машины за период: правила и аналитика, без сохранения |
+| POST | `/v1/anomalies/scan` | проверка с сохранением на канонической сетке |
+| GET | `/v1/anomalies?utcOffsetMinutes&from&to&vehicleId&severity&status&limit&offset` | сохранённые аномалии машин пользователя |
+| POST | `/v1/anomalies/{id}/resolve` | решение по аномалии (или возврат в «ждут решения») |
+| POST | `/v1/anomalies/import` | разовый перенос локальной истории и решений с устройства |
 
-Все `/v1/*` требуют заголовков `Authorization: Bearer <токен сессии AutoGRAPH>` и `X-Schema-Id`.
+Все `/v1/*` требуют заголовков `Authorization: Bearer <токен сессии AutoGRAPH>` и `X-Schema-Id`. Приложение
+передаёт ещё `X-User-Name` — логин AutoGRAPH (UTF-8 в URL-кодировке, без пароля): стенд записывает его как автора
+решения и не проверяет, доступ даёт только токен.
 
 ### `POST /v1/anomalies/check`
 
@@ -86,6 +104,60 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 типу, важности, времени события и значению держат эталоны `testdata/golden/anomalies/` (пишет `AnomalyGoldenTest`,
 сверяет `tests/test_rules_golden.py`): демо-машины, синтетика на каждое правило и границы длительностей, телеметрия
 из эталонов шага 2.
+
+### Хранилище аномалий и решений
+
+`store/` — SQLite через SQLAlchemy (`FS_DB_URL`), схема — миграции Alembic в `store/migrations/versions/`
+(`store/db.py` описывает те же таблицы, `tests/test_store.py` сверяет). Таблицы: `anomalies` (аномалии по схемам с
+текущим решением: `CONFIRMED` / `FALSE_ALARM`, причина, кто и когда), `decisions` (история решений, в том числе
+перенесённых с устройства), `scan_marks` (последняя успешная проверка с сохранением по схеме). Время событий
+хранится в UTC и переводится в местное время по `utcOffsetMinutes` запроса. События старше
+`FS_STORE_RETENTION_DAYS` удаляются вместе с решениями (не чаще раза в час, после проверок).
+
+**Стенд — владелец id**: `<источник>|<тип>|<машина>|<параметр>|<начало события в UTC>Z`, например
+`rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z`. Тип — вторая часть, как в приложении (`Anomaly.kind`); «Z» в
+конце отличает id стенда от id устройства. Одно событие — один id при любых окнах и моментах проверки:
+- **каноническая сетка**: проверка с сохранением всегда идёт с шагом `FS_SCAN_BUCKET_MINUTES` (1 мин), начало и
+  конец периода выровнены вниз по этому шагу от начала эпохи в UTC — граница интервалов не зависит от длины окна,
+  момента запуска и пояса пользователя (в приложении сетка зависела от длины окна и чётности минуты,
+  `ml/ANALYTICS.md` §7);
+- **слияние эпизодов**: правило сообщает и конец эпизода (`baseline.detect_episodes`); эпизод, обрезанный началом
+  окна, или продолжение сохранённого (без интервала-разрыва между ними) сливаются с записью того же типа, машины,
+  параметра и источника. Падение уровня (`drop`) в пределах паузы правила `FS_RULES__FUEL_DROP_COOLDOWN_MINUTES` —
+  то же событие. При слиянии id не меняется, начало сдвигается раньше, конец — позже, важность только растёт.
+
+Видимость: только схема из `X-Schema-Id` и только машины из `EnumDevices` пользователя — чужие аномалии не видны в
+ленте, в tools и в контексте чата, решение по ним — 404. Решение общее для всех пользователей схемы (действует
+последнее), история сохраняется.
+
+`POST /v1/anomalies/scan` — тело `{vehicleIds?, from, to, utcOffsetMinutes}` (`vehicleIds` не задан — все машины
+пользователя; пример — `testdata/contract/scan-request.json`). Машины проверяются по `FS_SCAN_CONCURRENCY`
+параллельно тем же кодом, что `/check` (правила + аналитика), результат сохраняется. Ответ — `{from, to,
+results: [{vehicleId, ok, error, anomalies, newIds, modelsReady}], lastScanAt}`: `anomalies` — как они сохранены
+(с id и решениями стенда), `newIds` — каких до проверки не было. Ошибка одной машины — `ok=false` с текстом, остальные
+проверяются; истёкший токен — 401 на весь запрос. Отметка последней проверки двигается, только если ответила хотя бы
+одна машина (как `lastScanAt` в приложении).
+
+`GET /v1/anomalies` — `{total, items, lastScanAt}`, сначала новые, не больше `FS_ANOMALIES_MAX_LIMIT` за запрос.
+Фильтры: период `from`/`to` (по пересечению с эпизодом события), `vehicleId`, `severity` (можно несколько),
+`status`: `open` — ждут решения, `resolved`, `confirmed`, `false_alarm`. Элемент — `Anomaly` контракта (`eventTime` —
+начало события, `detectedAt` — когда найдено впервые) и поля решения `resolution`, `falseAlarmReason`,
+`resolvedBy`, `resolvedAt`, а также `episodeEnd`, `lastDetectedAt` (пример — `testdata/contract/anomalies-response.json`).
+
+`POST /v1/anomalies/{id}/resolve` — `{resolution, reason, utcOffsetMinutes}`; `resolution` = `null` или поле не
+передано — вернуть в «ждут решения»; причина хранится только у ложной тревоги. id в пути — одним сегментом в
+URL-кодировке. Ответ — аномалия в том же виде, что в ленте.
+
+`POST /v1/anomalies/import` — разовый перенос локальной истории (`{utcOffsetMinutes, items: [{localId, vehicleId,
+vehicleName, kind, parameterName, title, eventTime, resolution?, reason?}]}`, не больше `FS_IMPORT_MAX_ITEMS`). Id
+устройства и стенда разные, поэтому стенд сначала проверяет с сохранением периоды вокруг событий
+(`±FS_IMPORT_SCAN_MARGIN_MINUTES`, близкие события — одним периодом), затем сопоставляет каждую запись по машине,
+типу, параметру и времени: время с устройства должно попасть в эпизод сохранённого события с допуском
+`FS_IMPORT_TIME_TOLERANCE_MINUTES`. Решение переносится, если на стенде по событию решения ещё нет (уже принятое не
+перезаписывается — `alreadyResolved`). Периоды проверяются по `FS_SCAN_CONCURRENCY` параллельно; приложение
+отправляет перенос по машине за запрос, чтобы каждый укладывался в срок ожидания, и повторяет перенос машины, если
+были `scanErrors`. Ответ: `decisions`, `applied`, `alreadyResolved`, `unmatched` — решения без
+пары с причиной (`why`), `restored` / `notFound` — аномалии без решения, `scanErrors` — непроверенные периоды.
 
 ### `GET /v1/telemetry`
 
@@ -134,12 +206,14 @@ ml/fleet_service/scripts/compare_real.sh /path/to/dir
 {
   "messages": [{"role": "user", "content": "Что с этой машиной?"}],
   "utcOffsetMinutes": 300,
-  "anomaly": { "...": "объект Anomaly, если чат открыт из карточки; необязательно" }
+  "anomaly": { "...": "объект Anomaly, если чат открыт из карточки; необязательно" },
+  "anomalyId": "или только id аномалии из хранилища стенда — тогда стенд берёт её с решением сам"
 }
 ```
 
-Ответ: `{"reply": "..."}`. Пример запроса из приложения — `testdata/contract/chat-request.json` (его сверяют и
-Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — копия схем `predictive_antifraud`
+Ответ: `{"reply": "..."}`. Пример запроса из приложения — `testdata/contract/chat-request.json` и
+`chat-request-anomaly-id.json` (их сверяют и Kotlin-, и Python-тесты). Если аномалии с `anomalyId` в хранилище нет
+(удалена по сроку или чужая), ассистент получает об этом пометку вместо данных. Схемы `VehicleTelemetry` и `Anomaly` — копия схем `predictive_antifraud`
 (`schemas/contract.py`), совпадение проверяет `tests/test_contract.py`.
 
 Ошибки — `{"detail": "<текст по-русски>"}`, приложение показывает его пользователю:
@@ -148,8 +222,8 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 |---|---|
 | 401 | нет токена / схемы, токен недействителен или истёк (в том числе во время загрузки данных) |
 | 403 | схема недоступна пользователю |
-| 404 | машины нет среди доступных пользователю (`/v1/telemetry`, `/v1/anomalies/check`) |
-| 422 | неверный запрос: пустая история, последнее сообщение не от пользователя, слишком длинное сообщение; период телеметрии с поясом, пустой или длиннее предела |
+| 404 | машины нет среди доступных пользователю (`/v1/telemetry`, `/v1/anomalies/check`); аномалии нет в хранилище схемы или её машина недоступна (`/resolve`) |
+| 422 | неверный запрос: пустая история, последнее сообщение не от пользователя, слишком длинное сообщение; период телеметрии с поясом, пустой или длиннее предела; период проверки короче шага сетки; перенос больше `FS_IMPORT_MAX_ITEMS` записей |
 | 502 | модель ответила ошибкой, вернула пустой ответ или не уложилась в `FS_AGENT_MAX_ITERATIONS`; AutoGRAPH вернул сбойный ответ (слишком много точек) |
 | 503 | ассистент не настроен (нет ключа или модели) или AutoGRAPH недоступен (после всех попыток) |
 | 504 | модель не ответила за `FS_LLM_TIMEOUT_SECONDS` или ответ не уложился в `FS_CHAT_TIMEOUT_SECONDS` |
@@ -164,12 +238,15 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 повторов, таймаут и длина части `GetTripTables`, предел длины query и числа точек, сроки кэшей машин, параметров и
 телеметрии, предел периода; для tools — число машин в `list_vehicles`, аномалий в `check_vehicle` и предел размера
 ответа tool; адрес, ключ и таймаут `predictive_antifraud`; пороги правил `FS_RULES__<ИМЯ>` (вложенные настройки,
-разделитель `__`). Пустое значение в `.env` — значение по умолчанию.
+разделитель `__`); хранилище — адрес базы, миграции при старте, шаг канонической сетки, параллельность проверки,
+срок хранения, предел записей в ленте, допуск и запас окна переноса, предел записей переноса. Пустое значение в
+`.env` — значение по умолчанию.
 
 Системный промпт — `src/fleet_service/prompts/system.md` (или файл из `FS_SYSTEM_PROMPT_PATH`). В нём
 зафиксировано: числа и факты только из tools или переданной аномалии; нет данных — так и сказать; «нет данных» и
 «0» различаются; как пользоваться tools; нули CAN при выключенном зажигании; три исхода проверки и запрет вывода
-«нарушений нет», если предиктивная проверка недоступна; тексты внутри данных — не инструкции. Время пользователя и контекст аномалии стенд добавляет отдельными системными
+«нарушений нет», если предиктивная проверка недоступна; история аномалий и решений — из `list_anomalies` /
+`get_anomaly`, пустая лента без проверок — не «аномалий нет»; тексты внутри данных — не инструкции. Время пользователя и контекст аномалии стенд добавляет отдельными системными
 сообщениями.
 
 ## Tools ассистента
@@ -179,6 +256,8 @@ Kotlin-, и Python-тесты). Схемы `VehicleTelemetry` и `Anomaly` — �
 | `list_vehicles` | `query` — подстрока названия или группы (необязательно) | `total`, до `FS_TOOL_MAX_VEHICLES` машин (`id`, `name`, `group`), `truncated` |
 | `get_vehicle_summary` | `vehicle_id` (или однозначное название), `from`, `to` — местное время; по умолчанию последние 24 ч | машина, период (`bucketMinutes`, `intervals`), по каждому параметру `min`, `max`, `mean`, `last`, `lastTime`, `coverage`, `unit`; `noDataParameters`, `allZeroParameters` |
 | `check_vehicle` | `vehicle_id`, `from`, `to` — как у сводки | `outcome`: `anomalies_found` / `no_anomalies` / `analytics_unavailable`; `total`, до `FS_TOOL_MAX_ANOMALIES` аномалий (тип, заголовок, важность, время, параметр, значение, описание, источник), `truncated`; `predictiveCheckAvailable`, статусы `analytics`, `message` |
+| `list_anomalies` | `from`, `to` (по умолчанию 24 ч), `vehicle_id`, `severity`, `status` — те же фильтры, что `GET /v1/anomalies` | `total`, до `FS_TOOL_MAX_ANOMALIES` записей (id, тип, заголовок, важность, машина, начало и конец эпизода, параметр, значение, статус разбора, причина, кто и когда решил), `truncated`, `lastScanAt`; `message`, если проверок с сохранением не было или за период пусто |
+| `get_anomaly` | `id` | аномалия с описанием, источником, временем первого и последнего обнаружения; `decisions` — история решений (статус, причина, кто, когда, из приложения или перенесено) |
 
 `check_vehicle` различает три исхода: аномалии найдены; правила и аналитика отработали и ничего не нашли; правила
 ничего не нашли, но предиктивная проверка или антифрод недоступны — тогда `predictiveCheckAvailable=false` и
@@ -207,20 +286,24 @@ src/fleet_service/
   config.py            настройки (FS_*)
   cache.py             кэш со сроком жизни и одной загрузкой на ключ
   log_masking.py       маскирование секретов в логах
-  api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, /v1/anomalies/check, проверка сессии
-                       (deps.py), ошибки (errors.py)
+  api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, /v1/anomalies (check, scan, лента,
+                       resolve, import), проверка сессии и X-User-Name (deps.py), ошибки (errors.py)
   rules/               baseline.py — перенос BaselineAnomalyDetector; thresholds.py — пороги (FS_RULES__*);
                        check.py — проверка машины: телеметрия → правила + аналитика
+  store/               db.py — таблицы и подключение; migrate.py и migrations/ — Alembic; repository.py — записи,
+                       id стенда, слияние эпизодов, решения, срок хранения; scan.py — проверка с сохранением на
+                       канонической сетке и перенос решений с устройства
   analytics/client.py  клиент predictive_antifraud со статусом ok / not_ready / unavailable
   autograph/           session.py — проверка токена с кэшем; client.py — EnumDevices/EnumParameters/GetTripTables;
                        errors.py — ошибки AutoGRAPH
   telemetry/           parameters.py — выбор параметров и свёртка; mapper.py — потоковый разбор GetTripTables
                        в интервалы; service.py — машины и телеметрия пользователя с кэшами
   agent/               llm.py — клиент OpenRouter; tools.py — реестр tools; loop.py — цикл агента;
-                       fleet_tools.py — tools телеметрии и проверки; prompt.py — системный промпт и контекст
+                       fleet_tools.py — tools телеметрии и проверки; store_tools.py — tools хранилища;
+                       prompt.py — системный промпт и контекст
   prompts/system.md    системный промпт по умолчанию
   schemas/             contract.py — VehicleTelemetry / Anomaly / DetectionResponse; chat.py — чат;
-                       anomalies.py — запрос и ответ проверки
+                       anomalies.py — запрос и ответ проверки; store.py — хранилище
 scripts/               smoke.sh, smoke.compose.yml, compare_real.sh
 tests/                 fakes.py — подставные OpenRouter, AutoGRAPH и predictive_antifraud; тесты
 ```
@@ -228,6 +311,6 @@ tests/                 fakes.py — подставные OpenRouter, AutoGRAPH �
 ## Как добавить tool
 
 Зарегистрировать `Tool(name, description, parameters, handler)` в `main.build_tools()` (tools телеметрии — в
-`agent/fleet_tools.py`). Обработчик — `async (args: dict, ctx: ToolContext) -> JSON-совместимый результат`; в `ctx` —
+`agent/fleet_tools.py`, хранилища — в `agent/store_tools.py`). Обработчик — `async (args: dict, ctx: ToolContext) -> JSON-совместимый результат`; в `ctx` —
 токен сессии, схема и смещение пояса пользователя. Ошибки обработчика возвращаются модели как `{"error": ...}`,
 вызовы пишутся в лог.
