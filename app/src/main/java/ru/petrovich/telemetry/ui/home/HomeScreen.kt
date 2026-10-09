@@ -119,6 +119,8 @@ fun HomeScreen(
     var fleetWeek by remember { mutableStateOf<FleetWeek?>(null) }
     LaunchedEffect(Unit) { fleetWeek = runCatchingCancellable { loadFleetWeek() }.getOrNull() }
 
+    // Хранилище на стенде: свежая лента для сводки; без сети — последняя загруженная (ошибку покажет лента).
+    LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.anomalySync.refresh() } }
     val layout = s.layout
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {

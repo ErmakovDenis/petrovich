@@ -1,0 +1,21 @@
+# Зависимости сервиса fleet_service.
+# Установка: pip install -r requirements.txt  (или pip install -e ".[dev]")
+# Нижние границы выбраны так, чтобы были готовые колёса для Python 3.14 (окружение fuel_antifrod).
+
+# Веб-сервис
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.12
+pydantic-settings>=2.4
+
+# HTTP-клиент: OpenRouter, AutoGRAPH
+httpx>=0.27
+# Потоковый разбор GetTripTables (C-бэкенд yajl2_c из колеса)
+ijson>=3.3
+
+# Хранилище аномалий и решений: SQLite через SQLAlchemy, миграции схемы — Alembic
+sqlalchemy>=2.0
+alembic>=1.13
+
+# Тесты
+pytest>=8

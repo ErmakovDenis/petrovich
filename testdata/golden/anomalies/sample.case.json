@@ -1,0 +1,25 @@
+{
+  "telemetry": "trip-tables/sample.case.json",
+  "expected": [
+    {
+      "id": "rule|drop|v1|TankMainFuelLevel|2026-09-16T10:03",
+      "kind": "drop",
+      "severity": "CRITICAL",
+      "eventTime": "2026-09-16T10:03",
+      "parameterName": "TankMainFuelLevel",
+      "title": "Резкое падение уровня топлива",
+      "value": 150.0,
+      "source": "Базовые правила"
+    },
+    {
+      "id": "rule|power|v1|Power|2026-09-16T10:00",
+      "kind": "power",
+      "severity": "INFO",
+      "eventTime": "2026-09-16T10:00",
+      "parameterName": "Power",
+      "title": "Пропадание питания",
+      "value": 0.0,
+      "source": "Базовые правила"
+    }
+  ]
+}

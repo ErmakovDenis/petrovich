@@ -1,11 +1,20 @@
 package ru.petrovich.telemetry.chat
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.Vehicle
+import ru.petrovich.telemetry.data.settings.AppSettings
+import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.ui.common.advice
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.isNew
@@ -66,6 +75,40 @@ interface ChatAgent {
     val connected: Boolean get() = true
 
     suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String? = null): ChatReply
+}
+
+/** Ассистент на стенде: получает саму аномалию, из карточки которой открыт чат, и отвечает текстом. */
+interface ContextualChatAgent {
+    val connected: Boolean get() = true
+
+    suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): String
+}
+
+/**
+ * Выбирает агента на каждый вызов по настройкам: ассистент на стенде ([AppSettings.assistantOnServer])
+ * или локальный [local], как раньше. [connectedState] — для заголовка чата, следует за настройками.
+ */
+class SwitchingChatAgent(
+    /** [SettingsRepository.settings]. */
+    private val settings: Flow<AppSettings>,
+    private val local: ChatAgent,
+    private val remote: ContextualChatAgent,
+    scope: CoroutineScope,
+    /** Аномалия по id из контекста чата — стенду уходит она сама, а не id. */
+    private val findAnomaly: (String) -> Anomaly? = { null },
+) : ChatAgent {
+    val connectedState: StateFlow<Boolean> = settings
+        .map { if (it.assistantOnServer) remote.connected else local.connected }
+        .stateIn(scope, SharingStarted.Eagerly, local.connected)
+
+    override val connected: Boolean get() = connectedState.value
+
+    override suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String?): ChatReply =
+        if (settings.first().assistantOnServer) {
+            ChatReply(remote.reply(history, contextAnomalyId?.let(findAnomaly)))
+        } else {
+            local.reply(history, contextAnomalyId)
+        }
 }
 
 /** Заглушка на случай, если локальный движок ниже нужно временно отключить. */

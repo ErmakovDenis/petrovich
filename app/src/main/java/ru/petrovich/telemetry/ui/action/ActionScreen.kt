@@ -167,7 +167,7 @@ fun ActionScreen(anomalyId: String, onBack: () -> Unit, onMail: (String) -> Unit
                 onDismiss = { reasons = false },
                 onPick = { reason ->
                     reasons = false
-                    scope.launch { store.resolve(anomaly.id, Resolution.FALSE_ALARM, reason) }
+                    scope.launch { runCatchingCancellable { ServiceLocator.anomalySync.resolve(anomaly.id, Resolution.FALSE_ALARM, reason) } }
                     onBack()
                 },
             )

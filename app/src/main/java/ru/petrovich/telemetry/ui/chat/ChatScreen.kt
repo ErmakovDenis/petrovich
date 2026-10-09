@@ -62,6 +62,7 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
+import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.EmailDraftCard
 import ru.petrovich.telemetry.ui.common.PChip
@@ -83,6 +84,9 @@ class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : V
     )
     private val _state = MutableStateFlow(ChatUiState(listOf(greeting)))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
+
+    /** false — локальный движок без внешней модели; следует за переключателем «Ассистент через стенд». */
+    val connected: StateFlow<Boolean> = (agent as? SwitchingChatAgent)?.connectedState ?: MutableStateFlow(agent.connected)
 
     fun send(text: String, contextAnomalyId: String?) {
         val trimmed = text.trim()
@@ -118,6 +122,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
     val state by vm.state.collectAsStateWithLifecycle()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val context = anomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
+    val connected by vm.connected.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val c = Petrovich.colors
@@ -136,7 +141,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
         topBar = {
             AppTopBar(
                 title = "Петрович",
-                subtitle = if (ServiceLocator.chatAgent.connected) null else "Работает по данным парка, без внешней ИИ-модели",
+                subtitle = if (connected) null else "Работает по данным парка, без внешней ИИ-модели",
                 onBack = onBack,
                 actions = { IconButton(onClick = vm::clear) { Icon(Icons.Filled.DeleteSweep, "Очистить чат") } },
             )

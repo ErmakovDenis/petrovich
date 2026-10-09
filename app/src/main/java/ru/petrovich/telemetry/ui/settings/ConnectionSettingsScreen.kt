@@ -22,6 +22,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,8 +37,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.anomaly.ImportReport
+import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.Schema
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.ThemeMode
@@ -46,7 +50,11 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.ui.common.hhmm
+import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.Instant
+import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,11 +69,16 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var initialized by remember { mutableStateOf(false) }
+    var serverUrl by remember { mutableStateOf("") }
+    var serverStatus by remember { mutableStateOf<String?>(null) }
+    var storeStatus by remember { mutableStateOf<String?>(null) }
+    var storeBusy by remember { mutableStateOf(false) }
+    val importReport by ServiceLocator.anomalySync.lastImport.collectAsStateWithLifecycle()
 
     LaunchedEffect(settings) {
         val s = settings ?: return@LaunchedEffect
         if (!initialized) {
-            user = s.userName; password = s.password; initialized = true
+            user = s.userName; password = s.password; serverUrl = s.serverUrl; initialized = true
         }
     }
 
@@ -173,26 +186,169 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
             }
             HorizontalDivider()
 
+            Text("Стенд", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH, логин и пароль на стенд не передаются.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = serverUrl, onValueChange = { serverUrl = it; serverStatus = null },
+                label = { Text("Адрес стенда") }, placeholder = { Text("https://stand.example.ru") },
+                singleLine = true, modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            )
+            val normalizedUrl = serverUrl.trim().trimEnd('/')
+            OutlinedButton(
+                enabled = normalizedUrl != s.serverUrl,
+                onClick = {
+                    val parsed = normalizedUrl.toHttpUrlOrNull()
+                    if (normalizedUrl.isNotEmpty() && parsed == null) {
+                        serverStatus = "Адрес должен начинаться с http:// или https://"
+                    } else if (parsed != null && !parsed.isHttps && !BuildConfig.DEBUG) {
+                        // HTTP без TLS разрешён только в debug-сборке (app/src/debug, network security config).
+                        serverStatus = "Нужен адрес https:// — без шифрования стенд доступен только в отладочной сборке"
+                    } else {
+                        scope.launch {
+                            repo.update { it.copy(serverUrl = normalizedUrl) }
+                            // С «Данными через стенд» адрес решает, откуда грузятся данные: экраны перечитываем.
+                            if (s.telemetryViaServer && !s.demoMode) onChanged()
+                        }
+                        serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
+                    }
+                },
+            ) { Text("Сохранить адрес") }
+            serverStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            SwitchRow(
+                title = "Ассистент через стенд",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — отвечает заглушка"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Чат «Петрович» отвечает моделью на стенде; выключено — заглушка"
+                },
+                checked = s.assistantViaServer,
+                onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
+            )
+            SwitchRow(
+                title = "Данные через стенд",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — данные демо"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Таблицы, графики и проверка аномалий берут данные со стенда; выключено — из AutoGRAPH напрямую"
+                },
+                checked = s.telemetryViaServer,
+                // Машины те же (id AutoGRAPH), поэтому найденные аномалии не сбрасываем — только перезагружаем данные.
+                onChecked = { v ->
+                    scope.launch {
+                        repo.update { it.copy(telemetryViaServer = v) }
+                        onChanged()
+                    }
+                },
+            )
+            HorizontalDivider()
+
             Text("Аномалии", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Детектор: ${ServiceLocator.anomalyDetector.name}. " +
-                    if (ServiceLocator.mlDetector.isReady) "ML-модель загружена." else "ML-модель не найдена (assets/models/anomaly.tflite).",
+                if (s.anomaliesOnServer) {
+                    "Проверку выполняет стенд: правила и сервис аналитики. Если модели аналитики не загружены, проверка идёт только по правилам."
+                } else {
+                    "Детектор: ${ServiceLocator.anomalyDetector.name}. " +
+                        if (ServiceLocator.mlDetector.isReady) "ML-модель загружена." else "ML-модель не найдена (assets/models/anomaly.tflite)."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
+            SwitchRow(
+                title = "Аномалии со стенда",
+                subtitle = when {
+                    s.demoMode -> "Не действует в демо-режиме — проверяет устройство"
+                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
+                    else -> "Проверка машин — на стенде; лента, уведомления и решения остаются в приложении. Выключено — проверяет устройство"
+                },
+                checked = s.anomaliesViaServer,
+                // id аномалий у стенда и устройства одинаковые (тот же алгоритм), поэтому ленту не сбрасываем.
+                onChecked = { v -> save(reload = false) { it.copy(anomaliesViaServer = v) } },
+            )
+            SwitchRow(
+                title = "Хранить аномалии на стенде",
+                subtitle = when {
+                    !s.anomaliesOnServer -> "Сначала включите «Аномалии со стенда»"
+                    else -> "Лента и решения — на стенде, общие для всех пользователей схемы; в приложении — копия для " +
+                        "показа без сети. При включении история с устройства переносится на стенд. Выключено — всё на устройстве"
+                },
+                checked = s.anomalyStoreViaServer,
+                enabled = s.anomaliesOnServer && !storeBusy,
+                onChecked = { v ->
+                    storeStatus = null
+                    scope.launch {
+                        repo.update { it.copy(anomalyStoreViaServer = v) }
+                        // Выключено: записи стенда уходят из копии ленты — у проверки на устройстве другие id.
+                        if (!v) runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
+                        if (v) {
+                            storeBusy = true
+                            storeStatus = "Переносим историю на стенд и загружаем ленту…"
+                            storeStatus = runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
+                                .fold({ "Лента загружена со стенда" }, { "Не получилось: ${it.message}. Повторим при следующем обновлении ленты" })
+                            storeBusy = false
+                        }
+                    }
+                },
+            )
+            storeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            importReport?.let { ImportReportText(it) }
+            if (BuildConfig.DEBUG) {
+                SwitchRow(
+                    title = "Сравнивать с устройством (отладка)",
+                    subtitle = "Проверка идёт и на устройстве, и на стенде; расхождения — в logcat (AnomalyCompare). " +
+                        "В ленту попадает результат по переключателю выше",
+                    checked = s.anomalyCompare,
+                    onChecked = { v -> save(reload = false) { it.copy(anomalyCompare = v) } },
+                )
+            }
             OutlinedButton(onClick = { scope.launch { ServiceLocator.anomalyStore.clear() } }) {
-                Text("Очистить историю аномалий")
+                // С хранилищем на стенде очищается только копия на устройстве: лента вернётся при обновлении.
+                Text(if (s.anomalyStoreOnServer) "Очистить копию ленты на устройстве" else "Очистить историю аномалий")
             }
         }
     }
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit, enabled: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
+    }
+}
+
+/** Отчёт о переносе истории на стенд: несопоставленные решения перечислены, а не потеряны молча. */
+@Composable
+private fun ImportReportText(report: ImportReport) {
+    var expanded by remember { mutableStateOf(false) }
+    val r = report.result
+    val at = Instant.ofEpochMilli(report.at).atZone(ZoneId.systemDefault()).toLocalDateTime()
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            "Перенос истории на стенд (${at.toLocalDate().title()}, ${at.hhmm()}): записей ${report.sent}, решений ${r.decisions} — " +
+                "перенесено ${r.applied}, на стенде уже были ${r.alreadyResolved}, без пары ${r.unmatched.size}. " +
+                "Аномалий без решения найдено на стенде ${r.restored}, не найдено ${r.notFound}.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        (report.failed + r.scanErrors).forEach {
+            Text("Не перенесено, повторим при обновлении ленты: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if (r.unmatched.isNotEmpty()) {
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Скрыть решения без пары" else "Показать решения без пары (${r.unmatched.size})")
+            }
+            if (expanded) r.unmatched.forEach { u ->
+                val decision = if (u.resolution == Resolution.CONFIRMED) "подтверждено" else "ложная тревога" + (u.reason?.let { " ($it)" } ?: "")
+                Text(
+                    "${u.vehicleName.ifBlank { u.vehicleId }}: ${u.title}, ${u.eventTime.replace('T', ' ')} — $decision. ${u.why}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
     }
 }

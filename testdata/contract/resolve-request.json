@@ -1,0 +1,5 @@
+{
+  "resolution": "FALSE_ALARM",
+  "reason": "Ошибка датчика",
+  "utcOffsetMinutes": 300
+}

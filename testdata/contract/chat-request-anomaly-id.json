@@ -1,0 +1,7 @@
+{
+  "messages": [
+    {"role": "user", "content": "Что решили по этой аномалии?"}
+  ],
+  "utcOffsetMinutes": 300,
+  "anomalyId": "rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z"
+}

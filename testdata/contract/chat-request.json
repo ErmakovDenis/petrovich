@@ -1,0 +1,23 @@
+{
+  "messages": [
+    {"role": "user", "content": "Что с этой машиной?"},
+    {"role": "assistant", "content": "Уровень топлива упал на 80 л за 15 минут на стоянке."},
+    {"role": "user", "content": "Он раньше так делал?"}
+  ],
+  "utcOffsetMinutes": 300,
+  "anomaly": {
+    "id": "rule|drain|42|TankMainFuelLevel|2026-09-01T08:10",
+    "vehicleId": "42",
+    "vehicleName": "Урал NEXT А001АА",
+    "category": "FUEL",
+    "parameterName": "TankMainFuelLevel",
+    "parameterCaption": "Уровень топлива",
+    "eventTime": "2026-09-01T08:10",
+    "detectedAt": 1788000000000,
+    "severity": "CRITICAL",
+    "title": "Слив топлива",
+    "description": "Уровень упал на 80 л за 15 мин на стоянке",
+    "value": 80.0,
+    "source": "rules"
+  }
+}

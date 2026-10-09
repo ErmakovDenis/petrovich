@@ -1,0 +1,28 @@
+# Дополнение к ml/docker-compose.yml для smoke.sh: внешние системы заменены подставным сервисом `fakes`
+# (tests/fakes.py на образе fleet_service). Реальные ключи не нужны; значения из .env перекрываются.
+# Относительные пути считаются от каталога ml/ (первый compose-файл).
+services:
+  fakes:
+    build: ./fleet_service
+    command: ["uvicorn", "fakes:app", "--app-dir", "/srv/fakes", "--host", "0.0.0.0", "--port", "9000"]
+    volumes:
+      - ./fleet_service/tests/fakes.py:/srv/fakes/fakes.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health', timeout=3)"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  fleet_service:
+    environment:
+      FS_OPENROUTER_API_KEY: test-key
+      FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
+      FS_LLM_MODEL: fake/model
+      FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
+    depends_on:
+      fakes:
+        condition: service_healthy
+    restart: "no"
+
+  predictive_antifraud:
+    restart: "no"

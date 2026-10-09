@@ -87,7 +87,9 @@ import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
 import java.time.LocalDate
+import java.time.Instant
 import java.time.LocalDateTime
+import java.time.ZoneId
 import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,6 +102,8 @@ fun AnomalyDetailScreen(
     onOpenResolution: (String) -> Unit,
 ) {
     val store = ServiceLocator.anomalyStore
+    // Решения — через синхронизацию: при хранилище на стенде они уходят на стенд, иначе остаются на устройстве.
+    val sync = ServiceLocator.anomalySync
     val anomalies by store.anomalies.collectAsStateWithLifecycle()
     val anomaly = anomalies.firstOrNull { it.id == anomalyId }
     val scope = rememberCoroutineScope()
@@ -141,7 +145,12 @@ fun AnomalyDetailScreen(
                 anomaly = anomaly,
                 onAct = { onAct(anomaly.id) },
                 onFalseAlarm = { reasons = true },
-                onReopen = { scope.launch { store.reopen(anomaly.id) } },
+                onReopen = {
+                    scope.launch {
+                        runCatchingCancellable { sync.reopen(anomaly.id) }
+                            .onFailure { snackbar.showSnackbar("Решение не изменено: ${it.message}") }
+                    }
+                },
                 onCharts = { onOpenCharts(anomaly.vehicleId) },
                 onRemindMechanic = {
                     scope.launch {
@@ -187,8 +196,9 @@ fun AnomalyDetailScreen(
             onPick = { reason ->
                 reasons = false
                 scope.launch {
-                    store.resolve(anomaly.id, Resolution.FALSE_ALARM, reason)
-                    snackbar.showSnackbar("Отмечено как ложная тревога")
+                    val msg = runCatchingCancellable { sync.resolve(anomaly.id, Resolution.FALSE_ALARM, reason) }
+                        .fold({ "Отмечено как ложная тревога" }, { "Решение не сохранено: ${it.message}" })
+                    snackbar.showSnackbar(msg)
                 }
             },
         )
@@ -400,6 +410,14 @@ private suspend fun loadEvidence(a: Anomaly, at: LocalDateTime): EvidenceState.R
     return EvidenceState.Ready(table.timestamps, column.values, column.parameter.unit, idx, buildChecks(t, at, a))
 }
 
+private fun decidedBy(a: Anomaly): String? {
+    val at = a.resolvedAt?.let {
+        val t = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime()
+        "${t.toLocalDate().title()}, ${t.hhmm()}"
+    }
+    return listOfNotNull(a.resolvedBy, at).takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
 /** Что Петрович реально нашёл по соседним параметрам в момент события — скорость и зажигание, если они вообще пишутся. */
 private fun buildChecks(t: VehicleTelemetry, at: LocalDateTime, a: Anomaly): List<String> {
     val checks = mutableListOf<String>()
@@ -459,11 +477,13 @@ private fun ActionsBar(
             }
             else -> SurfaceCard(shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).clickable(onClick = onOpenResolution)) {
+                    Column(Modifier.weight(1f).clickable(onClick = onOpenResolution), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         // «Закрыто» — статус по словарю макета; «Подтверждено» в нём нет (см. StatusPill выше).
                         val label = anomaly.outcomeDetail
                             ?: if (anomaly.resolution == Resolution.CONFIRMED) "Закрыто" else resolutionLabel(anomaly) ?: ""
                         Pill(label, if (anomaly.resolution == Resolution.CONFIRMED) c.ok else c.muted, if (anomaly.resolution == Resolution.CONFIRMED) c.okSoft else c.surface2)
+                        // Хранилище на стенде: решение общее для схемы — видно, кто и когда его принял.
+                        decidedBy(anomaly)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = c.muted) }
                     }
                     TextButton(onClick = onOpenResolution) { Text("Ход разбора", color = c.accent, fontWeight = FontWeight.SemiBold) }
                     TextButton(onClick = onReopen) { Text("Изменить", color = c.accent, fontWeight = FontWeight.SemiBold) }

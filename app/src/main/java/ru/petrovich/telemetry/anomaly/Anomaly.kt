@@ -48,7 +48,18 @@ data class Anomaly(
     val outcomeDetail: String? = null,
     /** Что сделали по итогу (можно несколько): «Вычли из премии», «Опломбировали бак» и т. п. */
     val actionsTaken: List<String> = emptyList(),
+    /** Кто принял решение (логин AutoGRAPH) — только для аномалий из хранилища стенда. */
+    val resolvedBy: String? = null,
+    /** Когда принято решение, epoch millis — только для аномалий из хранилища стенда. */
+    val resolvedAt: Long? = null,
 ) {
     /** Тип события из id (`rule|<kind>|...`) — drain, power, volt, overheat, oil, brake, drop. */
     val kind: String get() = id.split('|').getOrNull(1).orEmpty()
+
+    /** id выдал стенд (хранилище, время начала в UTC с «Z»), а не детектор на устройстве (местное время). */
+    val isStandId: Boolean get() = isStandId(id)
+
+    companion object {
+        fun isStandId(id: String): Boolean = id.endsWith("Z")
+    }
 }
