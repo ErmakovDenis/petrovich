@@ -4,6 +4,7 @@ import ru.petrovich.telemetry.data.AutoGraphParameters as P
 import ru.petrovich.telemetry.data.ParameterColumn
 import ru.petrovich.telemetry.data.VehicleTelemetry
 import java.time.Duration
+import java.time.LocalDate
 import java.time.LocalDateTime
 import kotlin.math.abs
 
@@ -48,7 +49,27 @@ class BaselineAnomalyDetector : AnomalyDetector {
             }
         }
         // Топливо: резкое падение уровня за 15 минут.
-        col(P.FUEL_LEVEL, "уровень топлива", "fuellevel")?.let { c -> out += fuelDrop(ctx, c) }
+        col(P.FUEL_LEVEL, "уровень топлива", "fuellevel")?.let { c ->
+            out += fuelDrop(ctx, c)
+            // Датчик сконфигурирован, но за всё окно — ни одного значения: честно сообщаем, что он молчит,
+            // а не выдумываем причину. Id стабилен на сутки, чтобы не плодить дубликаты, пока не починят.
+            if (c.values.isNotEmpty() && c.values.all { it == null }) {
+                out += Anomaly(
+                    id = "rule|nodata|${telemetry.vehicle.id}|${c.parameter.name}|${LocalDate.now()}",
+                    vehicleId = telemetry.vehicle.id,
+                    vehicleName = telemetry.vehicle.name,
+                    category = c.parameter.category,
+                    parameterName = c.parameter.name,
+                    parameterCaption = c.parameter.caption,
+                    eventTime = times.last().toString(),
+                    detectedAt = System.currentTimeMillis(),
+                    severity = Severity.WARNING,
+                    title = "Нет данных",
+                    description = "Датчик топлива молчит — за всё окно проверки ни одного значения.",
+                    source = "Базовые правила",
+                )
+            }
+        }
 
         // Пропадание питания: короткое — информационное, дольше 2 минут — предупреждение.
         col(P.POWER)?.let { c ->

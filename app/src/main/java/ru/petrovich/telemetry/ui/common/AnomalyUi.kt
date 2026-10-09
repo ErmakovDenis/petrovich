@@ -8,13 +8,15 @@ import ru.petrovich.telemetry.anomaly.Severity
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.util.Locale
 
 /** Названия уровней для владельца: не «критично/инфо», а что с этим делать. */
 fun Severity.label(): String = when (this) {
     Severity.CRITICAL -> "Срочно"
-    Severity.WARNING -> "Разобраться"
+    Severity.WARNING -> "Внимание"
     Severity.INFO -> "Мелочь"
 }
 
@@ -52,6 +54,20 @@ fun LocalDate.title(): String = format(DayFormat)
 /** «четверг, 17 сентября» — для шапки сводки. */
 fun LocalDate.weekdayTitle(): String = format(WeekdayFormat).replaceFirstChar { it.uppercase() }
 
+/** «Пн, 28 сентября» — компактная дата для шапки «Главной». */
+fun LocalDate.shortDate(): String {
+    val weekday = dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { it.uppercase() }
+    return "$weekday, ${format(DateTimeFormatter.ofPattern("d MMMM", RuLocale))}"
+}
+
+/** Обращение по времени суток — для приветствия на «Главной». */
+fun greeting(time: LocalTime = LocalTime.now()): String = when (time.hour) {
+    in 5..10 -> "Доброе утро"
+    in 11..16 -> "Добрый день"
+    in 17..22 -> "Добрый вечер"
+    else -> "Доброй ночи"
+}
+
 /** Заголовок группы в ленте: «Сегодня», «Вчера» или дата. */
 fun dayHeader(day: LocalDate, today: LocalDate = LocalDate.now()): String = when (day) {
     today -> "Сегодня"
@@ -62,6 +78,7 @@ fun dayHeader(day: LocalDate, today: LocalDate = LocalDate.now()): String = when
 fun resolutionLabel(a: Anomaly): String? = when (a.resolution) {
     Resolution.CONFIRMED -> "Подтверждено"
     Resolution.FALSE_ALARM -> "Ложная"
+    Resolution.IN_PROGRESS -> "В работе" + (a.assignedTo?.let { " · $it" } ?: "")
     null -> null
 }
 
@@ -75,8 +92,14 @@ fun Anomaly.advice(): String = when (kind) {
     "overheat" -> "Остановите машину и проверьте уровень охлаждающей жидкости и термостат. Не эксплуатируйте с перегревом."
     "oil" -> "Проверьте уровень масла и датчик давления. Если давление действительно низкое — не эксплуатируйте машину."
     "brake" -> "Проверьте пневмосистему и датчик давления в тормозных контурах."
+    "nodata" -> "Датчик не передаёт данные. Проверьте подключение датчика и напомните механику — без этого Петрович не увидит топливо по этой машине."
     else -> "Посмотрите график и уточните у водителя, что происходило в это время."
 }
+
+/** Похожий случай на той же машине раньше — для напоминания «Петрович помнит». */
+fun List<Anomaly>.previousOccurrence(of: Anomaly): Anomaly? =
+    filter { it.id != of.id && it.vehicleId == of.vehicleId && it.kind == of.kind && it.eventTime < of.eventTime }
+        .maxByOrNull { it.eventTime }
 
 fun plural(n: Int, one: String, few: String, many: String): String {
     val m = n % 10

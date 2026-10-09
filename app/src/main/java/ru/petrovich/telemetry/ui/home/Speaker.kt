@@ -21,6 +21,10 @@ class Speaker(context: Context) {
     var available by mutableStateOf(true)
         private set
 
+    /** Скорость речи: 1, 1.5 или 2× — настоящий параметр синтезатора, не декорация. */
+    var rate by mutableStateOf(1f)
+        private set
+
     private var ready = false
     private var tts: TextToSpeech? = null
 
@@ -43,8 +47,19 @@ class Speaker(context: Context) {
     fun speak(text: String) {
         val engine = tts ?: return
         if (!ready) { available = false; return }
+        engine.setSpeechRate(rate)
         speaking = true
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "brief")
+    }
+
+    /** Переключает скорость по кругу 1× → 1.5× → 2× → 1×; на лету, даже во время чтения. */
+    fun cycleRate() {
+        rate = when {
+            rate < 1.25f -> 1.5f
+            rate < 1.75f -> 2f
+            else -> 1f
+        }
+        if (speaking) tts?.setSpeechRate(rate)
     }
 
     fun stop() {

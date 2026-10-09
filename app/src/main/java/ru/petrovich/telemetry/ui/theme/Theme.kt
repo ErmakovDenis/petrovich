@@ -3,8 +3,8 @@ package ru.petrovich.telemetry.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Shapes
 import androidx.compose.material3.ProvideTextStyle
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ru.petrovich.telemetry.R
 
-/** Палитра из прототипа: зелёный акцент, три уровня срочности, мягкие фоны для плашек. */
+/** Палитра из макетов «Петрович»: светлый серо-голубой фон, тёмно-синий акцент, три уровня срочности. */
 @Immutable
 class PetrovichColors(
     val bg: Color,
@@ -49,24 +49,24 @@ class PetrovichColors(
 )
 
 private val LightColors = PetrovichColors(
-    bg = Color(0xFFF2F5F2), surface = Color(0xFFFFFFFF), surface2 = Color(0xFFE9EEEA), line = Color(0xFFD6DDD8),
-    ink = Color(0xFF15201B), muted = Color(0xFF5F6D66), faint = Color(0xFF8C9A93),
-    accent = Color(0xFF1E7A4C), onAccent = Color(0xFFFFFFFF), accentSoft = Color(0xFFDCEFE3),
-    high = Color(0xFFC93A2B), highSoft = Color(0xFFFBE3DF),
-    med = Color(0xFFB77A0C), medSoft = Color(0xFFFAEBCB),
-    low = Color(0xFF4E6B8A), lowSoft = Color(0xFFE0E8F1),
-    ok = Color(0xFF2A9258), okSoft = Color(0xFFDDF1E4),
+    bg = Color(0xFFF4F5F7), surface = Color(0xFFFFFFFF), surface2 = Color(0xFFEBEEF1), line = Color(0xFFE0E4E8),
+    ink = Color(0xFF1B1F24), muted = Color(0xFF5B616B), faint = Color(0xFF8A9099),
+    accent = Color(0xFF1D3F66), onAccent = Color(0xFFFFFFFF), accentSoft = Color(0xFFE3EAF3),
+    high = Color(0xFFB42318), highSoft = Color(0xFFFDECEA),
+    med = Color(0xFF8A4B00), medSoft = Color(0xFFFFF4D6),
+    low = Color(0xFF3E5F85), lowSoft = Color(0xFFE3EAF3),
+    ok = Color(0xFF067647), okSoft = Color(0xFFE6F4EC),
     dark = false,
 )
 
 private val DarkColors = PetrovichColors(
-    bg = Color(0xFF111916), surface = Color(0xFF18221E), surface2 = Color(0xFF202C27), line = Color(0xFF2C3934),
-    ink = Color(0xFFE6EEE9), muted = Color(0xFF9AAAA2), faint = Color(0xFF6E7E77),
-    accent = Color(0xFF3DAE72), onAccent = Color(0xFF06140D), accentSoft = Color(0xFF1B3527),
-    high = Color(0xFFF0705F), highSoft = Color(0xFF3A1E1A),
-    med = Color(0xFFE3AE45), medSoft = Color(0xFF382C14),
+    bg = Color(0xFF161A1E), surface = Color(0xFF1F252B), surface2 = Color(0xFF272E35), line = Color(0xFF363E46),
+    ink = Color(0xFFEDEEF0), muted = Color(0xFF9BA3AD), faint = Color(0xFF6C7580),
+    accent = Color(0xFF6E9BD6), onAccent = Color(0xFF0B1520), accentSoft = Color(0xFF223246),
+    high = Color(0xFFFF8A75), highSoft = Color(0xFF3A1D18),
+    med = Color(0xFFF0B429), medSoft = Color(0xFF3A2C10),
     low = Color(0xFF8FB0D2), lowSoft = Color(0xFF1D2A38),
-    ok = Color(0xFF52C185), okSoft = Color(0xFF173224),
+    ok = Color(0xFF4CC38A), okSoft = Color(0xFF14301F),
     dark = true,
 )
 
@@ -76,7 +76,7 @@ object Petrovich {
     val colors: PetrovichColors
         @Composable @ReadOnlyComposable get() = LocalPetrovichColors.current
 
-    /** Шрифт для крупных цифр и заголовков (Unbounded). */
+    /** Шрифт для крупных цифр и заголовков (Manrope). */
     val display: FontFamily get() = DisplayFamily
 }
 
@@ -87,24 +87,29 @@ private fun variable(res: Int, weight: Int) =
 private val UiFamily = FontFamily(
     variable(R.font.onest, 400), variable(R.font.onest, 500), variable(R.font.onest, 600),
 )
-private val DisplayFamily = FontFamily(variable(R.font.unbounded, 500), variable(R.font.unbounded, 700))
+private val DisplayFamily = FontFamily(
+    variable(R.font.manrope, 600), variable(R.font.manrope, 700), variable(R.font.manrope, 800),
+)
 
 private fun ui(size: Int, weight: FontWeight = FontWeight.Normal, line: Int = (size * 1.4).toInt(), spacing: Double = 0.0) =
     TextStyle(fontFamily = UiFamily, fontSize = size.sp, fontWeight = weight, lineHeight = line.sp, letterSpacing = spacing.sp)
 
+private fun display(size: Int, weight: FontWeight, line: Int) =
+    TextStyle(fontFamily = DisplayFamily, fontWeight = weight, fontSize = size.sp, lineHeight = line.sp)
+
 private val AppTypography = Typography(
-    displaySmall = TextStyle(fontFamily = DisplayFamily, fontWeight = FontWeight.Bold, fontSize = 28.sp, lineHeight = 32.sp),
-    headlineMedium = ui(22, FontWeight.Bold, 27),
-    headlineSmall = ui(20, FontWeight.Bold, 26),
-    titleLarge = ui(19, FontWeight.SemiBold, 24),
-    titleMedium = ui(16, FontWeight.SemiBold, 22),
-    titleSmall = ui(15, FontWeight.SemiBold, 20),
+    displaySmall = display(28, FontWeight.Black, 32),
+    headlineMedium = display(24, FontWeight.Black, 29),
+    headlineSmall = display(20, FontWeight.Black, 25),
+    titleLarge = display(19, FontWeight.ExtraBold, 24),
+    titleMedium = display(16, FontWeight.ExtraBold, 21),
+    titleSmall = display(15, FontWeight.Bold, 19),
     bodyLarge = ui(16, line = 23),
     bodyMedium = ui(15, line = 21),
     bodySmall = ui(13, line = 18),
-    labelLarge = ui(15, FontWeight.SemiBold, 20),
-    labelMedium = ui(13, FontWeight.Medium, 17),
-    labelSmall = ui(12, FontWeight.Medium, 16),
+    labelLarge = ui(16, FontWeight.Bold, 20),
+    labelMedium = ui(14, FontWeight.SemiBold, 18),
+    labelSmall = ui(12, FontWeight.SemiBold, 16),
 )
 
 private val AppShapes = Shapes(

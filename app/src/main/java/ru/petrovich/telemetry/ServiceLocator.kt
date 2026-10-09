@@ -8,8 +8,9 @@ import ru.petrovich.telemetry.anomaly.AnomalyStore
 import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
 import ru.petrovich.telemetry.anomaly.MlAnomalyDetector
+import ru.petrovich.telemetry.anomaly.NotificationStore
 import ru.petrovich.telemetry.chat.ChatAgent
-import ru.petrovich.telemetry.chat.StubChatAgent
+import ru.petrovich.telemetry.chat.PetrovichAgent
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
@@ -42,9 +43,11 @@ object ServiceLocator {
 
     val anomalyStore by lazy { AnomalyStore(appContext) }
 
+    val notificationStore by lazy { NotificationStore(appContext) }
+
     val notifier by lazy { AnomalyNotifier(appContext) }
 
-    val anomalyScanner by lazy { AnomalyScanner(telemetry, anomalyDetector, anomalyStore, notifier, settings) }
+    val anomalyScanner by lazy { AnomalyScanner(telemetry, anomalyDetector, anomalyStore, notifier, settings, notificationStore) }
 
     /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
     suspend fun onDataSourceChanged() {
@@ -52,6 +55,6 @@ object ServiceLocator {
         settings.update { it.copy(lastScanAt = 0) }
     }
 
-    // Точка подключения ИИ-агента.
-    val chatAgent: ChatAgent by lazy { StubChatAgent() }
+    // Точка подключения настоящего ИИ-агента (сейчас — локальный движок по правилам и данным парка).
+    val chatAgent: ChatAgent by lazy { PetrovichAgent() }
 }

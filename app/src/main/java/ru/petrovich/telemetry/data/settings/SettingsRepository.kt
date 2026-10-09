@@ -4,15 +4,20 @@ import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.time.DayOfWeek
 
 /** Оформление: следовать системе или зафиксировать светлую/тёмную тему. */
 enum class ThemeMode(val title: String) { SYSTEM("Системная"), LIGHT("Светлая"), DARK("Тёмная") }
+
+/** Будни по умолчанию для утреннего доклада — Пн–Пт. */
+val DefaultReportDays = setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)
 
 data class AppSettings(
     val demoMode: Boolean = false,
@@ -30,6 +35,36 @@ data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** Когда последняя проверка данных завершилась успешно (epoch millis); 0 — ещё не проверяли. */
     val lastScanAt: Long = 0,
+    /** Время утреннего доклада, "HH:mm". */
+    val reportTime: String = "08:00",
+    /** Дни недели, в которые приходит доклад. */
+    val reportDays: Set<DayOfWeek> = DefaultReportDays,
+    /** Доклад можно не только читать, но и слушать (синтез речи). */
+    val voiceReportEnabled: Boolean = true,
+    /** Ночью (между [quietHoursStart] и [quietHoursEnd]) присылать push только для срочных случаев. */
+    val quietHoursEnabled: Boolean = true,
+    /** Начало тихих часов, "HH:mm". */
+    val quietHoursStart: String = "22:00",
+    /** Конец тихих часов, "HH:mm". */
+    val quietHoursEnd: String = "07:00",
+    /** Не больше 3 обычных (не срочных) push в день — срочные идут без ограничения. */
+    val limitDailyPush: Boolean = true,
+    /** За какой день (yyyy-MM-dd) уже отправлен доклад — чтобы не дублировать. */
+    val lastReportDate: String = "",
+    /** За какой день считаем обычные push, и сколько их уже ушло сегодня. */
+    val pushCountDate: String = "",
+    val pushCountToday: Int = 0,
+    /** Сотрудники, которым Петрович может позвонить или написать. */
+    val contacts: List<Contact> = emptyList(),
+    /**
+     * Снимок состояния парка с последней проверки: «на линии» (едет) / «стоят» (на связи, не едут) /
+     * «без связи» (нет свежих данных). Считается по реальной телеметрии в [ru.petrovich.telemetry.anomaly.AnomalyScanner],
+     * а не живой статус трекера — обновляется так же редко, как сама проверка.
+     */
+    val fleetOnline: Int = 0,
+    val fleetIdle: Int = 0,
+    val fleetOffline: Int = 0,
+    val fleetUpdatedAt: Long = 0,
 )
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -49,6 +84,21 @@ class SettingsRepository(private val context: Context) {
         val pushWarning = booleanPreferencesKey("push_warning")
         val themeMode = stringPreferencesKey("theme_mode")
         val lastScanAt = longPreferencesKey("last_scan_at")
+        val reportTime = stringPreferencesKey("report_time")
+        val reportDays = stringPreferencesKey("report_days")
+        val voiceReportEnabled = booleanPreferencesKey("voice_report_enabled")
+        val quietHoursEnabled = booleanPreferencesKey("quiet_hours_enabled")
+        val quietHoursStart = stringPreferencesKey("quiet_hours_start")
+        val quietHoursEnd = stringPreferencesKey("quiet_hours_end")
+        val limitDailyPush = booleanPreferencesKey("limit_daily_push")
+        val lastReportDate = stringPreferencesKey("last_report_date")
+        val pushCountDate = stringPreferencesKey("push_count_date")
+        val pushCountToday = intPreferencesKey("push_count_today")
+        val contacts = stringPreferencesKey("contacts_json")
+        val fleetOnline = intPreferencesKey("fleet_online")
+        val fleetIdle = intPreferencesKey("fleet_idle")
+        val fleetOffline = intPreferencesKey("fleet_offline")
+        val fleetUpdatedAt = longPreferencesKey("fleet_updated_at")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -64,6 +114,23 @@ class SettingsRepository(private val context: Context) {
         pushWarning = this[Keys.pushWarning] ?: true,
         lastScanAt = this[Keys.lastScanAt] ?: 0,
         themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
+        reportTime = this[Keys.reportTime] ?: "08:00",
+        reportDays = this[Keys.reportDays]?.let { raw ->
+            raw.split(',').mapNotNull { it.trim().toIntOrNull() }.mapNotNull { n -> DayOfWeek.entries.firstOrNull { it.value == n } }.toSet()
+        }?.takeIf { it.isNotEmpty() } ?: DefaultReportDays,
+        voiceReportEnabled = this[Keys.voiceReportEnabled] ?: true,
+        quietHoursEnabled = this[Keys.quietHoursEnabled] ?: true,
+        quietHoursStart = this[Keys.quietHoursStart] ?: "22:00",
+        quietHoursEnd = this[Keys.quietHoursEnd] ?: "07:00",
+        limitDailyPush = this[Keys.limitDailyPush] ?: true,
+        lastReportDate = this[Keys.lastReportDate].orEmpty(),
+        pushCountDate = this[Keys.pushCountDate].orEmpty(),
+        pushCountToday = this[Keys.pushCountToday] ?: 0,
+        contacts = decodeContacts(this[Keys.contacts].orEmpty()),
+        fleetOnline = this[Keys.fleetOnline] ?: 0,
+        fleetIdle = this[Keys.fleetIdle] ?: 0,
+        fleetOffline = this[Keys.fleetOffline] ?: 0,
+        fleetUpdatedAt = this[Keys.fleetUpdatedAt] ?: 0,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -85,6 +152,21 @@ class SettingsRepository(private val context: Context) {
             p[Keys.pushWarning] = new.pushWarning
             p[Keys.themeMode] = new.themeMode.name
             p[Keys.lastScanAt] = new.lastScanAt
+            p[Keys.reportTime] = new.reportTime
+            p[Keys.reportDays] = new.reportDays.joinToString(",") { it.value.toString() }
+            p[Keys.voiceReportEnabled] = new.voiceReportEnabled
+            p[Keys.quietHoursEnabled] = new.quietHoursEnabled
+            p[Keys.quietHoursStart] = new.quietHoursStart
+            p[Keys.quietHoursEnd] = new.quietHoursEnd
+            p[Keys.limitDailyPush] = new.limitDailyPush
+            p[Keys.lastReportDate] = new.lastReportDate
+            p[Keys.pushCountDate] = new.pushCountDate
+            p[Keys.pushCountToday] = new.pushCountToday
+            p[Keys.contacts] = encodeContacts(new.contacts)
+            p[Keys.fleetOnline] = new.fleetOnline
+            p[Keys.fleetIdle] = new.fleetIdle
+            p[Keys.fleetOffline] = new.fleetOffline
+            p[Keys.fleetUpdatedAt] = new.fleetUpdatedAt
         }
     }
 }

@@ -1,5 +1,6 @@
 package ru.petrovich.telemetry.ui.chat
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,19 +14,20 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -36,11 +38,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -55,31 +63,35 @@ import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.ui.common.EmailDraftCard
 import ru.petrovich.telemetry.ui.common.PChip
-import ru.petrovich.telemetry.ui.common.time
+import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.hhmm
+import ru.petrovich.telemetry.ui.common.rememberVoiceInput
+import ru.petrovich.telemetry.ui.common.time
 import ru.petrovich.telemetry.ui.theme.Petrovich
-import androidx.compose.ui.draw.clip
 import ru.petrovich.telemetry.util.runCatchingCancellable
 
 data class ChatUiState(val messages: List<ChatMessage>, val agentTyping: Boolean = false)
 
 class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : ViewModel() {
+    // Текст первой реплики — как в макете (3.11): «Здравствуйте! Я слежу за парком. Спросите голосом
+    // или выберите вопрос ниже.»
     private val greeting = ChatMessage(
         author = Author.AGENT,
-        text = "Здравствуйте! Спросите про машины, водителей или топливо — отвечу, что происходит в парке.",
+        text = "Здравствуйте! Я слежу за парком. Спросите голосом или выберите вопрос ниже.",
     )
     private val _state = MutableStateFlow(ChatUiState(listOf(greeting)))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    fun send(text: String) {
+    fun send(text: String, contextAnomalyId: String?) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _state.value.agentTyping) return
         _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = trimmed), agentTyping = true) }
         viewModelScope.launch {
-            val reply = runCatchingCancellable { agent.reply(_state.value.messages) }
+            val reply = runCatchingCancellable { agent.reply(_state.value.messages, contextAnomalyId) }
                 .fold(
-                    onSuccess = { ChatMessage(author = Author.AGENT, text = it) },
+                    onSuccess = { ChatMessage(author = Author.AGENT, text = it.text, openAnomalyId = it.openAnomalyId, actionLabel = it.actionLabel, emailDraft = it.emailDraft, assignable = it.assignable) },
                     onFailure = { ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true) },
                 )
             _state.update { it.copy(messages = it.messages + reply, agentTyping = false) }
@@ -92,23 +104,28 @@ class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : V
 }
 
 private val suggestions = listOf(
-    "Всё ли в порядке с машинами?",
-    "Какие аномалии за сутки?",
-    "Проверь уровень топлива",
-    "Состояние аккумуляторов",
+    "Что у меня не так?",
+    "Аномалии за неделю",
+    "Кто больше всех жжёт топливо?",
+    "Есть проблемы со связью?",
 )
 
 private val contextSuggestions = listOf("Он раньше так делал?", "Как это доказать?")
 
 /** [anomalyId] — если чат открыт из карточки аномалии, показываем контекст разговора. */
 @Composable
-fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = viewModel()) {
+fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -> Unit, vm: ChatViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val context = anomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
     var input by rememberSaveable { mutableStateOf("") }
     val listState = rememberLazyListState()
     val c = Petrovich.colors
+    val appContext = LocalContext.current
+    val voiceInput = rememberVoiceInput(
+        onResult = { input = it },
+        onUnavailable = { Toast.makeText(appContext, "Голосовой ввод недоступен на этом устройстве", Toast.LENGTH_SHORT).show() },
+    )
 
     LaunchedEffect(state.messages.size, state.agentTyping) {
         val count = state.messages.size + if (state.agentTyping) 1 else 0
@@ -119,7 +136,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
         topBar = {
             AppTopBar(
                 title = "Петрович",
-                subtitle = if (ServiceLocator.chatAgent.connected) null else "Агент не подключён · ответы-заглушки",
+                subtitle = if (ServiceLocator.chatAgent.connected) null else "Работает по данным парка, без внешней ИИ-модели",
                 onBack = onBack,
                 actions = { IconButton(onClick = vm::clear) { Icon(Icons.Filled.DeleteSweep, "Очистить чат") } },
             )
@@ -143,17 +160,16 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
                         )
                     }
                 }
-                items(state.messages, key = { it.id }) { MessageBubble(it) }
+                items(state.messages, key = { it.id }) { MessageBubble(it, onOpenCard) }
                 if (state.agentTyping) item { TypingBubble() }
             }
-            if (state.messages.size <= 1) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(bottom = 8.dp),
-                ) {
-                    items(if (context != null) contextSuggestions else suggestions) { s -> PChip(s, selected = false, onClick = { vm.send(s) }) }
-                }
+            // Подсказки видны всегда, как в макете — не только пока диалог пуст.
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(bottom = 8.dp),
+            ) {
+                items(if (context != null) contextSuggestions else suggestions) { s -> PChip(s, selected = false, onClick = { vm.send(s, anomalyId) }) }
             }
             Row(
                 Modifier.fillMaxWidth().background(c.surface).padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
@@ -172,49 +188,86 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, vm: ChatViewModel = vi
                         focusedBorderColor = c.accent, unfocusedBorderColor = c.line,
                     ),
                 )
+                // При вводе текста микрофон меняется на «Отправить» — одна кнопка, а не две (3.11).
+                val canSend = input.isNotBlank() && !state.agentTyping
                 FilledIconButton(
-                    onClick = { vm.send(input); input = "" },
-                    enabled = input.isNotBlank() && !state.agentTyping,
+                    onClick = { if (canSend) { vm.send(input, anomalyId); input = "" } else voiceInput() },
+                    enabled = !state.agentTyping,
                     modifier = Modifier.size(48.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.accent, contentColor = c.onAccent),
-                ) { Icon(Icons.AutoMirrored.Filled.Send, "Отправить") }
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (canSend) c.accent else c.surface2,
+                        contentColor = if (canSend) c.onAccent else c.ink,
+                    ),
+                ) {
+                    if (canSend) Icon(Icons.AutoMirrored.Filled.Send, "Отправить") else Icon(Icons.Filled.Mic, "Сказать голосом")
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MessageBubble(msg: ChatMessage) {
-    val mine = msg.author == Author.USER
+private fun MessageBubble(msg: ChatMessage, onOpenCard: (String) -> Unit) {
     val c = Petrovich.colors
-    val bg = when {
-        msg.isError -> c.highSoft
-        mine -> c.accent
-        else -> c.surface
-    }
-    val fg = when {
-        msg.isError -> c.high
-        mine -> c.onAccent
-        else -> c.ink
-    }
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart) {
-        Surface(
-            color = bg,
-            contentColor = fg,
-            shape = RoundedCornerShape(
-                topStart = 18.dp, topEnd = 18.dp,
-                bottomStart = if (mine) 18.dp else 6.dp, bottomEnd = if (mine) 6.dp else 18.dp,
-            ),
-            modifier = Modifier.widthIn(max = 320.dp),
-        ) {
-            Text(msg.text, Modifier.padding(horizontal = 13.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyMedium)
+    // Сообщения владельца — пузырём справа; ответ Петровича — без пузыря, с аватаром (3.11).
+    if (msg.author == Author.USER) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            Surface(
+                color = c.accent,
+                contentColor = c.onAccent,
+                shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 6.dp),
+                modifier = Modifier.widthIn(max = 320.dp),
+            ) {
+                Text(msg.text, Modifier.padding(horizontal = 13.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyMedium)
+            }
         }
+        return
+    }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PetrovichAvatar()
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(msg.text, style = MaterialTheme.typography.bodyMedium, color = if (msg.isError) c.high else c.ink)
+            if (msg.openAnomalyId != null) {
+                SoftButton(
+                    msg.actionLabel ?: "Открыть карточку", onClick = { onOpenCard(msg.openAnomalyId) },
+                    container = c.accent, content = c.onAccent,
+                )
+            }
+            if (msg.assignable != null) AssignChip(msg.assignable)
+            msg.emailDraft?.let { draft -> EmailDraftCard(draft, Modifier.fillMaxWidth()) }
+        }
+    }
+}
+
+/** Круглый аватар «П» — по макету сопровождает ответы Петровича в чате. */
+@Composable
+private fun PetrovichAvatar() {
+    val c = Petrovich.colors
+    Box(Modifier.size(32.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+        Text("П", color = c.onAccent, fontFamily = Petrovich.display, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun AssignChip(suggestion: ru.petrovich.telemetry.chat.AssignSuggestion) {
+    val scope = rememberCoroutineScope()
+    var done by remember(suggestion.anomalyId) { mutableStateOf(false) }
+    val c = Petrovich.colors
+    if (done) {
+        Text("✓ Передано «${suggestion.assigneeName}»", style = MaterialTheme.typography.labelMedium, color = c.muted)
+    } else {
+        SoftButton(
+            "Передать «${suggestion.assigneeName}»",
+            onClick = { scope.launch { ServiceLocator.anomalyStore.markInProgress(suggestion.anomalyId, "${suggestion.assigneeName} · ${suggestion.assigneeRole}") }; done = true },
+        )
     }
 }
 
 @Composable
 private fun TypingBubble() {
-    Surface(color = Petrovich.colors.surface, shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomEnd = 18.dp, bottomStart = 6.dp)) {
-        Text("Петрович печатает…", Modifier.padding(horizontal = 13.dp, vertical = 10.dp), style = MaterialTheme.typography.bodySmall, color = Petrovich.colors.muted)
+    val c = Petrovich.colors
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        PetrovichAvatar()
+        Text("Петрович печатает…", style = MaterialTheme.typography.bodySmall, color = c.muted)
     }
 }

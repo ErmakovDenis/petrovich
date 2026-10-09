@@ -1,6 +1,7 @@
 package ru.petrovich.telemetry.data
 
 import java.time.Duration
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import kotlin.math.PI
@@ -87,4 +88,63 @@ class DemoTelemetryRepository : TelemetryRepository {
         withSecond(0).withNano(0).withMinute(minute - minute % 5)
 
     private fun Double.round1() = Math.round(this * 10) / 10.0
+
+    /**
+     * Схематичный маршрут для карты (3.14) — условные координаты 0..1, не географические (см. комментарий
+     * у [VehicleRoute] в Models.kt). Та же треть машин, что получает «слив топлива» в [telemetry] (idx % 3 == 1),
+     * здесь стоит на базе весь день и помечена той же аномалией — чтобы демо выглядело цельно.
+     */
+    override suspend fun route(vehicle: Vehicle, day: LocalDate): VehicleRoute {
+        val idx = vehicle.id.removePrefix("demo-").toIntOrNull() ?: 0
+        val stationary = idx % 3 == 1
+        val baseLabel = "База «${vehicle.group ?: "—"}»"
+        val base = GeoZone(
+            x = 0.20f + 0.14f * (idx % 3),
+            y = 0.56f + 0.10f * ((idx / 3) % 3),
+            width = 0.16f, height = 0.10f, label = baseLabel,
+        )
+        val cx = base.x + base.width / 2
+        val cy = base.y + base.height / 2
+        val dayStart = day.atStartOfDay()
+        val today = day == LocalDate.now()
+        // Для сегодняшнего дня трек известен только до «сейчас»; для прошлых дней — весь день целиком.
+        val cap = if (today) LocalDateTime.now() else day.atTime(23, 59)
+
+        if (stationary) {
+            val events = mutableListOf(
+                TripEvent(dayStart, cap, TripEventKind.STOP, "Стоит на базе «${vehicle.group ?: "—"}»"),
+            )
+            val anomalyAt = dayStart.plusHours(3).plusMinutes(40)
+            if (!anomalyAt.isAfter(cap)) {
+                events += TripEvent(
+                    from = anomalyAt, kind = TripEventKind.ANOMALY,
+                    text = "Уровень топлива упал на 140 л", detail = "−140 л · ${fmtHm(anomalyAt)}",
+                )
+            }
+            return VehicleRoute(day, base, points = listOf(RoutePoint(cx, cy, dayStart)), events = events, movedToday = false)
+        }
+
+        val depart = dayStart.plusHours(7).plusMinutes(10)
+        val turn = depart.plusMinutes(45)
+        val arrive = depart.plusHours(2).plusMinutes(30)
+        val farX = (cx + 0.10f + 0.03f * (idx % 4)).coerceIn(0.10f, 0.88f)
+        val farY = (cy - 0.32f - 0.03f * (idx % 3)).coerceIn(0.10f, 0.88f)
+        val km = 70 + (idx * 13) % 60
+
+        val points = mutableListOf(RoutePoint(cx, cy, depart))
+        val events = mutableListOf(TripEvent(depart, kind = TripEventKind.DEPARTURE, text = "Выезд с базы «${vehicle.group ?: "—"}»"))
+        if (!turn.isAfter(cap)) points += RoutePoint(cx, farY, turn)
+        if (!arrive.isAfter(cap)) {
+            points += RoutePoint(farX, farY, arrive)
+            events += TripEvent(depart, arrive, TripEventKind.DRIVE, "В пути · $km км")
+            val stopEnd = arrive.plusMinutes(40)
+            events += if (!stopEnd.isAfter(cap)) TripEvent(arrive, stopEnd, TripEventKind.STOP, "Стоянка · объект «Карьер»")
+            else TripEvent(arrive, null, TripEventKind.STOP, "Стоянка · объект «Карьер»")
+        } else if (points.size > 1) {
+            events += TripEvent(depart, cap, TripEventKind.DRIVE, "В пути · ${km / 2} км")
+        }
+        return VehicleRoute(day, base, points, events, movedToday = points.size > 1)
+    }
+
+    private fun fmtHm(t: LocalDateTime) = "%02d:%02d".format(t.hour, t.minute)
 }
