@@ -146,6 +146,13 @@ class AutoGraphTelemetryRepository(
             withContext(Dispatchers.Default) { builder.build() }
         }
 
+    /**
+     * Честно: Service API АвтоГРАФ, с которым здесь работает приложение, не отдаёт ни координат,
+     * ни геозон (EnumDevices/EnumParameters/GetTripTables — нигде нет lat/lon или геозоны).
+     * Поэтому маршрут не выдумываем, а явно возвращаем null — экран карты покажет пустое состояние.
+     */
+    override suspend fun route(vehicle: Vehicle, day: java.time.LocalDate): VehicleRoute? = null
+
     companion object {
         private val API_DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")
     }

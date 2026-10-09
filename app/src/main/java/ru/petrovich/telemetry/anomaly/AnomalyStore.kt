@@ -46,10 +46,31 @@ class AnomalyStore(private val file: File) {
         val current = _anomalies.value
         val known = current.mapTo(HashSet()) { it.id }
         val fresh = found.filter { it.id !in known }
+            .map { it.copy(timeline = listOf(TimelineStep(it.detectedAt, "Петрович заметил: ${it.title}"))) }
         if (fresh.isNotEmpty()) {
             save((fresh + current).sortedByDescending { it.eventTime }.take(maxItems))
         }
         fresh
+    }
+
+    /** Честно добавляет шаг в журнал разбора — без изменения статуса. */
+    suspend fun appendStep(id: String, text: String) = mutex.withLock {
+        save(_anomalies.value.map { if (it.id == id) it.copy(timeline = it.timeline + TimelineStep(System.currentTimeMillis(), text)) else it })
+    }
+
+    /** Закрывает «Ход разбора»: статус, текст итога, что сделали, и финальный шаг журнала. */
+    suspend fun closeWithOutcome(id: String, resolution: Resolution, outcomeDetail: String, actionsTaken: List<String>) = mutex.withLock {
+        save(_anomalies.value.map {
+            if (it.id == id) it.copy(
+                acknowledged = true,
+                resolution = resolution,
+                falseAlarmReason = null,
+                assignedTo = null,
+                outcomeDetail = outcomeDetail,
+                actionsTaken = actionsTaken,
+                timeline = it.timeline + TimelineStep(System.currentTimeMillis(), "Разбор закрыт: $outcomeDetail"),
+            ) else it
+        })
     }
 
     /** Лента со стенда целиком вместо кэша; отметки «просмотрено» сохраняются по id. */
@@ -82,14 +103,21 @@ class AnomalyStore(private val file: File) {
 
     suspend fun resolve(id: String, resolution: Resolution, reason: String? = null) = mutex.withLock {
         save(_anomalies.value.map {
-            if (it.id == id) it.copy(acknowledged = true, resolution = resolution, falseAlarmReason = reason) else it
+            if (it.id == id) it.copy(acknowledged = true, resolution = resolution, falseAlarmReason = reason, assignedTo = null) else it
+        })
+    }
+
+    /** Передаёт аномалию в работу конкретному сотруднику (звонок, письмо, ручное назначение). */
+    suspend fun markInProgress(id: String, assignee: String) = mutex.withLock {
+        save(_anomalies.value.map {
+            if (it.id == id) it.copy(acknowledged = true, resolution = Resolution.IN_PROGRESS, falseAlarmReason = null, assignedTo = assignee) else it
         })
     }
 
     /** Возвращает аномалию в «ждут решения». */
     suspend fun reopen(id: String) = mutex.withLock {
         save(_anomalies.value.map {
-            if (it.id == id) it.copy(acknowledged = false, resolution = null, falseAlarmReason = null) else it
+            if (it.id == id) it.copy(acknowledged = false, resolution = null, falseAlarmReason = null, assignedTo = null) else it
         })
     }
 

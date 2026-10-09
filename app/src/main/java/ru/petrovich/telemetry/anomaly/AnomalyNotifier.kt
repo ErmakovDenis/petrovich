@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import ru.petrovich.telemetry.MainActivity
 import ru.petrovich.telemetry.R
+import ru.petrovich.telemetry.ui.common.label
 
 /** Уведомления об аномалиях; в тестах — подставные. */
 interface AnomalyNotifications {
@@ -23,7 +24,7 @@ interface AnomalyNotifications {
     companion object {
         /**
          * О чём уведомлять: информационные события (например, кратковременное пропадание питания) — только в списке,
-         * без уведомления; остальное — по выбору владельца (экран «Что присылать»).
+         * без уведомления; остальное — по выбору владельца (настройки уведомлений).
          */
         fun wanted(all: List<Anomaly>, pushCritical: Boolean, pushWarning: Boolean): List<Anomaly> = all.filter {
             when (it.severity) {
@@ -68,9 +69,10 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
 
         // Отдельные уведомления для первых нескольких + сводное.
         anomalies.sortedByDescending { it.severity }.take(5).forEach { a ->
+            // Формат заголовка — «Срочно · X452: ушло 140 л топлива» (3.3 «Уведомления»).
             val n = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("${a.vehicleName}: ${a.title}")
+                .setContentTitle("${a.severity.label()} · ${a.vehicleName}: ${a.title}")
                 .setContentText(a.description)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(a.description))
                 .setPriority(if (a.severity == Severity.CRITICAL) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
@@ -79,6 +81,8 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
                 .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .setPublicVersion(publicVersion)
                 .setContentIntent(pending)
+                .addAction(0, "Разберись", pending)
+                .addAction(0, "Напомнить утром", pending)
                 .setAutoCancel(true)
                 .build()
             manager.notify(a.id.hashCode(), n)
@@ -97,6 +101,33 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
         manager.notify(SUMMARY_ID, summary)
     }
 
+    /** Утренний доклад: один пуш со сводкой за сутки, открывает приложение на «Главной». */
+    fun notifyDailyReport(data: ru.petrovich.telemetry.ui.home.HomeData) {
+        if (!canNotify()) return
+        val body = if (data.pendingCount == 0) {
+            "Замечаний нет."
+        } else {
+            buildString {
+                append(data.topLines.joinToString(". ") { (vehicle, what) -> "$vehicle — $what" })
+                if (data.moreCount > 0) append(". И ещё ${data.moreCount}.")
+            }
+        }
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pending = PendingIntent.getActivity(context, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Петрович · ${data.verdict}")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(REPORT_ID, n)
+    }
+
     override fun canNotify(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -105,5 +136,6 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
         const val CHANNEL_ID = "anomalies"
         private const val GROUP = "ru.petrovich.telemetry.ANOMALIES"
         private const val SUMMARY_ID = 1
+        private const val REPORT_ID = 2
     }
 }

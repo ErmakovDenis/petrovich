@@ -11,9 +11,12 @@ import ru.petrovich.telemetry.data.StandRequests
 @Serializable
 data class EmailRecipient(val id: String, val name: String, val role: String, val email: String)
 
-/** Черновик письма из ответа ассистента. */
+/**
+ * Черновик письма из ответа ассистента на стенде; отправляет стенд по «Отправить». Не путать с [EmailDraft] локального
+ * «Петровича» — тот открывается в почтовом клиенте устройства.
+ */
 @Serializable
-data class EmailDraft(
+data class StandEmailDraft(
     val id: String,
     val recipients: List<EmailRecipient>,
     val subject: String,

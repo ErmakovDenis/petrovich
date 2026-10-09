@@ -20,16 +20,16 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import ru.petrovich.telemetry.chat.AgentReply
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
+import ru.petrovich.telemetry.chat.ChatReply
 import ru.petrovich.telemetry.chat.DraftState
 import ru.petrovich.telemetry.chat.EmailActions
-import ru.petrovich.telemetry.chat.EmailDraft
 import ru.petrovich.telemetry.chat.EmailRecipient
 import ru.petrovich.telemetry.chat.EmailResult
 import ru.petrovich.telemetry.chat.RemoteChatAgent
+import ru.petrovich.telemetry.chat.StandEmailDraft
 import ru.petrovich.telemetry.chat.StandEmails
 import ru.petrovich.telemetry.chat.StubChatAgent
 import ru.petrovich.telemetry.data.StandClient
@@ -57,7 +57,7 @@ class EmailDraftsTest {
 
     private fun fixture(name: String) = File(TripTablesGolden.repoRoot(), "testdata/contract/$name").readText()
 
-    private val draft = EmailDraft(
+    private val draft = StandEmailDraft(
         id = "c3RhbmQtZHJhZnQtaWQtMDE",
         recipients = listOf(EmailRecipient("mechanic", "Иван Петров", "Механик", "mechanic@example.org")),
         subject = "Перегрев: Урал NEXT А001АА", body = "Прошу проверить систему охлаждения.", expiresAt = 2_000,
@@ -72,13 +72,13 @@ class EmailDraftsTest {
         val history = listOf(ChatMessage(author = Author.USER, text = "Подготовь письмо механику"))
 
         val reply = agent.reply(history)
-        assertEquals("mechanic@example.org", reply.drafts.single().recipients.single().email)
-        assertEquals(1789537500000, reply.drafts.single().expiresAt)
+        assertEquals("mechanic@example.org", reply.standDrafts.single().recipients.single().email)
+        assertEquals(1789537500000, reply.standDrafts.single().expiresAt)
         assertEquals("true", Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["allowEmail"]!!.jsonPrimitive.content)
 
         // Переключатель выключен — поле не передаётся (стенд считает false), ответ без черновиков — как раньше.
         allow = false
-        assertEquals(AgentReply("Нет данных."), agent.reply(history))
+        assertEquals(ChatReply("Нет данных."), agent.reply(history))
         assertFalse(server.takeRequest().body.readUtf8().contains("allowEmail"))
     }
 
@@ -87,7 +87,7 @@ class EmailDraftsTest {
         val agent = RemoteChatAgent(client(), utcOffsetMinutes = { 300 })
         val history = listOf(
             ChatMessage(author = Author.USER, text = "Подготовь письмо"),
-            ChatMessage(author = Author.AGENT, text = "", draft = draft, draftState = DraftState.CANCELLED),
+            ChatMessage(author = Author.AGENT, text = "", standDraft = draft, draftState = DraftState.CANCELLED),
             ChatMessage(author = Author.USER, text = "Подготовь ещё раз"),
         )
         val turns = Json.parseToJsonElement(ApiFactoryJson.encode(agent.request(history, null))).jsonObject["messages"]!!.jsonArray
@@ -129,16 +129,17 @@ class EmailDraftsTest {
     }
 
     private fun agentWithDraft() = object : ChatAgent {
-        override suspend fun reply(history: List<ChatMessage>) = AgentReply("Черновик готов.", listOf(draft))
+        override suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String?) =
+            ChatReply("Черновик готов.", standDrafts = listOf(draft))
     }
 
     @Test
     fun draftIsSentOnlyByUserAndErrorsAreShown() = runTest {
         val emails = FakeEmails(fail = "Письмо не отправлено: почтовый сервер ответил ошибкой 451")
         val vm = ChatViewModel(agentWithDraft(), emails)
-        vm.send("Подготовь письмо механику")
+        vm.send("Подготовь письмо механику", null)
         val message = vm.state.value.messages.last()
-        assertEquals(draft, message.draft)
+        assertEquals(draft, message.standDraft)
         assertEquals("Черновик готов.", vm.state.value.messages[vm.state.value.messages.size - 2].text)
         // Ответ с черновиком сам ничего не отправляет.
         assertTrue(emails.sent.isEmpty())
@@ -163,9 +164,9 @@ class EmailDraftsTest {
     fun cancelledOrExpiredDraftIsNotSent() = runTest {
         val emails = FakeEmails()
         val vm = ChatViewModel(agentWithDraft(), emails)
-        vm.send("Письмо")
-        vm.send("Ещё письмо")
-        val (first, second) = vm.state.value.messages.filter { it.draft != null }
+        vm.send("Письмо", null)
+        vm.send("Ещё письмо", null)
+        val (first, second) = vm.state.value.messages.filter { it.standDraft != null }
         vm.cancelDraft(first.id)
         vm.sendDraft(first.id)
         assertEquals(listOf(draft.id), emails.cancelled)
@@ -186,13 +187,13 @@ class EmailDraftsTest {
         // Письмо ушло, ответ потерялся; повторное нажатие — стенд отвечает 409 «уже отправлено».
         val emails = FakeEmails(fail = "Письмо уже отправлено", failCode = 409)
         val vm = ChatViewModel(agentWithDraft(), emails)
-        vm.send("Письмо")
+        vm.send("Письмо", null)
         val id = vm.state.value.messages.last().id
         vm.sendDraft(id)
         assertEquals(DraftState.SENT, vm.state.value.messages.last().draftState)
         // Другой 409 (черновик отменён) — ошибка.
         emails.fail = "Черновик отменён"
-        vm.send("Ещё")
+        vm.send("Ещё", null)
         vm.sendDraft(vm.state.value.messages.last().id)
         assertEquals(DraftState.FAILED, vm.state.value.messages.last().draftState)
     }
@@ -200,9 +201,9 @@ class EmailDraftsTest {
     @Test
     fun stubAgentStillAnswersWithoutDrafts() = runTest {
         val vm = ChatViewModel(StubChatAgent(), FakeEmails())
-        vm.send("Привет")
+        vm.send("Привет", null)
         testScheduler.advanceUntilIdle()
-        assertTrue(vm.state.value.messages.none { it.draft != null })
+        assertTrue(vm.state.value.messages.none { it.standDraft != null })
     }
 }
 

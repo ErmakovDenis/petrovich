@@ -17,10 +17,10 @@ import org.junit.Before
 import org.junit.Test
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Severity
-import ru.petrovich.telemetry.chat.AgentReply
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
+import ru.petrovich.telemetry.chat.ChatReply
 import ru.petrovich.telemetry.chat.ChatRequest
 import ru.petrovich.telemetry.chat.ContextualChatAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
@@ -183,21 +183,21 @@ class RemoteChatAgentTest {
         val calls = mutableListOf<String>()
         val stub = object : ChatAgent {
             override val connected = false
-            override suspend fun reply(history: List<ChatMessage>) = AgentReply("заглушка").also { calls += it.text }
+            override suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String?) =
+                ChatReply("заглушка").also { calls += it.text }
         }
         val remote = object : ContextualChatAgent {
-            override suspend fun reply(history: List<ChatMessage>) = reply(history, null)
             override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?) =
-                AgentReply("стенд").also { calls += "${it.text}:${anomaly?.id}" }
+                ChatReply("стенд").also { calls += "${it.text}:${anomaly?.id}" }
         }
-        val switching = SwitchingChatAgent(settings, stub, remote, backgroundScope)
+        val switching = SwitchingChatAgent(settings, stub, remote, backgroundScope) { id -> anomaly.takeIf { it.id == id } }
 
-        assertEquals("заглушка", switching.reply(history, anomaly).text)
+        assertEquals("заглушка", switching.reply(history, anomaly.id).text)
         settings.value = AppSettings(assistantViaServer = true, serverUrl = "https://stand")
-        assertEquals("стенд", switching.reply(history, anomaly).text)
+        assertEquals("стенд", switching.reply(history, anomaly.id).text)
         // Демо-режим: новые пути не действуют.
         settings.value = settings.value.copy(demoMode = true)
-        assertEquals("заглушка", switching.reply(history, anomaly).text)
+        assertEquals("заглушка", switching.reply(history, anomaly.id).text)
         settings.value = settings.value.copy(demoMode = false, serverUrl = "")
         assertEquals("заглушка", switching.reply(history).text)
         assertEquals(listOf("заглушка", "стенд:${anomaly.id}", "заглушка", "заглушка"), calls)

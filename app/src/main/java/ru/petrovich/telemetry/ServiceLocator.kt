@@ -15,6 +15,7 @@ import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
 import ru.petrovich.telemetry.anomaly.LocalVehicleChecker
 import ru.petrovich.telemetry.anomaly.MlAnomalyDetector
+import ru.petrovich.telemetry.anomaly.NotificationStore
 import ru.petrovich.telemetry.anomaly.ServerVehicleChecker
 import ru.petrovich.telemetry.anomaly.StandAnomalies
 import ru.petrovich.telemetry.anomaly.StandBackground
@@ -24,8 +25,8 @@ import ru.petrovich.telemetry.anomaly.VehicleChecker
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.EmailActions
 import ru.petrovich.telemetry.chat.StandEmails
+import ru.petrovich.telemetry.chat.PetrovichAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
-import ru.petrovich.telemetry.chat.StubChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
@@ -71,6 +72,8 @@ object ServiceLocator {
 
     val anomalyStore by lazy { AnomalyStore(appContext) }
 
+    val notificationStore by lazy { NotificationStore(appContext) }
+
     private val standAnomalies by lazy { StandAnomalies(stand) }
 
     // Переключатель «Хранить аномалии на стенде»: выключен — лента и решения только на устройстве, как раньше.
@@ -103,7 +106,7 @@ object ServiceLocator {
     }
 
     val anomalyScanner by lazy {
-        AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, anomalySync, backgroundAccess)
+        AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, notificationStore, anomalySync, backgroundAccess)
     }
 
     /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
@@ -126,9 +129,13 @@ object ServiceLocator {
         )
     }
 
-    /** «Отправить» и «Отменить» у черновика письма в чате. */
+    /** «Отправить» и «Отменить» у черновика письма со стенда в чате. */
     val emails: EmailActions by lazy { StandEmails(stand) }
 
-    // Переключатель «Ассистент через стенд»: выключен — заглушка, как раньше.
-    val chatAgent: ChatAgent by lazy { SwitchingChatAgent(settings.settings, StubChatAgent(), remoteChatAgent, appScope) }
+    // Переключатель «Ассистент через стенд»: выключен — локальный движок по правилам и данным парка.
+    val chatAgent: ChatAgent by lazy {
+        SwitchingChatAgent(settings.settings, PetrovichAgent(), remoteChatAgent, appScope) { id ->
+            anomalyStore.anomalies.value.firstOrNull { it.id == id }
+        }
+    }
 }

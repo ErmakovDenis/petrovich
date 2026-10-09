@@ -8,7 +8,11 @@ enum class Severity(val title: String) { INFO("Инфо"), WARNING("Предуп
 
 /** Решение владельца по аномалии. */
 @Serializable
-enum class Resolution { CONFIRMED, FALSE_ALARM }
+enum class Resolution { CONFIRMED, FALSE_ALARM, IN_PROGRESS }
+
+/** Шаг честного журнала разбора — только то, что действительно произошло, и когда. */
+@Serializable
+data class TimelineStep(val at: Long, val text: String)
 
 @Serializable
 data class Anomaly(
@@ -36,6 +40,14 @@ data class Anomaly(
     val resolution: Resolution? = null,
     /** Причина ложной тревоги (для [Resolution.FALSE_ALARM]). */
     val falseAlarmReason: String? = null,
+    /** Кому передано в работу (для [Resolution.IN_PROGRESS]) — имя и роль сотрудника. */
+    val assignedTo: String? = null,
+    /** Честный журнал разбора: что сделано и когда — от обнаружения до закрытия. */
+    val timeline: List<TimelineStep> = emptyList(),
+    /** Текст выбранного итога «Хода разбора» — «Слив подтвердился» / «Водитель объяснил — не слив» / «Ложная тревога». */
+    val outcomeDetail: String? = null,
+    /** Что сделали по итогу (можно несколько): «Вычли из премии», «Опломбировали бак» и т. п. */
+    val actionsTaken: List<String> = emptyList(),
     /** Кто принял решение (логин AutoGRAPH) — только для аномалий из хранилища стенда. */
     val resolvedBy: String? = null,
     /** Когда принято решение, epoch millis — только для аномалий из хранилища стенда. */

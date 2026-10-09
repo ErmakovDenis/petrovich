@@ -1,50 +1,43 @@
 package ru.petrovich.telemetry.ui.home
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.LocalGasStation
+import androidx.compose.material.icons.outlined.LocalShipping
+import androidx.compose.material.icons.outlined.Route
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.SignalCellularOff
+import androidx.compose.ui.graphics.vector.ImageVector
 import ru.petrovich.telemetry.data.settings.AppSettings
 
-enum class WidgetSize(val key: String) { S("s"), L("l") }
-
-enum class WidgetType(
-    val key: String,
-    val title: String,
-    val group: String,
-    val description: String,
-    val sizes: List<WidgetSize>,
-) {
-    DECISIONS("decisions", "Ждут решения", "Аномалии", "Сколько аномалий ещё не разобрано", listOf(WidgetSize.S, WidgetSize.L)),
-    URGENT("urgent", "Срочные случаи", "Аномалии", "Неразобранные срочные аномалии", listOf(WidgetSize.L)),
-    WEEK("week", "Аномалии за неделю", "Аномалии", "Сколько аномалий по дням за последние 7 дней", listOf(WidgetSize.L, WidgetSize.S)),
-    BY_CATEGORY("by_category", "По разделам", "Аномалии", "Топливо, аккумулятор, двигатель, движение", listOf(WidgetSize.L)),
-    TOP_VEHICLES("top_vehicles", "Больше всего аномалий", "Машины", "Три машины с наибольшим числом аномалий", listOf(WidgetSize.L)),
-    VEHICLES("vehicles", "Машины", "Машины", "Сколько машин в парке и у скольких есть замечания", listOf(WidgetSize.S, WidgetSize.L)),
-    FUEL("fuel", "Топливо", "Топливо", "Сливы и резкие падения уровня за неделю", listOf(WidgetSize.S, WidgetSize.L));
+/**
+ * Виджеты «Сводки» — ровно список из макета 3.16 («Можно добавить»): показатели из АвтоГРАФ,
+ * без выдуманных денег и прочего, чего там нет (см. «5. Данные на экранах»).
+ */
+enum class WidgetType(val key: String, val title: String, val description: String, val icon: ImageVector) {
+    FUEL("fuel", "Топливо", "Сколько топлива потратил парк", Icons.Outlined.LocalGasStation),
+    IDLE("idle", "Холостой ход", "Часы на холостом ходу", Icons.Outlined.Schedule),
+    MILEAGE("mileage", "Пробег", "Километраж по данным скорости", Icons.Outlined.Route),
+    REFUELS("refuels", "Заправки", "Число заправок по датчику уровня", Icons.Outlined.LocalGasStation),
+    OFFLINE("offline", "Без связи", "Какие машины молчат и сколько", Icons.Outlined.SignalCellularOff),
+    FUEL_TRUCKS("fuel_trucks", "Топливо · грузовые", "Расход топлива у грузовых машин", Icons.Outlined.LocalShipping);
 
     companion object {
         fun byKey(key: String) = entries.firstOrNull { it.key == key }
     }
 }
 
-data class WidgetSlot(val type: WidgetType, val size: WidgetSize)
+data class WidgetSlot(val type: WidgetType)
 
-val DefaultLayout = listOf(
-    WidgetSlot(WidgetType.DECISIONS, WidgetSize.S),
-    WidgetSlot(WidgetType.VEHICLES, WidgetSize.S),
-    WidgetSlot(WidgetType.WEEK, WidgetSize.L),
-    WidgetSlot(WidgetType.BY_CATEGORY, WidgetSize.L),
-)
+/** По умолчанию на главной — Топливо и Холостой ход, как в макете 3.2/3.16. */
+val DefaultLayout = listOf(WidgetSlot(WidgetType.FUEL), WidgetSlot(WidgetType.IDLE))
 
-/** Раскладка хранится строкой `ключ:размер,ключ:размер`. */
+/** Раскладка хранится строкой `ключ,ключ,...` (формат проще прежнего: у виджетов больше нет размера). */
 fun parseLayout(raw: String): List<WidgetSlot> {
     if (raw.isBlank()) return DefaultLayout
-    val slots = raw.split(',').mapNotNull { part ->
-        val (key, size) = part.split(':').takeIf { it.size == 2 } ?: return@mapNotNull null
-        val type = WidgetType.byKey(key) ?: return@mapNotNull null
-        val s = WidgetSize.entries.firstOrNull { it.key == size }?.takeIf { it in type.sizes } ?: type.sizes.first()
-        WidgetSlot(type, s)
-    }.distinctBy { it.type }
-    return slots
+    val slots = raw.split(',').mapNotNull { key -> WidgetType.byKey(key.substringBefore(':'))?.let { WidgetSlot(it) } }.distinctBy { it.type }
+    return slots.ifEmpty { DefaultLayout }
 }
 
-fun serializeLayout(slots: List<WidgetSlot>): String = slots.joinToString(",") { "${it.type.key}:${it.size.key}" }
+fun serializeLayout(slots: List<WidgetSlot>): String = slots.joinToString(",") { it.type.key }
 
 val AppSettings.layout: List<WidgetSlot> get() = parseLayout(widgetLayout)
