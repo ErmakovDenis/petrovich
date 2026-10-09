@@ -80,7 +80,7 @@ class RemoteChatAgentTest {
     fun sendsHistoryContextAndSessionHeaders() = runTest {
         server.enqueue(reply(200, """{"reply":"Данных о прошлых сливах у меня пока нет."}"""))
 
-        assertEquals("Данных о прошлых сливах у меня пока нет.", agent().reply(history, anomaly))
+        assertEquals("Данных о прошлых сливах у меня пока нет.", agent().reply(history, anomaly).text)
 
         val request = server.takeRequest()
         assertEquals("POST", request.method)
@@ -143,7 +143,7 @@ class RemoteChatAgentTest {
         server.enqueue(reply(401, """{"detail":"Сессия AutoGRAPH недействительна или истекла"}"""))
         server.enqueue(reply(200, """{"reply":"Готово."}"""))
 
-        assertEquals("Готово.", agent().reply(history))
+        assertEquals("Готово.", agent().reply(history).text)
 
         assertEquals("Bearer old-token", server.takeRequest().getHeader("Authorization"))
         assertEquals("Bearer fresh-token", server.takeRequest().getHeader("Authorization"))
@@ -188,7 +188,7 @@ class RemoteChatAgentTest {
         }
         val remote = object : ContextualChatAgent {
             override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?) =
-                "стенд".also { calls += "$it:${anomaly?.id}" }
+                ChatReply("стенд").also { calls += "${it.text}:${anomaly?.id}" }
         }
         val switching = SwitchingChatAgent(settings, stub, remote, backgroundScope) { id -> anomaly.takeIf { it.id == id } }
 

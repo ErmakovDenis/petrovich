@@ -115,7 +115,7 @@ class ScanService:
                 except SessionInvalid:
                     raise
                 except Exception as e:  # noqa: BLE001 — сбой одной машины не прерывает проверку остальных
-                    return VehicleScan(vehicle_id=vehicle_id, ok=False, error=_error_text(e))
+                    return VehicleScan(vehicle_id=vehicle_id, ok=False, error=error_text(e))
 
         outcomes = await asyncio.gather(*(one(v) for v in ids), return_exceptions=True)
         for o in outcomes:
@@ -188,7 +188,7 @@ class ScanService:
                 except SessionInvalid:
                     raise
                 except Exception as e:  # noqa: BLE001 — недоступный период отмечается в отчёте
-                    return _Window(w.vehicle_id, w.from_, w.to, _error_text(e))
+                    return _Window(w.vehicle_id, w.from_, w.to, error_text(e))
 
         outcomes = await asyncio.gather(*(check_window(w) for w in planned), return_exceptions=True)
         for o in outcomes:
@@ -258,7 +258,7 @@ def _local_time(text: str, utc_offset_minutes: int) -> datetime | None:
     return t
 
 
-def _error_text(e: Exception) -> str:
+def error_text(e: Exception) -> str:
     if isinstance(e, (VehicleNotFound, PeriodInvalid, AutoGraphUnavailable)):
         return str(e)
     if isinstance(e, TripTablesTooLarge):

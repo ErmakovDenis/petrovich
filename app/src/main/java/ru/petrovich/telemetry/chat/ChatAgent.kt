@@ -32,6 +32,9 @@ import java.util.UUID
 
 enum class Author { USER, AGENT }
 
+/** Что с черновиком письма со стенда в сообщении. */
+enum class DraftState { PENDING, SENDING, CANCELLING, SENT, CANCELLED, FAILED }
+
 /** Письмо-черновик, собранное по запросу — отправляется через почтовый клиент устройства. */
 data class EmailDraft(
     val recipientRole: String,
@@ -56,6 +59,11 @@ data class ChatMessage(
     val actionLabel: String? = null,
     val emailDraft: EmailDraft? = null,
     val assignable: AssignSuggestion? = null,
+    /** Черновик письма со стенда («Письма из чата»): показывается с кнопками «Отправить» и «Отменить». */
+    val standDraft: StandEmailDraft? = null,
+    val draftState: DraftState = DraftState.PENDING,
+    /** Почему письмо со стенда не отправлено (отказ стенда или ошибка SMTP). */
+    val draftError: String? = null,
 )
 
 data class ChatReply(
@@ -64,6 +72,8 @@ data class ChatReply(
     val actionLabel: String? = null,
     val emailDraft: EmailDraft? = null,
     val assignable: AssignSuggestion? = null,
+    /** Черновики писем со стенда (ассистент на стенде): отправляет их стенд только по «Отправить» в чате. */
+    val standDrafts: List<StandEmailDraft> = emptyList(),
 )
 
 /**
@@ -77,11 +87,11 @@ interface ChatAgent {
     suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String? = null): ChatReply
 }
 
-/** Ассистент на стенде: получает саму аномалию, из карточки которой открыт чат, и отвечает текстом. */
+/** Ассистент на стенде: получает саму аномалию, из карточки которой открыт чат, и отвечает текстом и черновиками писем. */
 interface ContextualChatAgent {
     val connected: Boolean get() = true
 
-    suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): String
+    suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): ChatReply
 }
 
 /**
@@ -105,7 +115,7 @@ class SwitchingChatAgent(
 
     override suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String?): ChatReply =
         if (settings.first().assistantOnServer) {
-            ChatReply(remote.reply(history, contextAnomalyId?.let(findAnomaly)))
+            remote.reply(history, contextAnomalyId?.let(findAnomaly))
         } else {
             local.reply(history, contextAnomalyId)
         }

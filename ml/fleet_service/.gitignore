@@ -9,3 +9,6 @@ __pycache__/
 *~
 # Локальная база хранилища (FS_DB_URL по умолчанию).
 data/
+
+# Список получателей писем с настоящими адресами (образец — config/recipients.example.toml).
+config/recipients.toml

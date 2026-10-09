@@ -86,6 +86,45 @@ scan_marks = Table(
     Column("last_scan_at", BigInteger, nullable=False),
 )
 
+# Доступ стенда к AutoGRAPH для фоновой проверки: одна запись на установку приложения (устройство).
+# Токен и пароль — только шифротекстом (background/crypto.py), пароль — только с согласия пользователя.
+background_access = Table(
+    "background_access",
+    metadata,
+    # Случайный id установки приложения: им же доступ отзывается.
+    Column("device_id", String(64), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    # Логин AutoGRAPH из X-User-Name; для доступа по паролю проверен входом в AutoGRAPH.
+    Column("user_name", String(200)),
+    # Смещение пояса пользователя: с ним стенд входит по паролю и задаёт периоды проверки.
+    Column("utc_offset_minutes", Integer, nullable=False),
+    # Последний токен сессии от приложения или от входа стенда по паролю; NULL — истёк.
+    Column("token_enc", Text),
+    # С какого момента стенд знает этот токен, epoch millis — для оценки срока жизни токена.
+    Column("token_since", BigInteger),
+    Column("password_enc", Text),
+    Column("registered_at", BigInteger, nullable=False),
+    # Когда приложение последний раз подтвердило доступ; давно не подтверждали — запись удаляется.
+    Column("refreshed_at", BigInteger, nullable=False),
+    # Последний раз доступ сработал в фоновой проверке, и последняя ошибка (текст для пользователя).
+    Column("last_ok_at", BigInteger),
+    Column("last_error", Text),
+    Index("ix_background_access_schema", "schema_id"),
+)
+
+# Какие аномалии уже показаны уведомлением пользователю (на любом из его устройств): одно событие — одно уведомление.
+notification_claims = Table(
+    "notification_claims",
+    metadata,
+    Column("schema_id", String(64), primary_key=True),
+    # Логин в нижнем регистре; без логина — id устройства.
+    Column("user_key", String(200), primary_key=True),
+    Column("anomaly_id", String(512), primary_key=True),
+    Column("device_id", String(64), nullable=False),
+    Column("claimed_at", BigInteger, nullable=False),
+    Index("ix_notification_claims_at", "claimed_at"),
+)
+
 
 def create_db_engine(url: str) -> Engine:
     """Движок SQLAlchemy; для SQLite-файла создаётся каталог, включается WAL и ожидание блокировки."""
@@ -103,3 +142,45 @@ def create_db_engine(url: str) -> Engine:
             cursor.close()
 
     return engine
+
+# Черновики писем: готовит ассистент (tool draft_email), отправляет стенд только по подтверждению в приложении.
+email_drafts = Table(
+    "email_drafts",
+    metadata,
+    # Случайный id (секрет черновика: его знает только приложение пользователя).
+    Column("id", String(64), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    # Владелец — логин из X-User-Name без учёта регистра; подтвердить или отменить может только он.
+    Column("user_key", String(200), nullable=False),
+    Column("user_name", String(200), nullable=False),
+    # id получателей через запятую (адреса — из файла получателей при отправке).
+    Column("recipient_ids", Text, nullable=False),
+    # SHA-256 пар «id=адрес» на момент подготовки: изменился адрес в файле — черновик не отправляется.
+    Column("recipients_hash", String(64), nullable=False),
+    Column("subject", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    # draft — ждёт подтверждения, sending — отправляется, sent, cancelled, failed — ушло не всем (повтор запрещён).
+    Column("status", String(16), nullable=False),
+    Column("sent_at", BigInteger),
+    Index("ix_email_drafts_user", "schema_id", "user_key", "status", "sent_at"),
+)
+
+# Журнал писем: каждая отправка и каждый отказ — кто, кому, когда, тема, итог. Текста письма и адресов здесь нет.
+email_log = Table(
+    "email_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", BigInteger, nullable=False),
+    Column("schema_id", String(64), nullable=False),
+    Column("user_name", String(200)),
+    Column("draft_id", String(64)),
+    # Получатели: «id (имя)» через запятую.
+    Column("recipients", Text, nullable=False),
+    Column("subject", Text, nullable=False),
+    # drafted, sent, failed, cancelled, limit, expired, repeat, not_found, rejected
+    Column("outcome", String(16), nullable=False),
+    Column("error", Text),
+    Index("ix_email_log_at", "at"),
+)

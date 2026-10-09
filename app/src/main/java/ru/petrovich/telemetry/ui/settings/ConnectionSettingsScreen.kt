@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.anomaly.BackgroundState
 import ru.petrovich.telemetry.anomaly.ImportReport
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.Schema
@@ -71,9 +72,12 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
     var initialized by remember { mutableStateOf(false) }
     var serverUrl by remember { mutableStateOf("") }
     var serverStatus by remember { mutableStateOf<String?>(null) }
+    /** Адрес, который можно сохранить, не отозвав доступ на прежнем стенде (тот не ответил). */
+    var urlWithoutRevoke by remember { mutableStateOf<String?>(null) }
     var storeStatus by remember { mutableStateOf<String?>(null) }
     var storeBusy by remember { mutableStateOf(false) }
     val importReport by ServiceLocator.anomalySync.lastImport.collectAsStateWithLifecycle()
+    val backgroundState by ServiceLocator.backgroundAccess.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(settings) {
         val s = settings ?: return@LaunchedEffect
@@ -188,7 +192,12 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
 
             Text("Стенд", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH, логин и пароль на стенд не передаются.",
+                if (s.backgroundOnServer && s.standPasswordConsent) {
+                    "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH; пароль передан стенду с вашего " +
+                        "согласия для фоновой проверки (раздел «Аномалии»)."
+                } else {
+                    "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH, логин и пароль на стенд не передаются."
+                },
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
@@ -209,11 +218,22 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                         serverStatus = "Нужен адрес https:// — без шифрования стенд доступен только в отладочной сборке"
                     } else {
                         scope.launch {
-                            repo.update { it.copy(serverUrl = normalizedUrl) }
+                            // Доступ для фоновой проверки отзывается на прежнем стенде: потом отозвать будет негде.
+                            // Прежний стенд не ответил — адрес меняется только по повторному нажатию.
+                            val revoked = runCatchingCancellable { ServiceLocator.backgroundAccess.revoke() }
+                            if (revoked.isFailure && urlWithoutRevoke != normalizedUrl) {
+                                urlWithoutRevoke = normalizedUrl
+                                serverStatus = "Прежний стенд не ответил — доступ для фоновой проверки там не отозван " +
+                                    "(без обновлений он удалится сам). Нажмите «Сохранить адрес» ещё раз, чтобы сменить адрес без отзыва"
+                                return@launch
+                            }
+                            urlWithoutRevoke = null
+                            // Доступ на новом стенде выдаётся заново (TelemetryApp следит за адресом).
+                            repo.update { it.copy(serverUrl = normalizedUrl, standAccessGranted = false) }
                             // С «Данными через стенд» адрес решает, откуда грузятся данные: экраны перечитываем.
                             if (s.telemetryViaServer && !s.demoMode) onChanged()
+                            serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
                         }
-                        serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
                     }
                 },
             ) { Text("Сохранить адрес") }
@@ -227,6 +247,17 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 },
                 checked = s.assistantViaServer,
                 onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
+            )
+            SwitchRow(
+                title = "Письма из чата",
+                subtitle = when {
+                    !s.assistantOnServer -> "Сначала включите «Ассистент через стенд»"
+                    else -> "Петрович может подготовить письмо получателям из списка стенда; письмо уходит, только когда вы " +
+                        "нажмёте «Отправить» в чате"
+                },
+                checked = s.emailViaServer,
+                enabled = s.assistantOnServer,
+                onChecked = { v -> save(reload = false) { it.copy(emailViaServer = v) } },
             )
             SwitchRow(
                 title = "Данные через стенд",
@@ -294,6 +325,29 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
             )
             storeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             importReport?.let { ImportReportText(it) }
+            SwitchRow(
+                title = "Фоновая проверка на стенде",
+                subtitle = when {
+                    !s.anomalyStoreOnServer -> "Сначала включите «Хранить аномалии на стенде»"
+                    !s.backgroundChecks -> "Фоновые проверки на телефоне выключены"
+                    else -> "Стенд сам проверяет машины по расписанию, даже когда телефон выключен; приложение в фоне " +
+                        "только забирает новые аномалии. Стенд работает по вашей сессии AutoGRAPH, пока она действует. " +
+                        "Выключено — проверяет телефон, доступ стенда отзывается"
+                },
+                checked = s.backgroundViaServer,
+                enabled = s.anomalyStoreOnServer && s.backgroundChecks,
+                onChecked = { v -> save(reload = false) { it.copy(backgroundViaServer = v) } },
+            )
+            if (s.backgroundOnServer) {
+                SwitchRow(
+                    title = "Разрешить стенду входить самостоятельно",
+                    subtitle = "Стенд хранит пароль AutoGRAPH в зашифрованном виде и сам входит, когда сессия истекла, — " +
+                        "проверка не прерывается, даже если телефон долго не в сети. Выключено — пароль удаляется со стенда",
+                    checked = s.standPasswordConsent,
+                    onChecked = { v -> save(reload = false) { it.copy(standPasswordConsent = v) } },
+                )
+                BackgroundStatusText(backgroundState)
+            }
             if (BuildConfig.DEBUG) {
                 SwitchRow(
                     title = "Сравнивать с устройством (отладка)",
@@ -320,6 +374,27 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onCheck
         }
         Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
     }
+}
+
+/** Состояние доступа стенда для фоновой проверки. */
+@Composable
+private fun BackgroundStatusText(state: BackgroundState) {
+    val st = state.status
+    val text = when {
+        state.error != null -> "Стенд не принял доступ: ${state.error}. Повторим при следующем фоновом обновлении"
+        st == null -> "Передаём стенду доступ…"
+        else -> buildString {
+            append(if (st.passwordStored) "Доступ стенда: сессия AutoGRAPH и сохранённый пароль" else "Доступ стенда: сессия AutoGRAPH")
+            val interval = if (st.intervalMinutes % 1.0 == 0.0) st.intervalMinutes.toInt().toString() else st.intervalMinutes.toString()
+            append(". Проверка каждые $interval мин за последние ${st.windowHours} ч")
+            st.lastScanAt?.let {
+                val at = Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime()
+                append(". Последняя проверка: ${at.toLocalDate().title()}, ${at.hhmm()}")
+            }
+            st.lastError?.let { append(". $it") }
+        }
+    }
+    Text(text, style = MaterialTheme.typography.bodySmall, color = if (state.error != null || st?.lastError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 /** Отчёт о переносе истории на стенд: несопоставленные решения перечислены, а не потеряны молча. */

@@ -41,15 +41,19 @@ data class ScanResult(val checkedVehicles: Int, val newAnomalies: List<Anomaly>,
  * Уведомления — на устройстве при любом источнике. Без хранилища на стенде новые — те, которых нет в [store]
  * (дедупликация по id). При хранилище на стенде ([sync]) проверка сохраняет результат на стенде, лента после неё
  * берётся со стенда, а новые — появившиеся на стенде после прошлого обновления ([AnomalySync.refresh]).
+ *
+ * При фоновой проверке на стенде ([background], [poll]) в фоне устройство не проверяет само, а забирает новые
+ * аномалии со стенда; уведомляет только о тех, о которых пользователь не получал уведомления на других устройствах.
  */
 class AnomalyScanner(
     private val repository: TelemetryRepository,
     private val checker: VehicleChecker,
     private val store: AnomalyStore,
-    private val notifier: AnomalyNotifier,
+    private val notifier: AnomalyNotifications,
     private val settings: SettingsRepository,
     private val notificationStore: NotificationStore,
     private val sync: AnomalySync? = null,
+    private val background: BackgroundAccess? = null,
 ) {
     suspend fun scan(lookbackHours: Long = 24, notify: Boolean = true): ScanResult = coroutineScope {
         val onStand = sync?.active() == true
@@ -79,23 +83,14 @@ class AnomalyScanner(
 
         val fresh = if (onStand) {
             // Не вышло — кэш как был, новые придут со следующим обновлением (их время обнаружения позже отметки).
-            runCatchingCancellable { sync?.refresh() }.getOrNull().orEmpty()
+            runCatchingCancellable { sync?.refresh(advance = true) }.getOrNull().orEmpty()
         } else {
             store.addAll(found)
         }
-        if (fresh.isNotEmpty()) {
-            notificationStore.addAll(fresh.map {
-                NotificationItem(
-                    id = it.id,
-                    title = "${it.severity.label()} · ${it.vehicleName}: ${it.title}",
-                    subtitle = it.description,
-                    at = it.detectedAt,
-                    targetAnomalyId = it.id,
-                )
-            })
-        }
+        remember(fresh)
         // Если ни одна машина не ответила — проверкой это считать нельзя, иначе сводка скажет «всё в порядке».
-        if (vehicles.isEmpty() || errors.size < vehicles.size) {
+        // При фоновой проверке на стенде время проверки — со стенда (его ставит обновление ленты).
+        if ((vehicles.isEmpty() || errors.size < vehicles.size) && !settings.current().backgroundOnServer) {
             settings.update { it.copy(lastScanAt = System.currentTimeMillis()) }
         }
         val telemetries = perVehicle.map { it.second }
@@ -111,20 +106,62 @@ class AnomalyScanner(
                 )
             }
         }
-        if (notify && fresh.isNotEmpty()) {
-            val prefs = settings.current()
-            val today = LocalDate.now().toString()
-            val sentToday = if (prefs.pushCountDate == today) prefs.pushCountToday else 0
-            // Ночью и сверх дневного лимита продолжают идти только срочные — остальное видно в «Проблемах».
-            val quiet = prefs.quietHoursEnabled && isQuietHour(LocalDateTime.now().hour)
-            val overLimit = prefs.limitDailyPush && sentToday >= 3
-            val pushWarning = prefs.pushWarning && !quiet && !overLimit
-            notifier.notify(fresh, prefs.pushCritical, pushWarning)
-            val pushedWarnings = if (pushWarning) fresh.count { it.severity == Severity.WARNING } else 0
-            if (pushedWarnings > 0) {
-                settings.update { it.copy(pushCountDate = today, pushCountToday = sentToday + pushedWarnings) }
-            }
-        }
+        if (notify) notifyFresh(fresh)
         ScanResult(vehicles.size, fresh, errors)
+    }
+
+    /**
+     * Фоновое обновление при фоновой проверке на стенде: обновить доступ стенда (свежий токен), забрать ленту
+     * и уведомить о новом. Стенд не принял доступ (фоновая проверка там не включена, стенд недоступен) — проверка,
+     * как раньше, по запросу с телефона: иначе машины не проверял бы никто. Стенд недоступен — исключение
+     * (WorkManager повторит).
+     */
+    suspend fun poll(): ScanResult {
+        val access = background?.let { runCatchingCancellable { it.sync() }.getOrNull() }
+        if (access == null || !access.enabled) return scan(lookbackHours = 3)
+        val fresh = sync?.refresh(advance = true).orEmpty()
+        remember(fresh)
+        notifyFresh(fresh)
+        return ScanResult(0, fresh, emptyList())
+    }
+
+    /** История уведомлений (экран «Уведомления»). */
+    private suspend fun remember(fresh: List<Anomaly>) {
+        if (fresh.isEmpty()) return
+        notificationStore.addAll(fresh.map {
+            NotificationItem(
+                id = it.id,
+                title = "${it.severity.label()} · ${it.vehicleName}: ${it.title}",
+                subtitle = it.description,
+                at = it.detectedAt,
+                targetAnomalyId = it.id,
+            )
+        })
+    }
+
+    private suspend fun notifyFresh(fresh: List<Anomaly>) {
+        if (fresh.isEmpty()) return
+        val prefs = settings.current()
+        val today = LocalDate.now().toString()
+        val sentToday = if (prefs.pushCountDate == today) prefs.pushCountToday else 0
+        // Ночью и сверх дневного лимита продолжают идти только срочные — остальное видно в «Проблемах».
+        val quiet = prefs.quietHoursEnabled && isQuietHour(LocalDateTime.now().hour)
+        val overLimit = prefs.limitDailyPush && sentToday >= 3
+        val pushWarning = prefs.pushWarning && !quiet && !overLimit
+        val toNotify = if (prefs.backgroundOnServer && background != null) {
+            // Фоновая проверка на стенде: одно уведомление на пользователя — стенд отмечает, что уже показано на
+            // других его устройствах. Уведомить нечем (нет разрешения) — не отмечаем: пусть уведомит другое устройство.
+            val wanted = AnomalyNotifications.wanted(fresh, prefs.pushCritical, pushWarning)
+            if (wanted.isEmpty() || !notifier.canNotify()) return
+            background.claim(wanted)
+        } else {
+            fresh
+        }
+        if (toNotify.isEmpty()) return
+        notifier.notify(toNotify, prefs.pushCritical, pushWarning)
+        val pushedWarnings = if (pushWarning) toNotify.count { it.severity == Severity.WARNING } else 0
+        if (pushedWarnings > 0) {
+            settings.update { it.copy(pushCountDate = today, pushCountToday = sentToday + pushedWarnings) }
+        }
     }
 }

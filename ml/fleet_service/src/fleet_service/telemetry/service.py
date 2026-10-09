@@ -26,6 +26,11 @@ log = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _devices_key(session: str, schema_id: str) -> str:
+    # Ключ — хэш токена: сам токен в памяти кэша не хранится.
+    return hashlib.sha256(f"{session}\n{schema_id}".encode()).hexdigest()
+
+
 class VehicleNotFound(Exception):
     def __init__(self) -> None:
         super().__init__("Машина не найдена или недоступна этому пользователю")
@@ -62,9 +67,13 @@ class TelemetryService:
         self._telemetry: TtlCache[BuildResult] = TtlCache(s.telemetry_cache_ttl_seconds, s.telemetry_cache_max_entries)
 
     async def vehicles(self, session: str, schema_id: str) -> list[Vehicle]:
-        # Ключ — хэш токена: сам токен в памяти кэша не хранится.
-        key = hashlib.sha256(f"{session}\n{schema_id}".encode()).hexdigest()
-        return await self._devices.get(key, lambda: self._client.enum_devices(session, schema_id))
+        return await self._devices.get(_devices_key(session, schema_id), lambda: self._client.enum_devices(session, schema_id))
+
+    async def fresh_vehicles(self, session: str, schema_id: str) -> list[Vehicle]:
+        """Машины мимо кэша (заодно проверка, что токен жив), результат кладётся в кэш для следующих запросов."""
+        vehicles = await self._client.enum_devices(session, schema_id)
+        self._devices.put(_devices_key(session, schema_id), vehicles)
+        return vehicles
 
     async def vehicle(self, session: str, schema_id: str, vehicle_id: str) -> Vehicle:
         for v in await self.vehicles(session, schema_id):

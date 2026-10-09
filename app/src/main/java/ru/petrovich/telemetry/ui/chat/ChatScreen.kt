@@ -62,11 +62,18 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
+import ru.petrovich.telemetry.chat.DraftState
+import ru.petrovich.telemetry.chat.EmailActions
+import ru.petrovich.telemetry.chat.StandEmailDraft
+import ru.petrovich.telemetry.chat.meansAlreadySent
+import ru.petrovich.telemetry.data.StandException
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.EmailDraftCard
 import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.SoftButton
+import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.rememberVoiceInput
 import ru.petrovich.telemetry.ui.common.time
@@ -75,7 +82,10 @@ import ru.petrovich.telemetry.util.runCatchingCancellable
 
 data class ChatUiState(val messages: List<ChatMessage>, val agentTyping: Boolean = false)
 
-class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : ViewModel() {
+class ChatViewModel(
+    private val agent: ChatAgent = ServiceLocator.chatAgent,
+    private val emails: EmailActions = ServiceLocator.emails,
+) : ViewModel() {
     // Текст первой реплики — как в макете (3.11): «Здравствуйте! Я слежу за парком. Спросите голосом
     // или выберите вопрос ниже.»
     private val greeting = ChatMessage(
@@ -95,11 +105,52 @@ class ChatViewModel(private val agent: ChatAgent = ServiceLocator.chatAgent) : V
         viewModelScope.launch {
             val reply = runCatchingCancellable { agent.reply(_state.value.messages, contextAnomalyId) }
                 .fold(
-                    onSuccess = { ChatMessage(author = Author.AGENT, text = it.text, openAnomalyId = it.openAnomalyId, actionLabel = it.actionLabel, emailDraft = it.emailDraft, assignable = it.assignable) },
-                    onFailure = { ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true) },
+                    // Черновики писем со стенда — отдельными сообщениями после ответа, каждый со своими кнопками.
+                    onSuccess = {
+                        listOf(ChatMessage(author = Author.AGENT, text = it.text, openAnomalyId = it.openAnomalyId, actionLabel = it.actionLabel, emailDraft = it.emailDraft, assignable = it.assignable)) +
+                            it.standDrafts.map { d -> ChatMessage(author = Author.AGENT, text = "", standDraft = d) }
+                    },
+                    onFailure = { listOf(ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true)) },
                 )
             _state.update { it.copy(messages = it.messages + reply, agentTyping = false) }
         }
+    }
+
+    /**
+     * «Отправить»: письмо уходит только отсюда. Отказ стенда (в том числе истёкший срок — его проверяет стенд по своим
+     * часам) или ошибка почтового сервера — в сообщении, письмо не отправлено.
+     */
+    fun sendDraft(messageId: String) {
+        val draft = draftOf(messageId) ?: return
+        updateDraft(messageId) { it.copy(draftState = DraftState.SENDING, draftError = null) }
+        viewModelScope.launch {
+            val result = runCatchingCancellable { emails.send(draft.id) }
+            val error = result.exceptionOrNull()
+            if (error == null || (error is StandException && error.meansAlreadySent())) {
+                updateDraft(messageId) { it.copy(draftState = DraftState.SENT, draftError = null) }
+            } else {
+                updateDraft(messageId) { it.copy(draftState = DraftState.FAILED, draftError = error.message ?: error.toString()) }
+            }
+        }
+    }
+
+    /** «Отменить»: черновик на стенде закрывается, отправить его потом нельзя. */
+    fun cancelDraft(messageId: String) {
+        val draft = draftOf(messageId) ?: return
+        updateDraft(messageId) { it.copy(draftState = DraftState.CANCELLING, draftError = null) }
+        viewModelScope.launch {
+            runCatchingCancellable { emails.cancel(draft.id) }
+                .onSuccess { updateDraft(messageId) { it.copy(draftState = DraftState.CANCELLED, draftError = null) } }
+                .onFailure { e -> updateDraft(messageId) { it.copy(draftState = DraftState.PENDING, draftError = e.message ?: e.toString()) } }
+        }
+    }
+
+    /** Черновик, с которым можно действовать (не отправляется, не отправлен и не отменён). */
+    private fun draftOf(messageId: String): StandEmailDraft? = _state.value.messages
+        .firstOrNull { it.id == messageId && it.draftState in setOf(DraftState.PENDING, DraftState.FAILED) }?.standDraft
+
+    private fun updateDraft(messageId: String, transform: (ChatMessage) -> ChatMessage) {
+        _state.update { st -> st.copy(messages = st.messages.map { if (it.id == messageId) transform(it) else it }) }
     }
 
     fun clear() {
@@ -165,7 +216,10 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
                         )
                     }
                 }
-                items(state.messages, key = { it.id }) { MessageBubble(it, onOpenCard) }
+                items(state.messages, key = { it.id }) { m ->
+                    if (m.standDraft != null) StandDraftCard(m, onSend = { vm.sendDraft(m.id) }, onCancel = { vm.cancelDraft(m.id) })
+                    else MessageBubble(m, onOpenCard)
+                }
                 if (state.agentTyping) item { TypingBubble() }
             }
             // Подсказки видны всегда, как в макете — не только пока диалог пуст.
@@ -265,6 +319,46 @@ private fun AssignChip(suggestion: ru.petrovich.telemetry.chat.AssignSuggestion)
             "Передать «${suggestion.assigneeName}»",
             onClick = { scope.launch { ServiceLocator.anomalyStore.markInProgress(suggestion.anomalyId, "${suggestion.assigneeName} · ${suggestion.assigneeRole}") }; done = true },
         )
+    }
+}
+
+/**
+ * Черновик письма от ассистента на стенде: кому (имя, роль, адрес из списка стенда), тема, текст и кнопки. Письмо
+ * отправляет стенд и только по «Отправить» (в отличие от [EmailDraftCard] локального Петровича — тот открывает
+ * почтовый клиент устройства).
+ */
+@Composable
+private fun StandDraftCard(msg: ChatMessage, onSend: () -> Unit, onCancel: () -> Unit) {
+    val draft = msg.standDraft ?: return
+    val c = Petrovich.colors
+    SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("ЧЕРНОВИК ПИСЬМА · СТЕНД", style = MaterialTheme.typography.labelSmall, color = c.accent, fontWeight = FontWeight.Bold)
+            draft.recipients.forEach { r ->
+                Text("Кому: ${r.name}${if (r.role.isNotBlank()) ", ${r.role.lowercase()}" else ""} · ${r.email}", style = MaterialTheme.typography.bodyMedium)
+            }
+            Text(draft.subject, style = MaterialTheme.typography.titleSmall)
+            Text(
+                draft.body, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface2).padding(12.dp),
+            )
+            val status = when (msg.draftState) {
+                DraftState.SENT -> "✓ Отправлено"
+                DraftState.CANCELLED -> "Отменено — письмо не отправлялось"
+                DraftState.SENDING -> "Отправляем…"
+                DraftState.CANCELLING -> "Отменяем…"
+                DraftState.FAILED -> "Не отправлено: ${msg.draftError}"
+                DraftState.PENDING -> msg.draftError?.let { "Не получилось: $it" }
+                    ?: "Письмо уйдёт, только если вы нажмёте «Отправить»"
+            }
+            Text(status, style = MaterialTheme.typography.labelMedium, color = if (msg.draftState == DraftState.FAILED || msg.draftError != null) c.high else c.muted)
+            if (msg.draftState == DraftState.PENDING || msg.draftState == DraftState.FAILED) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PrimaryButton("Отправить", onClick = onSend, modifier = Modifier.weight(1f))
+                    SoftButton("Отменить", onClick = onCancel, modifier = Modifier.weight(1f))
+                }
+            }
+        }
     }
 }
 

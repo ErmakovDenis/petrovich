@@ -14,13 +14,23 @@ import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 
-/** Периодическая фоновая проверка телеметрии на аномалии +, раз в день, доклад. */
+/**
+ * Периодическая фоновая проверка телеметрии на аномалии +, раз в день, доклад. При фоновой проверке на стенде
+ * устройство не проверяет само: обновляет стенду доступ и забирает новые аномалии ([AnomalyScanner.poll]).
+ */
 class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result = runCatchingCancellable {
+        val s = ServiceLocator.settings.current()
         // Пока не выбран источник данных (первый запуск), проверять нечего.
-        if (!ServiceLocator.settings.current().onboarded) return@runCatchingCancellable
-        ServiceLocator.anomalyScanner.scan(lookbackHours = 3)
+        if (!s.onboarded) return@runCatchingCancellable
+        if (s.backgroundOnServer) {
+            ServiceLocator.anomalyScanner.poll()
+        } else {
+            // Фоновую проверку на стенде выключили, а отозвать доступ сразу не вышло (нет сети) — повторяем.
+            if (s.standAccessGranted) runCatchingCancellable { ServiceLocator.backgroundAccess.sync() }
+            ServiceLocator.anomalyScanner.scan(lookbackHours = 3)
+        }
         maybeSendDailyReport()
     }.fold(
         onSuccess = { Result.success() },

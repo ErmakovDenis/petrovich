@@ -59,7 +59,7 @@ def test_reply_through_openrouter(make_client, fakes):
 def test_without_tools_key_is_omitted(make_client, fakes):
     with make_client(tools=ToolRegistry()) as client:
         r = client.post("/v1/chat", json=ask(), headers=AUTH)
-    assert r.json() == {"reply": NO_DATA_REPLY}
+    assert r.json() == {"reply": NO_DATA_REPLY, "drafts": []}
     [body] = fakes.state.llm_requests
     # Без tools ключ не передаётся вовсе: часть провайдеров отвергает пустой список.
     assert "tools" not in body
@@ -221,5 +221,5 @@ def test_no_data_answer_without_tools(make_client):
     llm = FakeLLM(honest)
     with make_client(llm=llm, tools=ToolRegistry()) as client:
         r = client.post("/v1/chat", json=ask("Сколько топлива у машины 42?"), headers=AUTH)
-    assert r.json() == {"reply": NO_DATA_REPLY}
+    assert r.json() == {"reply": NO_DATA_REPLY, "drafts": []}
     assert llm.calls[0][1] == []

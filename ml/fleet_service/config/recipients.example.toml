@@ -1,0 +1,17 @@
+# Получатели писем стенда (FS_EMAIL_RECIPIENTS_PATH). Скопируйте в recipients.toml рядом (он не в git) и заполните.
+# Ассистент видит только id, имя и роль; адрес — только стенд и пользователь в черновике письма.
+# id — латиница, цифры, «-» и «_». schemas — необязательно: id схем AutoGRAPH, в которых получатель доступен
+# (нет — во всех схемах стенда).
+
+[[recipient]]
+id = "mechanic"
+name = "Иван Петров"
+role = "Механик"
+email = "mechanic@example.org"
+
+[[recipient]]
+id = "dispatcher"
+name = "Мария Сидорова"
+role = "Диспетчер"
+email = "dispatcher@example.org"
+schemas = ["12345"]

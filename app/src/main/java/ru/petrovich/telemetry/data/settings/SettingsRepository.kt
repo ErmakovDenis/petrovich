@@ -77,9 +77,26 @@ data class AppSettings(
     val anomalyCompare: Boolean = false,
     /** Аномалии и решения хранятся на стенде: лента — со стенда, решения — на стенд, проверка — с сохранением. */
     val anomalyStoreViaServer: Boolean = false,
+    /** Фоновая проверка на стенде: стенд проверяет сам, приложение в фоне только забирает новые аномалии. */
+    val backgroundViaServer: Boolean = false,
+    /** Согласие хранить пароль на стенде (зашифрованным): стенд сам входит в AutoGRAPH, когда сессия истекла. */
+    val standPasswordConsent: Boolean = false,
+    /** Случайный id установки приложения: им стенд различает доступ устройств и отзывает его. */
+    val deviceId: String = "",
+    /** Стенд получил доступ этого устройства для фоновой проверки (нужно отозвать, когда она выключится). */
+    val standAccessGranted: Boolean = false,
+    /** Интервал фоновой проверки на стенде, мин (из ответа стенда) — чтобы сводка поняла, что проверка отстала. */
+    val standScanIntervalMinutes: Int = 15,
+    /** SHA-256 пароля, который стенд не принял: тот же пароль повторно не отправляется (не блокировать учётную запись). */
+    val standPasswordRejected: String = "",
+    /** Письма из чата: ассистент на стенде готовит черновик, письмо уходит после «Отправить» в чате. */
+    val emailViaServer: Boolean = false,
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
+
+    /** Письма — продолжение ассистента на стенде: без него не действуют. */
+    val emailsOnServer: Boolean get() = assistantOnServer && emailViaServer
 
     val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
 
@@ -87,6 +104,9 @@ data class AppSettings(
 
     /** Хранилище на стенде — продолжение «Аномалий со стенда»: без него не действует. */
     val anomalyStoreOnServer: Boolean get() = anomaliesOnServer && anomalyStoreViaServer
+
+    /** Фоновая проверка на стенде — продолжение хранилища на стенде; выключенная «Фоновая проверка» выключает и её. */
+    val backgroundOnServer: Boolean get() = anomalyStoreOnServer && backgroundViaServer && backgroundChecks
 }
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -127,6 +147,13 @@ class SettingsRepository(private val context: Context) {
         val anomaliesViaServer = booleanPreferencesKey("anomalies_via_server")
         val anomalyCompare = booleanPreferencesKey("anomaly_compare")
         val anomalyStoreViaServer = booleanPreferencesKey("anomaly_store_via_server")
+        val backgroundViaServer = booleanPreferencesKey("background_via_server")
+        val standPasswordConsent = booleanPreferencesKey("stand_password_consent")
+        val deviceId = stringPreferencesKey("device_id")
+        val standAccessGranted = booleanPreferencesKey("stand_access_granted")
+        val standScanIntervalMinutes = intPreferencesKey("stand_scan_interval_minutes")
+        val standPasswordRejected = stringPreferencesKey("stand_password_rejected")
+        val emailViaServer = booleanPreferencesKey("email_via_server")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -165,6 +192,13 @@ class SettingsRepository(private val context: Context) {
         anomaliesViaServer = this[Keys.anomaliesViaServer] ?: false,
         anomalyCompare = this[Keys.anomalyCompare] ?: false,
         anomalyStoreViaServer = this[Keys.anomalyStoreViaServer] ?: false,
+        backgroundViaServer = this[Keys.backgroundViaServer] ?: false,
+        standPasswordConsent = this[Keys.standPasswordConsent] ?: false,
+        deviceId = this[Keys.deviceId].orEmpty(),
+        standAccessGranted = this[Keys.standAccessGranted] ?: false,
+        standScanIntervalMinutes = this[Keys.standScanIntervalMinutes] ?: 15,
+        standPasswordRejected = this[Keys.standPasswordRejected].orEmpty(),
+        emailViaServer = this[Keys.emailViaServer] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -207,6 +241,13 @@ class SettingsRepository(private val context: Context) {
             p[Keys.anomaliesViaServer] = new.anomaliesViaServer
             p[Keys.anomalyCompare] = new.anomalyCompare
             p[Keys.anomalyStoreViaServer] = new.anomalyStoreViaServer
+            p[Keys.backgroundViaServer] = new.backgroundViaServer
+            p[Keys.standPasswordConsent] = new.standPasswordConsent
+            p[Keys.deviceId] = new.deviceId
+            p[Keys.standAccessGranted] = new.standAccessGranted
+            p[Keys.standScanIntervalMinutes] = new.standScanIntervalMinutes
+            p[Keys.standPasswordRejected] = new.standPasswordRejected
+            p[Keys.emailViaServer] = new.emailViaServer
         }
     }
 }

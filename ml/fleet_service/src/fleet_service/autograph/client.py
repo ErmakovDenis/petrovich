@@ -1,8 +1,9 @@
-"""Клиент AutoGRAPH для загрузки телеметрии от имени пользователя: EnumDevices, EnumParameters, GetTripTables.
+"""Клиент AutoGRAPH для загрузки телеметрии от имени пользователя: EnumDevices, EnumParameters, GetTripTables;
+Login и EnumSchemas — для фоновой проверки, когда пользователь разрешил стенду входить самостоятельно.
 
 Повторяет `AutoGraphTelemetryRepository` и `ApiFactory` приложения: даты `yyyyMMdd-HHmm` в поясе токена (UTCOffset
 при Login), период частями по FS_AUTOGRAPH_CHUNK_HOURS, gzip, до FS_AUTOGRAPH_RETRIES попыток при сетевой ошибке.
-Токен уходит в query `session=` — в логах его маскирует log_masking.
+Токен, логин и пароль уходят в query (`session=`, `UserName=`, `Password=`) — в логах их маскирует log_masking.
 """
 
 import asyncio
@@ -17,7 +18,7 @@ from ..config import Settings
 from ..schemas.contract import Vehicle
 from ..telemetry.mapper import TripTablesBuilder
 from ..telemetry.parameters import RParameter
-from .errors import AutoGraphUnavailable, SessionInvalid
+from .errors import AutoGraphUnavailable, LoginRejected, SessionInvalid
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,26 @@ class AutoGraphClient:
         except ValueError:
             # С недействительным токеном AutoGRAPH может ответить 200 не JSON-ом — как и при проверке сессии.
             raise SessionInvalid() from None
+
+    async def login(self, user_name: str, password: str, utc_offset_minutes: int) -> str:
+        """Вход по логину и паролю (фоновая проверка с согласия пользователя): токен сессии в поясе UTCOffset —
+        как Login в приложении. Неверные логин или пароль — LoginRejected."""
+        params = {"UserName": user_name, "Password": password, "UTCOffset": utc_offset_minutes}
+        try:
+            resp = await self._send("Login", params, self._settings.autograph_timeout_seconds)
+        except SessionInvalid:
+            raise LoginRejected() from None
+        token = resp.text.strip().strip('"')
+        if not token:
+            raise LoginRejected()
+        return token
+
+    async def schema_ids(self, session: str) -> set[str]:
+        """Схемы, доступные пользователю токена (EnumSchemas)."""
+        data = await self._json("EnumSchemas", {"session": session})
+        if not isinstance(data, list):
+            raise SessionInvalid()
+        return {str(s.get("ID")) for s in data if isinstance(s, dict)}
 
     async def enum_devices(self, session: str, schema_id: str) -> list[Vehicle]:
         """Машины схемы, доступные пользователю (Allowed), по имени — как vehicles() в приложении."""

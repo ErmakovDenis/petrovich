@@ -12,7 +12,16 @@ from ..config import Settings, get_settings
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..store.repository import AnomalyRepository
 from ..telemetry.service import TelemetryService
-from .deps import UserSession, get_agent, get_store, get_system_prompt, get_telemetry_service, require_session
+from ..agent.mail_tools import EMAIL
+from .deps import (
+    UserSession,
+    get_agent,
+    get_store,
+    get_system_prompt,
+    get_telemetry_service,
+    require_session,
+    user_name,
+)
 from .errors import UNPROCESSABLE
 
 log = logging.getLogger(__name__)
@@ -29,6 +38,7 @@ async def chat(
     system_prompt: Annotated[str, Depends(get_system_prompt)],
     store: Annotated[AnomalyRepository, Depends(get_store)],
     telemetry: Annotated[TelemetryService, Depends(get_telemetry_service)],
+    name: Annotated[str | None, Depends(user_name)],
 ) -> ChatResponse:
     """Ответ ассистента на последнее сообщение пользователя с учётом истории и контекста аномалии."""
     if not settings.llm_configured:
@@ -50,7 +60,8 @@ async def chat(
     trimmed = request.model_copy(update={"messages": history})
 
     started = time.monotonic()
-    ctx = ToolContext(user.session, user.schema_id, request.utc_offset_minutes)
+    features = frozenset({EMAIL}) if request.allow_email and settings.email_configured else frozenset()
+    ctx = ToolContext(user.session, user.schema_id, request.utc_offset_minutes, user_name=name, features=features)
     stored = None
     if request.anomaly_id:
         # Чат из карточки при хранилище на стенде: приложение передаёт только id, данные и решение — отсюда.
@@ -67,8 +78,8 @@ async def chat(
             f"Ассистент не успел ответить за {settings.chat_timeout_seconds:g} с",
         ) from None
     log.info(
-        "чат: схема %s, сообщений %d, обращений к модели %d, tools %s, %.1f с",
-        user.schema_id, len(trimmed.messages), result.iterations, result.tool_calls or "—",
+        "чат: схема %s, сообщений %d, обращений к модели %d, tools %s, черновиков писем %d, %.1f с",
+        user.schema_id, len(trimmed.messages), result.iterations, result.tool_calls or "—", len(ctx.drafts),
         time.monotonic() - started,
     )
-    return ChatResponse(reply=result.reply)
+    return ChatResponse(reply=result.reply, drafts=ctx.drafts)

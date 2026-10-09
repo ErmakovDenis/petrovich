@@ -14,6 +14,8 @@ services:
     # Хранилище аномалий и решений (FS_DB_URL, SQLite-файл) — в томе: переживает перезапуск и пересборку контейнера.
     volumes:
       - fleet_data:/srv/data
+      # Файл получателей писем (FS_EMAIL_RECIPIENTS_PATH=/srv/config/recipients.toml), образец — recipients.example.toml.
+      - ./fleet_service/config:/srv/config:ro
     # Стенд вызывает predictive_antifraud (FS_PREDICTIVE_URL, по умолчанию http://predictive_antifraud:8000) при
     # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
     # останавливать чат и проверку по правилам.

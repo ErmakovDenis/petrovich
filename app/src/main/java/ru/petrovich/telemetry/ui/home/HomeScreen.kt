@@ -1,5 +1,7 @@
 package ru.petrovich.telemetry.ui.home
 
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -63,6 +65,7 @@ import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.dashedBorder
 import ru.petrovich.telemetry.ui.common.greeting
 import ru.petrovich.telemetry.ui.common.hhmm
+import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.common.shortDate
 import ru.petrovich.telemetry.ui.problems.ProblemsTab
@@ -94,6 +97,14 @@ fun HomeScreen(
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
+
+    // Часы раз в минуту: «стенд давно не проверял» появится, даже если экран открыт и больше ничего не меняется.
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(60_000)
+            value = System.currentTimeMillis()
+        }
+    }
 
     val s = settings ?: return
     val scanned = s.lastScanAt > 0
@@ -129,6 +140,10 @@ fun HomeScreen(
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             QuickActionsRow(data.pendingCount, onOpenChat, onOpenReport, { onOpenProblems(ProblemsTab.NEW) }, onOpenWidgets)
 
+            // Фоновая проверка на стенде: отметка — со стенда и не двигается, пока AutoGRAPH или стенд недоступны.
+            if (s.backgroundOnServer && s.lastScanAt > 0 && now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L) {
+                StaleScanCard(s.lastScanAt)
+            }
             ProblemsOrOkCard(data, scanning, scanError, onScan = ::scan, onOpenCard, onOpenProblems)
 
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -302,6 +317,25 @@ private fun QuickAction(icon: ImageVector, label: String, onClick: () -> Unit, m
             }
         }
         Text(label, style = MaterialTheme.typography.labelSmall, color = c.ink, maxLines = 1)
+    }
+}
+
+/** Сколько интервалов фоновой проверки на стенде может пройти без новой отметки, пока сводка не скажет, что отстала. */
+private const val STALE_INTERVALS = 3
+
+/** Стенд давно не проверял: «Всё в порядке» ниже может быть устаревшим. */
+@Composable
+private fun StaleScanCard(lastScanAt: Long) {
+    val c = Petrovich.colors
+    val at = Instant.ofEpochMilli(lastScanAt).atZone(ZoneId.systemDefault()).toLocalDateTime()
+    SurfaceCard(Modifier.fillMaxWidth().border(2.dp, c.highSoft, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Стенд давно не проверял данные", style = MaterialTheme.typography.titleSmall, color = c.high)
+            Text(
+                "Последняя проверка — ${at.toLocalDate().title()}, ${at.hhmm()}. AutoGRAPH или стенд недоступны, сведения ниже могут быть устаревшими.",
+                style = MaterialTheme.typography.bodySmall, color = c.muted,
+            )
+        }
     }
 }
 

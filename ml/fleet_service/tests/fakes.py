@@ -6,12 +6,18 @@ OpenRouter `POST /openrouter/api/v1/chat/completions` принимает тол�
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
+- `Login?UserName=&Password=&UTCOffset=` — `Пётр` / `fake-password` → новый токен `login-token-<n>` с правами
+  `valid-token`, `Иван` / `fake-password` — с правами `other-token`; иначе 401. Входы — `app.state.logins`.
 - `EnumSchemas?session=` — `valid-token` и `other-token` → схема `schema-1`, `foreign-token` → `schema-2`;
-  `down` → 500; остальное → 401.
+  `down` → 500; токены из `app.state.expired` и остальное → 401.
 - `EnumDevices` — `valid-token`: veh-1, veh-2 и veh-3 (Allowed=false); `other-token`: только veh-1;
   `foreign-token` (другая схема): veh-2 — та же машина в чужой схеме.
 - `EnumParameters`, `GetTripTables` — детерминированные данные (точка в минуту): у veh-1 топливо 250 л, у veh-2 —
   180 л и перегрев с 30-й по 39-ю минуту каждого часа; обороты всегда 0, давление масла не приходит вовсе.
+
+SMTP — `FakeSmtp`: принимает письма в память (`messages`), AUTH PLAIN/LOGIN с паролем `smtp-pass`; адреса из
+`reject` получают 550 на RCPT, `fail_data` — 451 на DATA, `drop_after_data` — связь рвётся после текста письма. В контейнере smoke.sh запускается вместе с приложением,
+если задан FAKES_SMTP_PORT; принятые письма — `GET /smtp/messages`.
 
 predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1/antifraud/check` (ключ `pa-key`):
 режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down.
@@ -22,8 +28,14 @@ predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1
 `app.state.trip_requests`; машины из `app.state.trip_tables_down` получают на GetTripTables 500.
 """
 
+import base64
+import email
+import email.policy
 import json
+import os
 import re
+import socketserver
+import threading
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,6 +55,10 @@ NO_DATA_REPLY = "Данных о парке у меня пока нет: инс�
 
 FUEL = {"veh-1": 250.0, "veh-2": 180.0}
 OVERHEAT = {"veh-2"}
+
+# Учётные записи для входа стенда по сохранённому паролю: логин → чьи права получает выданный токен.
+LOGIN_PASSWORD = "fake-password"
+LOGINS = {"Пётр": VALID_TOKEN, "Иван": OTHER_TOKEN}
 
 FAKE_PA_KEY = "pa-key"
 # Режимы подставного predictive_antifraud (app.state.analytics): not_ready — моделей нет (как настоящий сервис без
@@ -98,6 +114,105 @@ def trip_tables(vehicle_id: str, sd: datetime, ed: datetime, names: list[str]) -
     ]}}
 
 
+SMTP_USER = "petrovich"
+SMTP_PASSWORD = "smtp-pass"
+
+
+class FakeSmtp:
+    """Подставной SMTP-сервер в отдельном потоке (часть протокола, которую использует smtplib без TLS)."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+        self.messages: list[dict] = []
+        self.reject: set[str] = set()
+        self.fail_data = False
+        # Принять текст письма и оборвать связь, не ответив 250 (письмо «могло уйти»).
+        self.drop_after_data = False
+        self.logins: list[str] = []
+        fake = self
+
+        class Handler(socketserver.StreamRequestHandler):
+            def reply(self, text: str) -> None:
+                self.wfile.write(text.encode() + b"\r\n")
+
+            def line(self) -> str:
+                return self.rfile.readline().decode("utf-8", "replace").rstrip("\r\n")
+
+            def auth(self, user: str, password: str) -> None:
+                fake.logins.append(user)
+                self.reply("235 ok" if password == SMTP_PASSWORD else "535 bad credentials")
+
+            def handle(self) -> None:
+                sender, rcpts = None, []
+                self.reply("220 fake ESMTP")
+                while True:
+                    raw = self.rfile.readline()
+                    if not raw:
+                        return
+                    cmd = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    up = cmd.upper()
+                    if up.startswith("EHLO"):
+                        self.wfile.write(b"250-fake\r\n250-AUTH PLAIN LOGIN\r\n250-8BITMIME\r\n250 SMTPUTF8\r\n")
+                    elif up.startswith("HELO") or up.startswith("NOOP"):
+                        self.reply("250 ok")
+                    elif up.startswith("AUTH PLAIN"):
+                        token = cmd[10:].strip()
+                        if not token:
+                            self.reply("334 ")
+                            token = self.line()
+                        _, user, password = base64.b64decode(token).decode().split("\0")
+                        self.auth(user, password)
+                    elif up.startswith("AUTH LOGIN"):
+                        self.reply("334 VXNlcm5hbWU6")
+                        user = base64.b64decode(self.line()).decode()
+                        self.reply("334 UGFzc3dvcmQ6")
+                        self.auth(user, base64.b64decode(self.line()).decode())
+                    elif up.startswith("MAIL FROM:"):
+                        sender, rcpts = cmd[10:].split()[0].strip("<>"), []
+                        self.reply("250 ok")
+                    elif up.startswith("RCPT TO:"):
+                        address = cmd[8:].split()[0].strip("<>")
+                        if address in fake.reject:
+                            self.reply("550 no such user")
+                        else:
+                            rcpts.append(address)
+                            self.reply("250 ok")
+                    elif up == "DATA":
+                        if fake.fail_data:
+                            self.reply("451 try later")
+                            continue
+                        self.reply("354 end with .")
+                        lines = []
+                        while (row := self.rfile.readline()) not in (b".\r\n", b""):
+                            lines.append(row[1:] if row.startswith(b"..") else row)
+                        msg = email.message_from_bytes(b"".join(lines), policy=email.policy.default)
+                        fake.messages.append({"from": sender, "to": list(rcpts), "subject": msg["Subject"],
+                                              "body": msg.get_content(), "headers": dict(msg.items())})
+                        if fake.drop_after_data:
+                            return
+                        self.reply("250 queued")
+                    elif up.startswith("RSET"):
+                        sender, rcpts = None, []
+                        self.reply("250 ok")
+                    elif up.startswith("QUIT"):
+                        self.reply("221 bye")
+                        return
+                    else:
+                        self.reply("502 not implemented")
+
+        socketserver.ThreadingTCPServer.allow_reuse_address = True
+        self.server = socketserver.ThreadingTCPServer((host, port), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+
+    def start(self) -> "FakeSmtp":
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+        return self
+
+    def stop(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
 def golden_trip_tables(app: FastAPI, case_file: Path, vehicle_id: str) -> None:
     """Отдавать для машины входы и параметры эталона testdata/golden (tests/test_golden.py)."""
     case = json.loads(case_file.read_text(encoding="utf-8"))
@@ -112,6 +227,8 @@ def _scripted_reply(messages: list[dict]) -> dict:
     about_anomalies = any(w in question for w in ("аномал", "наруш", "провер"))
     results = [json.loads(m["content"]) for m in messages if m.get("role") == "tool"]
     if not results:
+        if "письм" in question:
+            return _call("call-1", "list_recipients", {})
         if "что решили" in question:
             context = " ".join(m["content"] for m in messages if m.get("role") == "system")
             found = re.search(r'"id": "([^"]+)"', context)
@@ -125,6 +242,18 @@ def _scripted_reply(messages: list[dict]) -> dict:
     last = results[-1]
     if "error" in last:
         return {"role": "assistant", "content": f"Данных об этом у меня нет: {last['error']}"}
+    if "subject" in last and "status" in last:
+        names = ", ".join(r["name"] for r in last["recipients"])
+        return {"role": "assistant", "content": f"Черновик письма «{last['subject']}» для {names} готов — "
+                "отправьте его кнопкой в приложении."}
+    if "recipients" in last:
+        if not last["recipients"]:
+            return {"role": "assistant", "content": last["message"]}
+        mechanic = next((r for r in last["recipients"] if r["role"] == "Механик"), last["recipients"][0])
+        return _call("call-2", "draft_email", {
+            "recipient_ids": [mechanic["id"]], "subject": "Перегрев: Урал NEXT А001АА",
+            "body": "Прошу проверить систему охлаждения: температура ОЖ поднималась до 108 °C.",
+        })
     if "decisions" in last:
         a = last["anomaly"]
         text = f"{a['vehicle']['name']}, {a['title']}: {a['status']}"
@@ -182,6 +311,9 @@ def create_fakes() -> FastAPI:
     app.state.analytics = "not_ready"
     app.state.analytics_requests = []
     app.state.trip_tables_down = set()
+    app.state.expired = set()
+    app.state.issued = {}
+    app.state.logins = []
 
     @app.post("/predictive/v1/{service}/{action}")
     async def analytics(service: str, action: str, request: Request) -> JSONResponse:
@@ -224,29 +356,47 @@ def create_fakes() -> FastAPI:
                          "message": message}],
         })
 
+    def rights(session: str) -> str:
+        """Токен, чьи права у сессии: выданный входом по паролю — права учётной записи."""
+        return app.state.issued.get(session, session)
+
     def check(session: str) -> JSONResponse | None:
         if session == "down":
             return JSONResponse({"Message": "Internal error"}, status_code=500)
-        if session not in DEVICES:
+        if session in app.state.expired or rights(session) not in DEVICES:
             return JSONResponse({"Message": "Unauthorized"}, status_code=401)
         return None
+
+    @app.get("/autograph/ServiceJSON/Login")
+    async def login(UserName: str = "", Password: str = "", UTCOffset: int = 0) -> JSONResponse:
+        app.state.calls["Login"] += 1
+        app.state.logins.append({"UserName": UserName, "UTCOffset": UTCOffset})
+        if Password != LOGIN_PASSWORD or UserName not in LOGINS:
+            return JSONResponse({"Message": "Unauthorized"}, status_code=401)
+        token = f"login-token-{len(app.state.issued) + 1}"
+        app.state.issued[token] = LOGINS[UserName]
+        return JSONResponse(token)
 
     @app.get("/autograph/ServiceJSON/EnumSchemas")
     async def enum_schemas(session: str = "") -> JSONResponse:
         app.state.calls["EnumSchemas"] += 1
-        return check(session) or JSONResponse([{"ID": SCHEMAS[session], "Name": "Тестовая схема"}])
+        return check(session) or JSONResponse([{"ID": SCHEMAS[rights(session)], "Name": "Тестовая схема"}])
 
     @app.get("/autograph/ServiceJSON/EnumDevices")
     async def enum_devices(session: str = "", schemaID: str = "") -> JSONResponse:
         app.state.calls["EnumDevices"] += 1
-        return check(session) or JSONResponse({
+        if (error := check(session)) is not None:
+            return error
+        owner = rights(session)
+        return JSONResponse({
             "Groups": [{"ID": "g-1", "Name": "Колонна 1"}],
-            "Items": DEVICES[session] if schemaID == SCHEMAS[session] else [],
+            "Items": DEVICES[owner] if schemaID == SCHEMAS[owner] else [],
         })
 
     @app.get("/autograph/ServiceJSON/EnumParameters")
     async def enum_parameters(session: str = "", IDs: str = "") -> JSONResponse:
         app.state.calls["EnumParameters"] += 1
+        app.state.calls[f"EnumParameters:{IDs}"] += 1
         return check(session) or JSONResponse(
             {IDs: {"OnlineParams": app.state.parameters.get(IDs, PARAMETERS), "FinalParams": []}}
         )
@@ -255,6 +405,7 @@ def create_fakes() -> FastAPI:
     async def get_trip_tables(request: Request, session: str = "", IDs: str = "", SD: str = "", ED: str = "",
                               onlineParams: str = "") -> Response:
         app.state.calls["GetTripTables"] += 1
+        app.state.calls[f"GetTripTables:{IDs}"] += 1
         app.state.trip_requests.append({**request.query_params, "urlLength": len(str(request.url))})
         if (error := check(session)) is not None:
             return error
@@ -266,6 +417,12 @@ def create_fakes() -> FastAPI:
         sd, ed = datetime.strptime(SD, "%Y%m%d-%H%M"), datetime.strptime(ED, "%Y%m%d-%H%M")
         return JSONResponse(trip_tables(IDs, sd, ed, onlineParams.split(",")))
 
+    app.state.smtp = None
+
+    @app.get("/smtp/messages")
+    async def smtp_messages() -> list[dict]:
+        return [{k: v for k, v in m.items() if k != "headers"} for m in (app.state.smtp.messages if app.state.smtp else [])]
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -274,3 +431,6 @@ def create_fakes() -> FastAPI:
 
 
 app = create_fakes()
+# smoke.sh: подставной SMTP в том же контейнере.
+if os.environ.get("FAKES_SMTP_PORT"):
+    app.state.smtp = FakeSmtp("0.0.0.0", int(os.environ["FAKES_SMTP_PORT"])).start()

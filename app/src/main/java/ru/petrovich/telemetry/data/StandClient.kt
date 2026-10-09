@@ -32,8 +32,8 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Ошибка стенда с текстом, который можно показать пользователю. */
-class StandException(message: String) : Exception(message)
+/** Ошибка стенда с текстом, который можно показать пользователю; [code] — HTTP-код ответа стенда, если он был. */
+class StandException(message: String, val code: Int? = null) : Exception(message)
 
 /** Общее для запросов данных стенда: пояс пользователя, формат и период запроса, разбор ответа. */
 object StandRequests {
@@ -125,8 +125,8 @@ class StandClient(
         }
         return when (code) {
             200 -> text
-            401 -> throw StandException("Стенд не принял сессию AutoGRAPH — войдите заново в настройках")
-            else -> throw StandException(detail(text) ?: "Стенд ответил ошибкой $code")
+            401 -> throw StandException("Стенд не принял сессию AutoGRAPH — войдите заново в настройках", code)
+            else -> throw StandException(detail(text) ?: "Стенд ответил ошибкой $code", code)
         }
     }
 

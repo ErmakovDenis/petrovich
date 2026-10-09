@@ -2,8 +2,10 @@
 # Сквозной сценарий стенда без реальных ключей: docker compose (fleet_service + predictive_antifraud + подставные
 # OpenRouter и AutoGRAPH; predictive_antifraud настоящий, без моделей) → /health → машины → телеметрия → вопрос
 # с вызовом tool → проверка машины → вопросы об аномалиях → проверка с сохранением → лента → решение → вопросы
-# ассистенту о ленте и решении → перенос решений с устройства → перезапуск стенда (хранилище на месте) → проверка
-# при остановленной аналитике.
+# ассистенту о ленте и решении → перенос решений с устройства → фоновая проверка (доступ с паролем по согласию,
+# стенд проверяет сам, одно уведомление на пользователя) → письмо (черновик от ассистента → подтверждение → письмо
+# у подставного SMTP, повторное подтверждение отклонено) → перезапуск стенда (хранилище и доступ на месте) → отзыв
+# доступа → проверка при остановленной аналитике.
 # Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
 # Порты на хосте: SMOKE_FLEET_PORT (18080), SMOKE_PREDICTIVE_PORT (18001). KEEP=1 — не останавливать стенд.
 set -euo pipefail
@@ -35,7 +37,8 @@ step "сборка и запуск compose"
 "${COMPOSE[@]}" up -d --build --wait --wait-timeout 180
 
 step "GET /health fleet_service"
-curl -fsS "$BASE/health" | json_check 'd["status"] == "ok" and d["llmConfigured"] is True' \
+curl -fsS "$BASE/health" | json_check \
+    'd["status"] == "ok" and d["llmConfigured"] and d["backgroundConfigured"] and d["emailConfigured"]' \
     || fail "fleet_service /health"
 
 step "GET /health predictive_antifraud"
@@ -139,12 +142,74 @@ curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$IMPORT" "$BASE/v
     'd["applied"] == 1 and len(d["unmatched"]) == 1 and d["unmatched"][0]["localId"].startswith("rule|drain")' \
     || fail "перенос решений"
 
+DEVICE="6f1d2c3e-8a4b-4c5d-9e6f-0a1b2c3d4e5f"
+PETR=(-H "X-User-Name: $(python3 -c 'import urllib.parse; print(urllib.parse.quote("Пётр"))')")
+step "POST /v1/background/access → доступ с паролем по согласию (стенд проверил пароль входом)"
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" \
+    -d "{\"deviceId\":\"$DEVICE\",\"utcOffsetMinutes\":300,\"savePassword\":true,\"password\":\"fake-password\"}" \
+    "$BASE/v1/background/access" | json_check \
+    'd["registered"] and d["tokenActive"] and d["passwordStored"] and d["intervalMinutes"] == 0.05' \
+    || fail "выдача доступа"
+
+step "фоновая проверка: стенд сам проверил схему за последние 3 ч"
+for _ in $(seq 1 40); do
+    curl -fsS "${AUTH[@]}" "$BASE/v1/background/access?deviceId=$DEVICE" | json_check 'd["lastOkAt"]' && break
+    sleep 1
+done
+curl -fsS "${AUTH[@]}" "$BASE/v1/background/access?deviceId=$DEVICE" | json_check 'd["lastOkAt"] and d["lastError"] is None' \
+    || fail "фоновая проверка не прошла"
+RECENT=$(python3 -c 'from datetime import datetime, timedelta, UTC; print((datetime.now(UTC) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S"))')
+curl -fsS "${AUTH[@]}" "$BASE/v1/anomalies?utcOffsetMinutes=300&vehicleId=veh-2&from=$RECENT" | json_check \
+    'd["total"] >= 2 and all(a["title"] for a in d["items"])' || fail "фоновая проверка не пополнила ленту"
+
+step "POST /v1/notifications/claim → одно уведомление на пользователя на двух устройствах"
+CLAIM='"ids":["rule|overheat|veh-2|TemperatureCOOL|2026-09-16T01:30Z","rule|overheat|veh-2|TemperatureCOOL|2026-09-16T02:30Z"]'
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" -d "{\"deviceId\":\"$DEVICE\",$CLAIM}" \
+    "$BASE/v1/notifications/claim" | json_check 'len(d["ids"]) == 2' || fail "отметка уведомлений"
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" \
+    -d "{\"deviceId\":\"0a0b0c0d-0000-4000-8000-00000000000b\",$CLAIM}" \
+    "$BASE/v1/notifications/claim" | json_check 'd["ids"] == []' || fail "второе устройство получило повтор"
+
+smtp_messages() { "${COMPOSE[@]}" exec -T fakes python -c \
+    'import urllib.request; print(urllib.request.urlopen("http://localhost:9000/smtp/messages").read().decode())'; }
+ASK_MAIL='{"messages":[{"role":"user","content":"Подготовь письмо механику о перегреве Урала"}],"utcOffsetMinutes":300,"allowEmail":true}'
+step "POST /v1/chat «подготовь письмо» → черновик (list_recipients → draft_email), письмо не отправлено"
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" -d "$ASK_MAIL" "$BASE/v1/chat")
+echo "$reply" | json_check 'len(d["drafts"]) == 1 and d["drafts"][0]["recipients"][0]["id"] == "mechanic"
+    and "отправьте его кнопкой" in d["reply"]' || fail "черновик письма: $reply"
+DRAFT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["drafts"][0]["id"])' "$reply")
+smtp_messages | json_check 'd == []' || fail "письмо ушло без подтверждения"
+
+step "POST /v1/emails/{id}/confirm чужим пользователем → 404"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" -H 'X-User-Name: other' "$BASE/v1/emails/$DRAFT/confirm")
+[ "$code" = 404 ] || fail "ожидался 404, получен $code"
+
+step "POST /v1/emails/{id}/confirm → письмо получено подставным SMTP"
+curl -fsS -X POST "${AUTH[@]}" "${PETR[@]}" "$BASE/v1/emails/$DRAFT/confirm" | json_check 'd["status"] == "sent"' \
+    || fail "подтверждение письма"
+smtp_messages | json_check 'len(d) == 1 and d[0]["to"] == ["mechanic@example.org"]
+    and d[0]["subject"] == "Перегрев: Урал NEXT А001АА" and "по запросу пользователя Пётр" in d[0]["body"]' \
+    || fail "письмо не дошло до SMTP"
+
+step "повторное подтверждение → 409, второго письма нет"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" "${PETR[@]}" "$BASE/v1/emails/$DRAFT/confirm")
+[ "$code" = 409 ] || fail "ожидался 409, получен $code"
+smtp_messages | json_check 'len(d) == 1' || fail "второе письмо"
+
 step "перезапуск fleet_service → хранилище и решение на месте"
 "${COMPOSE[@]}" restart fleet_service >/dev/null 2>&1
 for _ in $(seq 1 60); do curl -fsS "$BASE/health" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "${AUTH[@]}" "$BASE/v1/anomalies?$STORE_PERIOD&status=false_alarm" | json_check \
     'd["total"] == 1 and d["items"][0]["resolvedBy"] == "Петров" and d["lastScanAt"]' \
     || fail "хранилище после перезапуска"
+
+step "доступ фоновой проверки пережил перезапуск; отзыв доступа"
+curl -fsS "${AUTH[@]}" "$BASE/v1/background/access?deviceId=$DEVICE" | json_check \
+    'd["registered"] and d["passwordStored"]' || fail "доступ после перезапуска"
+curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "{\"deviceId\":\"$DEVICE\"}" \
+    "$BASE/v1/background/access/revoke" | json_check 'd["registered"] is False' || fail "отзыв доступа"
+curl -fsS "${AUTH[@]}" "$BASE/v1/background/access?deviceId=$DEVICE" | json_check 'd["registered"] is False' \
+    || fail "доступ остался после отзыва"
 
 step "predictive_antifraud остановлен → проверка по правилам работает, аналитика unavailable"
 "${COMPOSE[@]}" stop predictive_antifraud >/dev/null 2>&1
@@ -159,9 +224,17 @@ grep -q 'модель вызывает tool check_vehicle' <<<"$logs" || fail "�
 grep -q 'модель вызывает tool list_anomalies' <<<"$logs" || fail "в логе нет вызова list_anomalies"
 grep -q 'модель вызывает tool get_anomaly' <<<"$logs" || fail "в логе нет вызова get_anomaly"
 
-step "в логах стенда нет токена и ключа"
-if grep -qE 'valid-token|other-token|test-key' <<<"$logs"; then
-    fail "токен или ключ попал в лог fleet_service"
+step "фоновая проверка видна в логе стенда"
+grep -q 'фоновая проверка: схема schema-1' <<<"$logs" || fail "в логе нет фоновой проверки"
+
+step "в логах стенда нет токена, ключа, пароля, адресов и текста письма"
+if grep -qE 'valid-token|other-token|login-token|test-key|fake-password|smtp-pass|mechanic@example|системы охлаждения' <<<"$logs"; then
+    fail "токен, ключ, пароль, адрес или текст письма попал в лог fleet_service"
+fi
+
+step "в базе стенда нет токена и пароля в открытом виде"
+if "${COMPOSE[@]}" exec -T fleet_service sh -c 'cat /srv/data/fleet.db*' | grep -aqE 'valid-token|login-token|fake-password'; then
+    fail "токен или пароль лежит в базе в открытом виде"
 fi
 
 echo "✓ smoke: все проверки пройдены"

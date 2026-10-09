@@ -12,6 +12,13 @@ class SchemaForbidden(Exception):
     pass
 
 
+class LoginRejected(Exception):
+    """AutoGRAPH не принял логин и пароль (вход стенда по сохранённому паролю)."""
+
+    def __init__(self, message: str = "AutoGRAPH не принял логин или пароль"):
+        super().__init__(message)
+
+
 class AutoGraphUnavailable(Exception):
     def __init__(self, message: str = "AutoGRAPH недоступен"):
         super().__init__(message)

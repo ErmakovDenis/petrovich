@@ -7,6 +7,9 @@ services:
     command: ["uvicorn", "fakes:app", "--app-dir", "/srv/fakes", "--host", "0.0.0.0", "--port", "9000"]
     volumes:
       - ./fleet_service/tests/fakes.py:/srv/fakes/fakes.py:ro
+    # Подставной SMTP в том же процессе (письма — GET /smtp/messages).
+    environment:
+      FAKES_SMTP_PORT: "2525"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health', timeout=3)"]
       interval: 2s
@@ -19,6 +22,19 @@ services:
       FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
       FS_LLM_MODEL: fake/model
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
+      # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
+      FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      FS_BACKGROUND_INTERVAL_MINUTES: "0.05"
+      # Письма: подставной SMTP и получатели из tests/recipients.toml (адреса example.org).
+      FS_SMTP_HOST: fakes
+      FS_SMTP_PORT: "2525"
+      FS_SMTP_SECURITY: none
+      FS_SMTP_USERNAME: petrovich
+      FS_SMTP_PASSWORD: smtp-pass
+      FS_SMTP_FROM: petrovich@example.org
+      FS_EMAIL_RECIPIENTS_PATH: /srv/smoke/recipients.toml
+    volumes:
+      - ./fleet_service/tests/recipients.toml:/srv/smoke/recipients.toml:ro
     depends_on:
       fakes:
         condition: service_healthy

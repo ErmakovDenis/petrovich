@@ -32,7 +32,7 @@ class Agent:
 
     async def run(self, messages: list[Message], ctx: ToolContext) -> AgentResult:
         """[messages] дополняется ответами модели и результатами tools."""
-        specs = self._tools.specs()
+        specs = self._tools.specs(ctx.features)
         called: list[str] = []
         for iteration in range(1, self._max_iterations + 1):
             message = await self._llm.complete(messages, specs)
@@ -47,8 +47,11 @@ class Agent:
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = str(fn.get("name"))
-                # Аргументы tools — id машин и периоды, секретов в них нет; длинные обрезаются.
+                # Аргументы tools — id машин и периоды, секретов в них нет; длинные обрезаются. У tools писем
+                # аргументы (текст письма) в лог не пишутся.
                 arguments = " ".join(str(fn.get("arguments") or "").split())
+                if not self._tools.logs_arguments(name):
+                    arguments = "аргументы не пишутся в лог"
                 log.info("итерация %d: модель вызывает tool %s(%s)", iteration, name,
                          arguments if len(arguments) <= 200 else arguments[:200] + "…")
                 called.append(name)

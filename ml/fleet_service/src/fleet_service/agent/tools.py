@@ -7,7 +7,7 @@
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 log = logging.getLogger(__name__)
@@ -15,11 +15,16 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolContext:
-    """От чьего имени вызывается tool: токен сессии AutoGRAPH, схема и смещение пояса пользователя."""
+    """От чьего имени вызывается tool: токен сессии AutoGRAPH, схема и смещение пояса пользователя; логин
+    (X-User-Name) и возможности, разрешённые в этом запросе ([features], например «email»). [drafts] — черновики
+    писем, подготовленные за этот ответ: стенд возвращает их приложению вместе с текстом."""
 
     session: str
     schema_id: str
     utc_offset_minutes: int
+    user_name: str | None = None
+    features: frozenset[str] = frozenset()
+    drafts: list[Any] = field(default_factory=list)
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
@@ -32,6 +37,10 @@ class Tool:
     # JSON Schema аргументов (type: object).
     parameters: dict[str, Any]
     handler: ToolHandler
+    # Возможность, без которой tool модели не предлагается и не исполняется (None — доступен всегда).
+    feature: str | None = None
+    # false — аргументы не пишутся в лог (в них текст письма).
+    log_arguments: bool = True
 
 
 class ToolRegistry:
@@ -48,17 +57,21 @@ class ToolRegistry:
     def __len__(self) -> int:
         return len(self._tools)
 
-    def specs(self) -> list[dict[str, Any]]:
-        """Описание tools в формате OpenAI `tools`."""
+    def specs(self, features: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+        """Описание tools в формате OpenAI `tools` — только доступных при [features]."""
         return [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
-            for t in self._tools.values()
+            for t in self._tools.values() if t.feature is None or t.feature in features
         ]
+
+    def logs_arguments(self, name: str) -> bool:
+        tool = self._tools.get(name)
+        return tool is None or tool.log_arguments
 
     async def execute(self, name: str, raw_arguments: str | None, ctx: ToolContext) -> str:
         """Исполняет tool и возвращает результат JSON-строкой для сообщения role=tool."""
         tool = self._tools.get(name)
-        if tool is None:
+        if tool is None or (tool.feature is not None and tool.feature not in ctx.features):
             return _error(f"неизвестный tool {name}")
         try:
             args = json.loads(raw_arguments or "{}")

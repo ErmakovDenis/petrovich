@@ -10,6 +10,7 @@ import ru.petrovich.telemetry.anomaly.AnomalyNotifier
 import ru.petrovich.telemetry.anomaly.AnomalyScanner
 import ru.petrovich.telemetry.anomaly.AnomalyStore
 import ru.petrovich.telemetry.anomaly.AnomalySync
+import ru.petrovich.telemetry.anomaly.BackgroundAccess
 import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
 import ru.petrovich.telemetry.anomaly.LocalVehicleChecker
@@ -17,10 +18,13 @@ import ru.petrovich.telemetry.anomaly.MlAnomalyDetector
 import ru.petrovich.telemetry.anomaly.NotificationStore
 import ru.petrovich.telemetry.anomaly.ServerVehicleChecker
 import ru.petrovich.telemetry.anomaly.StandAnomalies
+import ru.petrovich.telemetry.anomaly.StandBackground
 import ru.petrovich.telemetry.anomaly.StoredVehicleChecker
 import ru.petrovich.telemetry.anomaly.SwitchingVehicleChecker
 import ru.petrovich.telemetry.anomaly.VehicleChecker
 import ru.petrovich.telemetry.chat.ChatAgent
+import ru.petrovich.telemetry.chat.EmailActions
+import ru.petrovich.telemetry.chat.StandEmails
 import ru.petrovich.telemetry.chat.PetrovichAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
@@ -74,7 +78,17 @@ object ServiceLocator {
 
     // Переключатель «Хранить аномалии на стенде»: выключен — лента и решения только на устройстве, как раньше.
     val anomalySync by lazy {
-        AnomalySync({ settings.current() }, anomalyStore, standAnomalies, File(appContext.filesDir, "anomaly-import-report.json"))
+        AnomalySync(
+            { settings.current() }, anomalyStore, standAnomalies, File(appContext.filesDir, "anomaly-import-report.json"),
+            // Фоновая проверка на стенде: время последней проверки в сводке — со стенда (пока стенд не проверял —
+            // остаётся прежнее).
+            onStandLastScan = { at -> if (at != null) settings.update { it.copy(lastScanAt = at) } },
+        )
+    }
+
+    // Переключатель «Фоновая проверка на стенде»: выключен — доступ стенда отзывается, проверяет устройство, как раньше.
+    val backgroundAccess by lazy {
+        BackgroundAccess({ settings.current() }, { transform -> settings.update(transform) }, StandBackground(stand))
     }
 
     val notifier by lazy { AnomalyNotifier(appContext) }
@@ -92,12 +106,13 @@ object ServiceLocator {
     }
 
     val anomalyScanner by lazy {
-        AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, notificationStore, anomalySync)
+        AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, notificationStore, anomalySync, backgroundAccess)
     }
 
     /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
     suspend fun onDataSourceChanged() {
         anomalyStore.clear()
+        anomalySync.resetNotifyMark()
         settings.update { it.copy(lastScanAt = 0) }
     }
 
@@ -106,8 +121,16 @@ object ServiceLocator {
     /** Ассистент на стенде; тот же доступ к стенду, что у телеметрии. */
     val remoteChatAgent by lazy {
         // При хранилище на стенде чат из карточки передаёт только id аномалии: стенд берёт её с решением из хранилища.
-        RemoteChatAgent(stand, anomalyIdOnly = { settings.current().anomalyStoreOnServer })
+        RemoteChatAgent(
+            stand,
+            anomalyIdOnly = { settings.current().anomalyStoreOnServer },
+            // Переключатель «Письма из чата»: выключен — ассистенту письма недоступны, как раньше.
+            allowEmail = { settings.current().emailsOnServer },
+        )
     }
+
+    /** «Отправить» и «Отменить» у черновика письма со стенда в чате. */
+    val emails: EmailActions by lazy { StandEmails(stand) }
 
     // Переключатель «Ассистент через стенд»: выключен — локальный движок по правилам и данным парка.
     val chatAgent: ChatAgent by lazy {

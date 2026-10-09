@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .rules.thresholds import RuleThresholds
@@ -110,10 +110,68 @@ class Settings(BaseSettings):
     import_scan_margin_minutes: int = Field(60, ge=0)
     import_max_items: int = Field(1000, ge=1)
 
+    # Фоновая проверка на стенде: каждые FS_BACKGROUND_INTERVAL_MINUTES по каждой схеме, где приложение выдало доступ,
+    # за последние FS_BACKGROUND_WINDOW_HOURS. Без ключа шифрования доступ не принимается и проверка не идёт.
+    background_enabled: bool = True
+    background_interval_minutes: float = Field(15, gt=0)
+    background_window_hours: int = Field(3, ge=1)
+    # Сколько машин одновременно проверяется в фоне по всем схемам (в приложении — 2).
+    background_concurrency: int = Field(2, ge=1, le=16)
+    # Доступ, который приложение не обновляло столько дней (приложение удалено, телефон потерян), удаляется.
+    background_access_ttl_days: int = Field(30, ge=1)
+    # Ключ шифрования доступа в базе (токен сессии, пароль по согласию): 32 байта в base64. Сменили ключ —
+    # сохранённый доступ не расшифровать, приложения выдадут его заново.
+    access_encryption_key: SecretStr | None = None
+    # Больше id аномалий за один запрос /v1/notifications/claim не принимается.
+    notification_claim_max_ids: int = Field(500, ge=1)
+
+    # Письма (ассистент готовит черновик, пользователь подтверждает в приложении, стенд отправляет). Без адреса
+    # SMTP, отправителя или списка получателей письма выключены: tools писем модели не предлагаются.
+    smtp_host: str = ""
+    smtp_port: int = Field(587, ge=1, le=65535)
+    # starttls — STARTTLS после подключения (порт 587), ssl — TLS сразу (465), none — без шифрования (только локально).
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_username: str = ""
+    smtp_password: SecretStr | None = None
+    # Адрес отправителя (From).
+    smtp_from: str = ""
+    smtp_timeout_seconds: float = Field(30, gt=0)
+    # Файл получателей (TOML, образец — recipients.example.toml): id, имя, роль, адрес, схемы. Читается при старте.
+    email_recipients_path: Path | None = None
+    # Сколько живёт черновик: позже подтвердить нельзя.
+    email_draft_ttl_minutes: int = Field(30, ge=1)
+    # Не больше стольких отправленных писем на пользователя за период, ч. Логин из X-User-Name стенд не проверяет,
+    # поэтому есть и общий предел на схему за тот же период.
+    email_limit_per_user: int = Field(20, ge=1)
+    email_limit_per_schema: int = Field(100, ge=1)
+    email_limit_period_hours: int = Field(24, ge=1)
+    # Пределы черновика: получателей, символов темы и текста, черновиков за один ответ ассистента.
+    email_max_recipients: int = Field(10, ge=1)
+    email_max_subject_chars: int = Field(200, ge=1)
+    email_max_body_chars: int = Field(5000, ge=1)
+    email_max_drafts_per_reply: int = Field(3, ge=1)
+
+    @model_validator(mode="after")
+    def _background_window_fits(self) -> "Settings":
+        if self.background_window_hours > self.telemetry_max_period_hours:
+            raise ValueError("FS_BACKGROUND_WINDOW_HOURS не может быть больше FS_TELEMETRY_MAX_PERIOD_HOURS")
+        return self
+
     @property
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def email_configured(self) -> bool:
+        """Письма включены: заданы SMTP, отправитель и файл получателей."""
+        return bool(self.smtp_host and self.smtp_from and self.email_recipients_path)
+
+    @property
+    def background_configured(self) -> bool:
+        """Фоновая проверка включена и задан ключ шифрования доступа."""
+        key = self.access_encryption_key.get_secret_value() if self.access_encryption_key else ""
+        return self.background_enabled and bool(key)
 
 
 @lru_cache
