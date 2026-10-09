@@ -10,12 +10,14 @@ import ru.petrovich.telemetry.anomaly.AnomalyNotifier
 import ru.petrovich.telemetry.anomaly.AnomalyScanner
 import ru.petrovich.telemetry.anomaly.AnomalyStore
 import ru.petrovich.telemetry.anomaly.AnomalySync
+import ru.petrovich.telemetry.anomaly.BackgroundAccess
 import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
 import ru.petrovich.telemetry.anomaly.LocalVehicleChecker
 import ru.petrovich.telemetry.anomaly.MlAnomalyDetector
 import ru.petrovich.telemetry.anomaly.ServerVehicleChecker
 import ru.petrovich.telemetry.anomaly.StandAnomalies
+import ru.petrovich.telemetry.anomaly.StandBackground
 import ru.petrovich.telemetry.anomaly.StoredVehicleChecker
 import ru.petrovich.telemetry.anomaly.SwitchingVehicleChecker
 import ru.petrovich.telemetry.anomaly.VehicleChecker
@@ -71,7 +73,17 @@ object ServiceLocator {
 
     // Переключатель «Хранить аномалии на стенде»: выключен — лента и решения только на устройстве, как раньше.
     val anomalySync by lazy {
-        AnomalySync({ settings.current() }, anomalyStore, standAnomalies, File(appContext.filesDir, "anomaly-import-report.json"))
+        AnomalySync(
+            { settings.current() }, anomalyStore, standAnomalies, File(appContext.filesDir, "anomaly-import-report.json"),
+            // Фоновая проверка на стенде: время последней проверки в сводке — со стенда (пока стенд не проверял —
+            // остаётся прежнее).
+            onStandLastScan = { at -> if (at != null) settings.update { it.copy(lastScanAt = at) } },
+        )
+    }
+
+    // Переключатель «Фоновая проверка на стенде»: выключен — доступ стенда отзывается, проверяет устройство, как раньше.
+    val backgroundAccess by lazy {
+        BackgroundAccess({ settings.current() }, { transform -> settings.update(transform) }, StandBackground(stand))
     }
 
     val notifier by lazy { AnomalyNotifier(appContext) }
@@ -88,11 +100,14 @@ object ServiceLocator {
         )
     }
 
-    val anomalyScanner by lazy { AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, anomalySync) }
+    val anomalyScanner by lazy {
+        AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, anomalySync, backgroundAccess)
+    }
 
     /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
     suspend fun onDataSourceChanged() {
         anomalyStore.clear()
+        anomalySync.resetNotifyMark()
         settings.update { it.copy(lastScanAt = 0) }
     }
 

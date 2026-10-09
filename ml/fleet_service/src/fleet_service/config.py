@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .rules.thresholds import RuleThresholds
@@ -110,10 +110,37 @@ class Settings(BaseSettings):
     import_scan_margin_minutes: int = Field(60, ge=0)
     import_max_items: int = Field(1000, ge=1)
 
+    # Фоновая проверка на стенде: каждые FS_BACKGROUND_INTERVAL_MINUTES по каждой схеме, где приложение выдало доступ,
+    # за последние FS_BACKGROUND_WINDOW_HOURS. Без ключа шифрования доступ не принимается и проверка не идёт.
+    background_enabled: bool = True
+    background_interval_minutes: float = Field(15, gt=0)
+    background_window_hours: int = Field(3, ge=1)
+    # Сколько машин одновременно проверяется в фоне по всем схемам (в приложении — 2).
+    background_concurrency: int = Field(2, ge=1, le=16)
+    # Доступ, который приложение не обновляло столько дней (приложение удалено, телефон потерян), удаляется.
+    background_access_ttl_days: int = Field(30, ge=1)
+    # Ключ шифрования доступа в базе (токен сессии, пароль по согласию): 32 байта в base64. Сменили ключ —
+    # сохранённый доступ не расшифровать, приложения выдадут его заново.
+    access_encryption_key: SecretStr | None = None
+    # Больше id аномалий за один запрос /v1/notifications/claim не принимается.
+    notification_claim_max_ids: int = Field(500, ge=1)
+
+    @model_validator(mode="after")
+    def _background_window_fits(self) -> "Settings":
+        if self.background_window_hours > self.telemetry_max_period_hours:
+            raise ValueError("FS_BACKGROUND_WINDOW_HOURS не может быть больше FS_TELEMETRY_MAX_PERIOD_HOURS")
+        return self
+
     @property
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def background_configured(self) -> bool:
+        """Фоновая проверка включена и задан ключ шифрования доступа."""
+        key = self.access_encryption_key.get_secret_value() if self.access_encryption_key else ""
+        return self.background_enabled and bool(key)
 
 
 @lru_cache

@@ -19,6 +19,9 @@ services:
       FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
       FS_LLM_MODEL: fake/model
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
+      # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
+      FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      FS_BACKGROUND_INTERVAL_MINUTES: "0.05"
     depends_on:
       fakes:
         condition: service_healthy

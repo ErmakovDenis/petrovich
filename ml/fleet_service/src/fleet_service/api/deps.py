@@ -5,7 +5,9 @@ from urllib.parse import unquote
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from ..agent.loop import Agent
+from ..autograph.client import AutoGraphClient
 from ..autograph.session import AutoGraphSessionChecker, AutoGraphUnavailable, SchemaForbidden, SessionInvalid
+from ..background.access import AccessRepository
 from ..rules.check import AnomalyCheckService
 from ..store.repository import AnomalyRepository
 from ..store.scan import ScanService
@@ -46,6 +48,14 @@ def get_store(request: Request) -> AnomalyRepository:
 
 def get_scan_service(request: Request) -> ScanService:
     return request.app.state.scan_service
+
+
+def get_access(request: Request) -> AccessRepository:
+    return request.app.state.access
+
+
+def get_autograph_client(request: Request) -> AutoGraphClient:
+    return request.app.state.autograph_client
 
 
 def user_name(x_user_name: Annotated[str | None, Header()] = None) -> str | None:

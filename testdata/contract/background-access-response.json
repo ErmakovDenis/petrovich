@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "registered": true,
+  "tokenActive": true,
+  "tokenSince": 1789534800000,
+  "passwordStored": true,
+  "lastOkAt": 1789535700000,
+  "lastError": null,
+  "lastScanAt": 1789535700000,
+  "intervalMinutes": 15.0,
+  "windowHours": 3
+}

@@ -6,8 +6,10 @@ OpenRouter `POST /openrouter/api/v1/chat/completions` принимает тол�
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
+- `Login?UserName=&Password=&UTCOffset=` — `Пётр` / `fake-password` → новый токен `login-token-<n>` с правами
+  `valid-token`, `Иван` / `fake-password` — с правами `other-token`; иначе 401. Входы — `app.state.logins`.
 - `EnumSchemas?session=` — `valid-token` и `other-token` → схема `schema-1`, `foreign-token` → `schema-2`;
-  `down` → 500; остальное → 401.
+  `down` → 500; токены из `app.state.expired` и остальное → 401.
 - `EnumDevices` — `valid-token`: veh-1, veh-2 и veh-3 (Allowed=false); `other-token`: только veh-1;
   `foreign-token` (другая схема): veh-2 — та же машина в чужой схеме.
 - `EnumParameters`, `GetTripTables` — детерминированные данные (точка в минуту): у veh-1 топливо 250 л, у veh-2 —
@@ -43,6 +45,10 @@ NO_DATA_REPLY = "Данных о парке у меня пока нет: инс�
 
 FUEL = {"veh-1": 250.0, "veh-2": 180.0}
 OVERHEAT = {"veh-2"}
+
+# Учётные записи для входа стенда по сохранённому паролю: логин → чьи права получает выданный токен.
+LOGIN_PASSWORD = "fake-password"
+LOGINS = {"Пётр": VALID_TOKEN, "Иван": OTHER_TOKEN}
 
 FAKE_PA_KEY = "pa-key"
 # Режимы подставного predictive_antifraud (app.state.analytics): not_ready — моделей нет (как настоящий сервис без
@@ -182,6 +188,9 @@ def create_fakes() -> FastAPI:
     app.state.analytics = "not_ready"
     app.state.analytics_requests = []
     app.state.trip_tables_down = set()
+    app.state.expired = set()
+    app.state.issued = {}
+    app.state.logins = []
 
     @app.post("/predictive/v1/{service}/{action}")
     async def analytics(service: str, action: str, request: Request) -> JSONResponse:
@@ -224,29 +233,47 @@ def create_fakes() -> FastAPI:
                          "message": message}],
         })
 
+    def rights(session: str) -> str:
+        """Токен, чьи права у сессии: выданный входом по паролю — права учётной записи."""
+        return app.state.issued.get(session, session)
+
     def check(session: str) -> JSONResponse | None:
         if session == "down":
             return JSONResponse({"Message": "Internal error"}, status_code=500)
-        if session not in DEVICES:
+        if session in app.state.expired or rights(session) not in DEVICES:
             return JSONResponse({"Message": "Unauthorized"}, status_code=401)
         return None
+
+    @app.get("/autograph/ServiceJSON/Login")
+    async def login(UserName: str = "", Password: str = "", UTCOffset: int = 0) -> JSONResponse:
+        app.state.calls["Login"] += 1
+        app.state.logins.append({"UserName": UserName, "UTCOffset": UTCOffset})
+        if Password != LOGIN_PASSWORD or UserName not in LOGINS:
+            return JSONResponse({"Message": "Unauthorized"}, status_code=401)
+        token = f"login-token-{len(app.state.issued) + 1}"
+        app.state.issued[token] = LOGINS[UserName]
+        return JSONResponse(token)
 
     @app.get("/autograph/ServiceJSON/EnumSchemas")
     async def enum_schemas(session: str = "") -> JSONResponse:
         app.state.calls["EnumSchemas"] += 1
-        return check(session) or JSONResponse([{"ID": SCHEMAS[session], "Name": "Тестовая схема"}])
+        return check(session) or JSONResponse([{"ID": SCHEMAS[rights(session)], "Name": "Тестовая схема"}])
 
     @app.get("/autograph/ServiceJSON/EnumDevices")
     async def enum_devices(session: str = "", schemaID: str = "") -> JSONResponse:
         app.state.calls["EnumDevices"] += 1
-        return check(session) or JSONResponse({
+        if (error := check(session)) is not None:
+            return error
+        owner = rights(session)
+        return JSONResponse({
             "Groups": [{"ID": "g-1", "Name": "Колонна 1"}],
-            "Items": DEVICES[session] if schemaID == SCHEMAS[session] else [],
+            "Items": DEVICES[owner] if schemaID == SCHEMAS[owner] else [],
         })
 
     @app.get("/autograph/ServiceJSON/EnumParameters")
     async def enum_parameters(session: str = "", IDs: str = "") -> JSONResponse:
         app.state.calls["EnumParameters"] += 1
+        app.state.calls[f"EnumParameters:{IDs}"] += 1
         return check(session) or JSONResponse(
             {IDs: {"OnlineParams": app.state.parameters.get(IDs, PARAMETERS), "FinalParams": []}}
         )
@@ -255,6 +282,7 @@ def create_fakes() -> FastAPI:
     async def get_trip_tables(request: Request, session: str = "", IDs: str = "", SD: str = "", ED: str = "",
                               onlineParams: str = "") -> Response:
         app.state.calls["GetTripTables"] += 1
+        app.state.calls[f"GetTripTables:{IDs}"] += 1
         app.state.trip_requests.append({**request.query_params, "urlLength": len(str(request.url))})
         if (error := check(session)) is not None:
             return error

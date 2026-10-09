@@ -1,5 +1,7 @@
 package ru.petrovich.telemetry.ui.home
 
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -108,6 +110,14 @@ fun HomeScreen(
     var catalog by remember { mutableStateOf(false) }
     var speechHint by remember { mutableStateOf<String?>(null) }
 
+    // Часы раз в минуту: «стенд давно не проверял» появится, даже если экран открыт и больше ничего не меняется.
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) {
+            delay(60_000)
+            value = System.currentTimeMillis()
+        }
+    }
+
     val s = settings ?: return
     val scanned = s.lastScanAt > 0
     val data = remember(anomalies, vehicleCount, scanned) { HomeData(anomalies, vehicleCount, scanned) }
@@ -160,6 +170,9 @@ fun HomeScreen(
             BriefCard(
                 data = data,
                 lastScanAt = s.lastScanAt,
+                // Фоновая проверка на стенде: отметка — со стенда и не двигается, пока AutoGRAPH или стенд недоступны.
+                stale = s.backgroundOnServer && s.lastScanAt > 0 &&
+                    now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L,
                 scanning = scanning,
                 scanError = scanError,
                 onScan = ::scan,
@@ -254,6 +267,7 @@ private fun TuneButton(edit: Boolean, onClick: () -> Unit) {
 private fun BriefCard(
     data: HomeData,
     lastScanAt: Long,
+    stale: Boolean,
     scanning: Boolean,
     scanError: String?,
     onScan: () -> Unit,
@@ -279,14 +293,23 @@ private fun BriefCard(
             Column {
                 Text("Петрович докладывает", style = MaterialTheme.typography.labelLarge, fontSize = 13.sp)
                 Text(
-                    if (lastScanAt > 0) "проверено в ${Instant.ofEpochMilli(lastScanAt).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm", Locale("ru")))}"
-                    else "данные ещё не проверялись",
-                    style = MaterialTheme.typography.labelSmall, color = c.muted,
+                    when {
+                        stale -> "последняя проверка ${Instant.ofEpochMilli(lastScanAt).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("d MMMM в HH:mm", Locale("ru")))}"
+                        lastScanAt > 0 -> "проверено в ${Instant.ofEpochMilli(lastScanAt).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm", Locale("ru")))}"
+                        else -> "данные ещё не проверялись"
+                    },
+                    style = MaterialTheme.typography.labelSmall, color = if (stale) c.high else c.muted,
                 )
             }
         }
         Text(if (data.tone == BriefTone.NEUTRAL && scanning) "Проверяю данные…" else data.verdict, fontSize = 21.sp, lineHeight = 25.sp, fontWeight = FontWeight.Bold, color = c.ink)
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (stale) {
+                BriefLine(buildAnnotatedString {
+                    bold("Стенд давно не проверял данные")
+                    append(" — AutoGRAPH или стенд недоступны, сведения ниже могут быть устаревшими.")
+                })
+            }
             if (data.tone == BriefTone.NEUTRAL) {
                 BriefLine(buildAnnotatedString {
                     append(scanError?.let { "Не удалось получить данные: $it" } ?: "Петрович проверит парк и расскажет, что нашёл.")
@@ -325,6 +348,9 @@ private fun BriefCard(
         }
     }
 }
+
+/** Сколько интервалов фоновой проверки на стенде может пройти без новой отметки, пока сводка не скажет, что отстала. */
+private const val STALE_INTERVALS = 3
 
 private fun AnnotatedString.Builder.bold(text: String) =
     withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(text) }

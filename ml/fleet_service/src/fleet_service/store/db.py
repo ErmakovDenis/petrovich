@@ -86,6 +86,45 @@ scan_marks = Table(
     Column("last_scan_at", BigInteger, nullable=False),
 )
 
+# Доступ стенда к AutoGRAPH для фоновой проверки: одна запись на установку приложения (устройство).
+# Токен и пароль — только шифротекстом (background/crypto.py), пароль — только с согласия пользователя.
+background_access = Table(
+    "background_access",
+    metadata,
+    # Случайный id установки приложения: им же доступ отзывается.
+    Column("device_id", String(64), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    # Логин AutoGRAPH из X-User-Name; для доступа по паролю проверен входом в AutoGRAPH.
+    Column("user_name", String(200)),
+    # Смещение пояса пользователя: с ним стенд входит по паролю и задаёт периоды проверки.
+    Column("utc_offset_minutes", Integer, nullable=False),
+    # Последний токен сессии от приложения или от входа стенда по паролю; NULL — истёк.
+    Column("token_enc", Text),
+    # С какого момента стенд знает этот токен, epoch millis — для оценки срока жизни токена.
+    Column("token_since", BigInteger),
+    Column("password_enc", Text),
+    Column("registered_at", BigInteger, nullable=False),
+    # Когда приложение последний раз подтвердило доступ; давно не подтверждали — запись удаляется.
+    Column("refreshed_at", BigInteger, nullable=False),
+    # Последний раз доступ сработал в фоновой проверке, и последняя ошибка (текст для пользователя).
+    Column("last_ok_at", BigInteger),
+    Column("last_error", Text),
+    Index("ix_background_access_schema", "schema_id"),
+)
+
+# Какие аномалии уже показаны уведомлением пользователю (на любом из его устройств): одно событие — одно уведомление.
+notification_claims = Table(
+    "notification_claims",
+    metadata,
+    Column("schema_id", String(64), primary_key=True),
+    # Логин в нижнем регистре; без логина — id устройства.
+    Column("user_key", String(200), primary_key=True),
+    Column("anomaly_id", String(512), primary_key=True),
+    Column("device_id", String(64), nullable=False),
+    Column("claimed_at", BigInteger, nullable=False),
+    Index("ix_notification_claims_at", "claimed_at"),
+)
+
 
 def create_db_engine(url: str) -> Engine:
     """Движок SQLAlchemy; для SQLite-файла создаётся каталог, включается WAL и ожидание блокировки."""

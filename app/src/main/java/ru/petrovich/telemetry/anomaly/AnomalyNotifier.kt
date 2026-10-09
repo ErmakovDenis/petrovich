@@ -14,7 +14,28 @@ import androidx.core.content.ContextCompat
 import ru.petrovich.telemetry.MainActivity
 import ru.petrovich.telemetry.R
 
-class AnomalyNotifier(private val context: Context) {
+/** Уведомления об аномалиях; в тестах — подставные. */
+interface AnomalyNotifications {
+    fun canNotify(): Boolean
+
+    fun notify(all: List<Anomaly>, pushCritical: Boolean = true, pushWarning: Boolean = true)
+
+    companion object {
+        /**
+         * О чём уведомлять: информационные события (например, кратковременное пропадание питания) — только в списке,
+         * без уведомления; остальное — по выбору владельца (экран «Что присылать»).
+         */
+        fun wanted(all: List<Anomaly>, pushCritical: Boolean, pushWarning: Boolean): List<Anomaly> = all.filter {
+            when (it.severity) {
+                Severity.CRITICAL -> pushCritical
+                Severity.WARNING -> pushWarning
+                Severity.INFO -> false
+            }
+        }
+    }
+}
+
+class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
 
     fun createChannel() {
         val channel = NotificationChannel(
@@ -25,16 +46,8 @@ class AnomalyNotifier(private val context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    fun notify(all: List<Anomaly>, pushCritical: Boolean = true, pushWarning: Boolean = true) {
-        // Информационные события (например, кратковременное пропадание питания) — только в списке, без уведомления.
-        // Остальное — по выбору владельца (экран «Что присылать»).
-        val anomalies = all.filter {
-            when (it.severity) {
-                Severity.CRITICAL -> pushCritical
-                Severity.WARNING -> pushWarning
-                Severity.INFO -> false
-            }
-        }
+    override fun notify(all: List<Anomaly>, pushCritical: Boolean, pushWarning: Boolean) {
+        val anomalies = AnomalyNotifications.wanted(all, pushCritical, pushWarning)
         if (anomalies.isEmpty() || !canNotify()) return
         val manager = NotificationManagerCompat.from(context)
 
@@ -84,7 +97,7 @@ class AnomalyNotifier(private val context: Context) {
         manager.notify(SUMMARY_ID, summary)
     }
 
-    fun canNotify(): Boolean =
+    override fun canNotify(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 

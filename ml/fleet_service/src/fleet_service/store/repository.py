@@ -157,7 +157,8 @@ class AnomalyRepository:
     def dispose(self) -> None:
         self._engine.dispose()
 
-    async def _run(self, fn: Callable[[Connection], T], write: bool = False) -> T:
+    async def run(self, fn: Callable[[Connection], T], write: bool = False) -> T:
+        """Запрос к базе в потоке; запись — под общим замком (им пользуется и background/access.py)."""
         def work() -> T:
             with self._engine.begin() as conn:
                 return fn(conn)
@@ -172,7 +173,7 @@ class AnomalyRepository:
     async def save(self, schema_id: str, detections: list[Detection], at: int | None = None) -> list[tuple[Record, bool]]:
         """Сохраняет найденное проверкой: новое событие — новая запись (True), уже известное — обновляет её (False)."""
         at = at or now_ms()
-        return await self._run(lambda conn: [self._save_one(conn, schema_id, d, at) for d in detections], write=True)
+        return await self.run(lambda conn: [self._save_one(conn, schema_id, d, at) for d in detections], write=True)
 
     def _bound(self, kind: str, start: datetime, end: datetime) -> datetime:
         """Новое событие того же типа, начавшееся раньше этой границы, — продолжение (слияние)."""
@@ -255,10 +256,10 @@ class AnomalyRepository:
                 conn.execute(insert(M).values(schema_id=schema_id, last_scan_at=at))
             return at
 
-        return await self._run(work, write=True)
+        return await self.run(work, write=True)
 
     async def last_scan(self, schema_id: str) -> int | None:
-        return await self._run(
+        return await self.run(
             lambda conn: conn.execute(select(M.c.last_scan_at).where(M.c.schema_id == schema_id)).scalar()
         )
 
@@ -296,7 +297,7 @@ class AnomalyRepository:
             ).all()
             return total, [Record.of(r) for r in rows]
 
-        return await self._run(work)
+        return await self.run(work)
 
     async def get(self, schema_id: str, anomaly_id: str, vehicle_ids: Collection[str]) -> Record | None:
         """Запись схемы по id, если её машина видна пользователю."""
@@ -304,7 +305,7 @@ class AnomalyRepository:
             row = conn.execute(select(A).where(A.c.schema_id == schema_id, A.c.id == anomaly_id)).first()
             return Record.of(row) if row is not None and row.vehicle_id in vehicle_ids else None
 
-        return await self._run(work)
+        return await self.run(work)
 
     async def history(self, schema_id: str, anomaly_id: str) -> list[Decision]:
         """Решения по аномалии от первого к последнему."""
@@ -315,7 +316,7 @@ class AnomalyRepository:
             return [Decision(resolution=r.resolution, reason=r.reason, user_name=r.user_name,
                              decided_at=r.decided_at, origin=r.origin) for r in rows]
 
-        return await self._run(work)
+        return await self.run(work)
 
     async def find_match(
         self, schema_id: str, vehicle_id: str, kind: str, parameter_name: str, event_utc: datetime,
@@ -333,7 +334,7 @@ class AnomalyRepository:
                 return None
             return Record.of(min(rows, key=lambda r: abs(r.start_utc - event_utc)))
 
-        return await self._run(work)
+        return await self.run(work)
 
     # --- решения ---
 
@@ -366,7 +367,7 @@ class AnomalyRepository:
                                           user_name=user_name, decided_at=at, origin=origin))
             return replace(old, **changes), True
 
-        return await self._run(work, write=True)
+        return await self.run(work, write=True)
 
     # --- срок хранения ---
 
@@ -379,7 +380,7 @@ class AnomalyRepository:
             conn.execute(delete(D).where(~exists().where(A.c.schema_id == D.c.schema_id, A.c.id == D.c.anomaly_id)))
             return removed
 
-        return await self._run(work, write=True)
+        return await self.run(work, write=True)
 
     async def purge_if_due(self, now_utc: datetime, every_seconds: float = 3600) -> None:
         """Не чаще раза в [every_seconds]: удаление по сроку — после проверок, без отдельного планировщика."""

@@ -43,9 +43,14 @@ class AnomalySync(
     private val stand: StandAnomalies,
     private val reportFile: File,
     private val now: () -> LocalDateTime = LocalDateTime::now,
+    /** Время последней проверки схемы со стенда (null — не было) — при фоновой проверке на стенде оно идёт в сводку. */
+    private val onStandLastScan: suspend (Long?) -> Unit = {},
+    /** Отметка уведомлений: самое позднее время обнаружения на стенде, о котором уже решали, уведомлять ли. */
+    private val notifyMarkFile: File = File(reportFile.parentFile, "anomaly-notify-mark"),
 ) {
     private val mutex = Mutex()
     private val _lastImport = MutableStateFlow(loadReport())
+    private var notifyMark: Long? = loadMark()
 
     /** Последний перенос локальной истории; null — ещё не было. */
     val lastImport: StateFlow<ImportReport?> = _lastImport.asStateFlow()
@@ -53,33 +58,51 @@ class AnomalySync(
     suspend fun active(): Boolean = settings().anomalyStoreOnServer
 
     /**
-     * Лента со стенда в кэш (перед этим — перенос локальной истории, если она есть). Возвращает аномалии, которые
-     * появились на стенде после прошлого обновления на этом устройстве (для уведомлений); null — хранилище на стенде
-     * выключено. Нет связи — исключение, кэш остаётся как был.
+     * Лента со стенда в кэш (перед этим — перенос локальной истории, если она есть). Возвращает аномалии, о которых
+     * ещё не решали, уведомлять ли (для уведомлений); null — хранилище на стенде выключено. Нет связи — исключение,
+     * кэш остаётся как был.
      *
-     * Новизна — по времени первого обнаружения на стенде ([Anomaly.detectedAt], часы стенда) позже самого позднего
-     * из уже полученных: так приходят и события, найденные другими пользователями схемы, а давние продолжающиеся
-     * эпизоды не повторяются. Первое обновление (кэш без записей стенда) — только точка отсчёта, без уведомлений;
-     * события старше суток уведомлений не дают (перенос чужой истории на стенд).
+     * Новизна — по времени первого обнаружения на стенде ([Anomaly.detectedAt], часы стенда) позже отметки
+     * уведомлений: так приходят и события, найденные другими пользователями схемы и стендом по расписанию, а давние
+     * продолжающиеся эпизоды не повторяются. Отметку двигает только тот, кто уведомляет ([advance] — сканер и фоновое
+     * обновление), поэтому обновление ленты с экранов уведомлений не «съедает». Первое обновление — только точка
+     * отсчёта, без уведомлений; события старше суток уведомлений не дают (перенос чужой истории на стенд).
      */
-    suspend fun refresh(): List<Anomaly>? = mutex.withLock {
+    suspend fun refresh(advance: Boolean = false): List<Anomaly>? = mutex.withLock {
         if (!active()) {
             val standIds = store.anomalies.value.filter { it.isStandId }.mapTo(HashSet()) { it.id }
             if (standIds.isNotEmpty()) store.removeAll(standIds)
+            // Включат снова — новая точка отсчёта, а не уведомления обо всём, что стенд нашёл за это время.
+            if (notifyMark != null) saveMark(null)
             return@withLock null
         }
         importLocal()
-        val cached = store.anomalies.value
-        val known = cached.mapTo(HashSet()) { it.id }
-        val watermark = cached.filter { it.isStandId }.maxOfOrNull { it.detectedAt }
-        val items = stand.list(MAX_ITEMS).items
+        val list = stand.list(MAX_ITEMS)
+        val items = list.items
+        if (settings().backgroundOnServer) onStandLastScan(list.lastScanAt)
         // Не перенесённые (стенд не ответил) записи с id устройства остаются в ленте до следующей попытки.
         store.replaceAll(items + store.anomalies.value.filterNot { it.isStandId })
-        if (watermark == null) return@withLock emptyList()
+        val latest = items.maxOfOrNull { it.detectedAt }
+        val mark = notifyMark
+        if (mark == null) {
+            // Лента пуста — всё, что появится, новое.
+            saveMark(latest ?: 0)
+            return@withLock emptyList()
+        }
+        if (advance && latest != null && latest > mark) saveMark(latest)
         val dayAgo = now().minusDays(1)
-        items.filter { a ->
-            a.id !in known && a.detectedAt > watermark &&
-                (parseTime(a.eventTime)?.isAfter(dayAgo) ?: true)
+        items.filter { a -> a.detectedAt > mark && (parseTime(a.eventTime)?.isAfter(dayAgo) ?: true) }
+    }
+
+    /** Новая точка отсчёта уведомлений (сменился источник данных или схема). */
+    suspend fun resetNotifyMark() = mutex.withLock { saveMark(null) }
+
+    private fun loadMark(): Long? = runCatching { notifyMarkFile.takeIf { it.exists() }?.readText()?.trim()?.toLong() }.getOrNull()
+
+    private suspend fun saveMark(mark: Long?) {
+        notifyMark = mark
+        runCatchingCancellable {
+            withContext(Dispatchers.IO) { if (mark == null) notifyMarkFile.delete() else notifyMarkFile.writeText(mark.toString()) }
         }
     }
 

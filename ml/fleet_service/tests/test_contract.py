@@ -1,5 +1,6 @@
 """Схемы контракта стенда совпадают со схемами predictive_antifraud, запрос чата — с тем, что шлёт приложение."""
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -55,17 +56,29 @@ def _fixture(name: str):
     return json.loads((REPO / "testdata" / "contract" / name).read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("name, model", [
-    ("anomalies-response.json", "AnomalyList"),
-    ("scan-response.json", "ScanResponse"),
-    ("import-response.json", "ImportResponse"),
+@pytest.mark.parametrize("name, module, model", [
+    ("anomalies-response.json", "store", "AnomalyList"),
+    ("scan-response.json", "store", "ScanResponse"),
+    ("import-response.json", "store", "ImportResponse"),
+    ("background-access-response.json", "background", "AccessStatus"),
+    ("claim-response.json", "background", "ClaimResponse"),
 ])
-def test_store_responses_are_exactly_what_stand_returns(name, model):
-    """Ответы хранилища: те же поля, что отдаёт стенд; их разбирает StandAnomaliesTest приложения."""
-    from fleet_service.schemas import store
-
+def test_store_responses_are_exactly_what_stand_returns(name, module, model):
+    """Ответы хранилища и фоновой проверки: те же поля, что отдаёт стенд; их разбирают StandAnomaliesTest
+    и StandBackgroundTest приложения."""
+    schemas = importlib.import_module(f"fleet_service.schemas.{module}")
     raw = _fixture(name)
-    assert getattr(store, model).model_validate(raw).model_dump(by_alias=True, mode="json") == raw
+    assert getattr(schemas, model).model_validate(raw).model_dump(by_alias=True, mode="json") == raw
+
+
+def test_background_requests_from_app_fixtures():
+    """Запросы фоновой проверки — ровно то, что сериализует StandBackground приложения (Kotlin-тест сверяет то же)."""
+    from fleet_service.schemas.background import AccessRequest, ClaimRequest
+
+    access = AccessRequest.model_validate(_fixture("background-access-request.json"))
+    assert access.save_password is True and access.password is None and access.utc_offset_minutes == 300
+    claim = ClaimRequest.model_validate(_fixture("claim-request.json"))
+    assert claim.device_id == access.device_id and len(claim.ids) == 2
 
 
 def test_store_requests_from_app_fixtures():
