@@ -142,3 +142,45 @@ def create_db_engine(url: str) -> Engine:
             cursor.close()
 
     return engine
+
+# Черновики писем: готовит ассистент (tool draft_email), отправляет стенд только по подтверждению в приложении.
+email_drafts = Table(
+    "email_drafts",
+    metadata,
+    # Случайный id (секрет черновика: его знает только приложение пользователя).
+    Column("id", String(64), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    # Владелец — логин из X-User-Name без учёта регистра; подтвердить или отменить может только он.
+    Column("user_key", String(200), nullable=False),
+    Column("user_name", String(200), nullable=False),
+    # id получателей через запятую (адреса — из файла получателей при отправке).
+    Column("recipient_ids", Text, nullable=False),
+    # SHA-256 пар «id=адрес» на момент подготовки: изменился адрес в файле — черновик не отправляется.
+    Column("recipients_hash", String(64), nullable=False),
+    Column("subject", Text, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    # draft — ждёт подтверждения, sending — отправляется, sent, cancelled, failed — ушло не всем (повтор запрещён).
+    Column("status", String(16), nullable=False),
+    Column("sent_at", BigInteger),
+    Index("ix_email_drafts_user", "schema_id", "user_key", "status", "sent_at"),
+)
+
+# Журнал писем: каждая отправка и каждый отказ — кто, кому, когда, тема, итог. Текста письма и адресов здесь нет.
+email_log = Table(
+    "email_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", BigInteger, nullable=False),
+    Column("schema_id", String(64), nullable=False),
+    Column("user_name", String(200)),
+    Column("draft_id", String(64)),
+    # Получатели: «id (имя)» через запятую.
+    Column("recipients", Text, nullable=False),
+    Column("subject", Text, nullable=False),
+    # drafted, sent, failed, cancelled, limit, expired, repeat, not_found, rejected
+    Column("outcome", String(16), nullable=False),
+    Column("error", Text),
+    Index("ix_email_log_at", "at"),
+)

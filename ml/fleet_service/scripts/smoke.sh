@@ -3,7 +3,8 @@
 # OpenRouter и AutoGRAPH; predictive_antifraud настоящий, без моделей) → /health → машины → телеметрия → вопрос
 # с вызовом tool → проверка машины → вопросы об аномалиях → проверка с сохранением → лента → решение → вопросы
 # ассистенту о ленте и решении → перенос решений с устройства → фоновая проверка (доступ с паролем по согласию,
-# стенд проверяет сам, одно уведомление на пользователя) → перезапуск стенда (хранилище и доступ на месте) → отзыв
+# стенд проверяет сам, одно уведомление на пользователя) → письмо (черновик от ассистента → подтверждение → письмо
+# у подставного SMTP, повторное подтверждение отклонено) → перезапуск стенда (хранилище и доступ на месте) → отзыв
 # доступа → проверка при остановленной аналитике.
 # Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
 # Порты на хосте: SMOKE_FLEET_PORT (18080), SMOKE_PREDICTIVE_PORT (18001). KEEP=1 — не останавливать стенд.
@@ -37,7 +38,7 @@ step "сборка и запуск compose"
 
 step "GET /health fleet_service"
 curl -fsS "$BASE/health" | json_check \
-    'd["status"] == "ok" and d["llmConfigured"] is True and d["backgroundConfigured"] is True' \
+    'd["status"] == "ok" and d["llmConfigured"] and d["backgroundConfigured"] and d["emailConfigured"]' \
     || fail "fleet_service /health"
 
 step "GET /health predictive_antifraud"
@@ -169,6 +170,32 @@ curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" \
     -d "{\"deviceId\":\"0a0b0c0d-0000-4000-8000-00000000000b\",$CLAIM}" \
     "$BASE/v1/notifications/claim" | json_check 'd["ids"] == []' || fail "второе устройство получило повтор"
 
+smtp_messages() { "${COMPOSE[@]}" exec -T fakes python -c \
+    'import urllib.request; print(urllib.request.urlopen("http://localhost:9000/smtp/messages").read().decode())'; }
+ASK_MAIL='{"messages":[{"role":"user","content":"Подготовь письмо механику о перегреве Урала"}],"utcOffsetMinutes":300,"allowEmail":true}'
+step "POST /v1/chat «подготовь письмо» → черновик (list_recipients → draft_email), письмо не отправлено"
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" "${PETR[@]}" -d "$ASK_MAIL" "$BASE/v1/chat")
+echo "$reply" | json_check 'len(d["drafts"]) == 1 and d["drafts"][0]["recipients"][0]["id"] == "mechanic"
+    and "отправьте его кнопкой" in d["reply"]' || fail "черновик письма: $reply"
+DRAFT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["drafts"][0]["id"])' "$reply")
+smtp_messages | json_check 'd == []' || fail "письмо ушло без подтверждения"
+
+step "POST /v1/emails/{id}/confirm чужим пользователем → 404"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" -H 'X-User-Name: other' "$BASE/v1/emails/$DRAFT/confirm")
+[ "$code" = 404 ] || fail "ожидался 404, получен $code"
+
+step "POST /v1/emails/{id}/confirm → письмо получено подставным SMTP"
+curl -fsS -X POST "${AUTH[@]}" "${PETR[@]}" "$BASE/v1/emails/$DRAFT/confirm" | json_check 'd["status"] == "sent"' \
+    || fail "подтверждение письма"
+smtp_messages | json_check 'len(d) == 1 and d[0]["to"] == ["mechanic@example.org"]
+    and d[0]["subject"] == "Перегрев: Урал NEXT А001АА" and "по запросу пользователя Пётр" in d[0]["body"]' \
+    || fail "письмо не дошло до SMTP"
+
+step "повторное подтверждение → 409, второго письма нет"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" "${PETR[@]}" "$BASE/v1/emails/$DRAFT/confirm")
+[ "$code" = 409 ] || fail "ожидался 409, получен $code"
+smtp_messages | json_check 'len(d) == 1' || fail "второе письмо"
+
 step "перезапуск fleet_service → хранилище и решение на месте"
 "${COMPOSE[@]}" restart fleet_service >/dev/null 2>&1
 for _ in $(seq 1 60); do curl -fsS "$BASE/health" >/dev/null 2>&1 && break; sleep 1; done
@@ -200,9 +227,9 @@ grep -q 'модель вызывает tool get_anomaly' <<<"$logs" || fail "в 
 step "фоновая проверка видна в логе стенда"
 grep -q 'фоновая проверка: схема schema-1' <<<"$logs" || fail "в логе нет фоновой проверки"
 
-step "в логах стенда нет токена, ключа и пароля"
-if grep -qE 'valid-token|other-token|login-token|test-key|fake-password' <<<"$logs"; then
-    fail "токен, ключ или пароль попал в лог fleet_service"
+step "в логах стенда нет токена, ключа, пароля, адресов и текста письма"
+if grep -qE 'valid-token|other-token|login-token|test-key|fake-password|smtp-pass|mechanic@example|системы охлаждения' <<<"$logs"; then
+    fail "токен, ключ, пароль, адрес или текст письма попал в лог fleet_service"
 fi
 
 step "в базе стенда нет токена и пароля в открытом виде"

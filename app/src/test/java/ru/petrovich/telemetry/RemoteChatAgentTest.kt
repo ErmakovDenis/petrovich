@@ -17,6 +17,7 @@ import org.junit.Before
 import org.junit.Test
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Severity
+import ru.petrovich.telemetry.chat.AgentReply
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
@@ -79,7 +80,7 @@ class RemoteChatAgentTest {
     fun sendsHistoryContextAndSessionHeaders() = runTest {
         server.enqueue(reply(200, """{"reply":"Данных о прошлых сливах у меня пока нет."}"""))
 
-        assertEquals("Данных о прошлых сливах у меня пока нет.", agent().reply(history, anomaly))
+        assertEquals("Данных о прошлых сливах у меня пока нет.", agent().reply(history, anomaly).text)
 
         val request = server.takeRequest()
         assertEquals("POST", request.method)
@@ -142,7 +143,7 @@ class RemoteChatAgentTest {
         server.enqueue(reply(401, """{"detail":"Сессия AutoGRAPH недействительна или истекла"}"""))
         server.enqueue(reply(200, """{"reply":"Готово."}"""))
 
-        assertEquals("Готово.", agent().reply(history))
+        assertEquals("Готово.", agent().reply(history).text)
 
         assertEquals("Bearer old-token", server.takeRequest().getHeader("Authorization"))
         assertEquals("Bearer fresh-token", server.takeRequest().getHeader("Authorization"))
@@ -182,23 +183,23 @@ class RemoteChatAgentTest {
         val calls = mutableListOf<String>()
         val stub = object : ChatAgent {
             override val connected = false
-            override suspend fun reply(history: List<ChatMessage>) = "заглушка".also { calls += it }
+            override suspend fun reply(history: List<ChatMessage>) = AgentReply("заглушка").also { calls += it.text }
         }
         val remote = object : ContextualChatAgent {
             override suspend fun reply(history: List<ChatMessage>) = reply(history, null)
             override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?) =
-                "стенд".also { calls += "$it:${anomaly?.id}" }
+                AgentReply("стенд").also { calls += "${it.text}:${anomaly?.id}" }
         }
         val switching = SwitchingChatAgent(settings, stub, remote, backgroundScope)
 
-        assertEquals("заглушка", switching.reply(history, anomaly))
+        assertEquals("заглушка", switching.reply(history, anomaly).text)
         settings.value = AppSettings(assistantViaServer = true, serverUrl = "https://stand")
-        assertEquals("стенд", switching.reply(history, anomaly))
+        assertEquals("стенд", switching.reply(history, anomaly).text)
         // Демо-режим: новые пути не действуют.
         settings.value = settings.value.copy(demoMode = true)
-        assertEquals("заглушка", switching.reply(history, anomaly))
+        assertEquals("заглушка", switching.reply(history, anomaly).text)
         settings.value = settings.value.copy(demoMode = false, serverUrl = "")
-        assertEquals("заглушка", switching.reply(history))
+        assertEquals("заглушка", switching.reply(history).text)
         assertEquals(listOf("заглушка", "стенд:${anomaly.id}", "заглушка", "заглушка"), calls)
     }
 

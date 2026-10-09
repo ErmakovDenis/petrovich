@@ -62,10 +62,12 @@ def _fixture(name: str):
     ("import-response.json", "store", "ImportResponse"),
     ("background-access-response.json", "background", "AccessStatus"),
     ("claim-response.json", "background", "ClaimResponse"),
+    ("chat-response-draft.json", "chat", "ChatResponse"),
+    ("email-result.json", "emails", "EmailResult"),
 ])
 def test_store_responses_are_exactly_what_stand_returns(name, module, model):
-    """Ответы хранилища и фоновой проверки: те же поля, что отдаёт стенд; их разбирают StandAnomaliesTest
-    и StandBackgroundTest приложения."""
+    """Ответы хранилища, фоновой проверки и писем: те же поля, что отдаёт стенд; их разбирают StandAnomaliesTest,
+    StandBackgroundTest и EmailDraftsTest приложения."""
     schemas = importlib.import_module(f"fleet_service.schemas.{module}")
     raw = _fixture(name)
     assert getattr(schemas, model).model_validate(raw).model_dump(by_alias=True, mode="json") == raw

@@ -125,6 +125,32 @@ class Settings(BaseSettings):
     # Больше id аномалий за один запрос /v1/notifications/claim не принимается.
     notification_claim_max_ids: int = Field(500, ge=1)
 
+    # Письма (ассистент готовит черновик, пользователь подтверждает в приложении, стенд отправляет). Без адреса
+    # SMTP, отправителя или списка получателей письма выключены: tools писем модели не предлагаются.
+    smtp_host: str = ""
+    smtp_port: int = Field(587, ge=1, le=65535)
+    # starttls — STARTTLS после подключения (порт 587), ssl — TLS сразу (465), none — без шифрования (только локально).
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_username: str = ""
+    smtp_password: SecretStr | None = None
+    # Адрес отправителя (From).
+    smtp_from: str = ""
+    smtp_timeout_seconds: float = Field(30, gt=0)
+    # Файл получателей (TOML, образец — recipients.example.toml): id, имя, роль, адрес, схемы. Читается при старте.
+    email_recipients_path: Path | None = None
+    # Сколько живёт черновик: позже подтвердить нельзя.
+    email_draft_ttl_minutes: int = Field(30, ge=1)
+    # Не больше стольких отправленных писем на пользователя за период, ч. Логин из X-User-Name стенд не проверяет,
+    # поэтому есть и общий предел на схему за тот же период.
+    email_limit_per_user: int = Field(20, ge=1)
+    email_limit_per_schema: int = Field(100, ge=1)
+    email_limit_period_hours: int = Field(24, ge=1)
+    # Пределы черновика: получателей, символов темы и текста, черновиков за один ответ ассистента.
+    email_max_recipients: int = Field(10, ge=1)
+    email_max_subject_chars: int = Field(200, ge=1)
+    email_max_body_chars: int = Field(5000, ge=1)
+    email_max_drafts_per_reply: int = Field(3, ge=1)
+
     @model_validator(mode="after")
     def _background_window_fits(self) -> "Settings":
         if self.background_window_hours > self.telemetry_max_period_hours:
@@ -135,6 +161,11 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def email_configured(self) -> bool:
+        """Письма включены: заданы SMTP, отправитель и файл получателей."""
+        return bool(self.smtp_host and self.smtp_from and self.email_recipients_path)
 
     @property
     def background_configured(self) -> bool:

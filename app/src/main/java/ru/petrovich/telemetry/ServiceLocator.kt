@@ -22,6 +22,8 @@ import ru.petrovich.telemetry.anomaly.StoredVehicleChecker
 import ru.petrovich.telemetry.anomaly.SwitchingVehicleChecker
 import ru.petrovich.telemetry.anomaly.VehicleChecker
 import ru.petrovich.telemetry.chat.ChatAgent
+import ru.petrovich.telemetry.chat.EmailActions
+import ru.petrovich.telemetry.chat.StandEmails
 import ru.petrovich.telemetry.chat.RemoteChatAgent
 import ru.petrovich.telemetry.chat.StubChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
@@ -116,8 +118,16 @@ object ServiceLocator {
     /** Ассистент на стенде; тот же доступ к стенду, что у телеметрии. */
     val remoteChatAgent by lazy {
         // При хранилище на стенде чат из карточки передаёт только id аномалии: стенд берёт её с решением из хранилища.
-        RemoteChatAgent(stand, anomalyIdOnly = { settings.current().anomalyStoreOnServer })
+        RemoteChatAgent(
+            stand,
+            anomalyIdOnly = { settings.current().anomalyStoreOnServer },
+            // Переключатель «Письма из чата»: выключен — ассистенту письма недоступны, как раньше.
+            allowEmail = { settings.current().emailsOnServer },
+        )
     }
+
+    /** «Отправить» и «Отменить» у черновика письма в чате. */
+    val emails: EmailActions by lazy { StandEmails(stand) }
 
     // Переключатель «Ассистент через стенд»: выключен — заглушка, как раньше.
     val chatAgent: ChatAgent by lazy { SwitchingChatAgent(settings.settings, StubChatAgent(), remoteChatAgent, appScope) }

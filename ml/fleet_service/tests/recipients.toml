@@ -1,0 +1,20 @@
+# Получатели для тестов и smoke.sh (адреса — example.org, писем никто не получает: SMTP подставной).
+
+[[recipient]]
+id = "mechanic"
+name = "Иван Петров"
+role = "Механик"
+email = "mechanic@example.org"
+
+[[recipient]]
+id = "dispatcher"
+name = "Мария Сидорова"
+role = "Диспетчер"
+email = "dispatcher@example.org"
+
+[[recipient]]
+id = "foreign"
+name = "Чужой получатель"
+role = "Другая компания"
+email = "foreign@example.org"
+schemas = ["schema-2"]

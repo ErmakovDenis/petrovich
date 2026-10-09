@@ -249,6 +249,17 @@ fun SettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                 onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
             )
             SwitchRow(
+                title = "Письма из чата",
+                subtitle = when {
+                    !s.assistantOnServer -> "Сначала включите «Ассистент через стенд»"
+                    else -> "Петрович может подготовить письмо получателям из списка стенда; письмо уходит, только когда вы " +
+                        "нажмёте «Отправить» в чате"
+                },
+                checked = s.emailViaServer,
+                enabled = s.assistantOnServer,
+                onChecked = { v -> save(reload = false) { it.copy(emailViaServer = v) } },
+            )
+            SwitchRow(
                 title = "Данные через стенд",
                 subtitle = when {
                     s.demoMode -> "Не действует в демо-режиме — данные демо"

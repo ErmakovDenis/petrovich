@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .contract import Anomaly, CamelModel
+from .emails import EmailDraftView
 
 
 class ChatTurn(CamelModel):
@@ -21,7 +22,12 @@ class ChatRequest(CamelModel):
     # аномалии из хранилища стенда — тогда стенд берёт её вместе с решением из хранилища.
     anomaly: Anomaly | None = None
     anomaly_id: str | None = Field(None, max_length=512)
+    # Письма из чата разрешены в приложении (переключатель «Письма из чата»): ассистенту доступны list_recipients
+    # и draft_email, если письма настроены на стенде.
+    allow_email: bool = False
 
 
 class ChatResponse(CamelModel):
     reply: str
+    # Черновики писем, подготовленные за этот ответ: приложение показывает их с кнопками «Отправить» и «Отменить».
+    drafts: list[EmailDraftView] = Field(default_factory=list)

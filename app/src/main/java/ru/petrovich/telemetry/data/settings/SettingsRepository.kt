@@ -55,9 +55,14 @@ data class AppSettings(
     val standScanIntervalMinutes: Int = 15,
     /** SHA-256 пароля, который стенд не принял: тот же пароль повторно не отправляется (не блокировать учётную запись). */
     val standPasswordRejected: String = "",
+    /** Письма из чата: ассистент на стенде готовит черновик, письмо уходит после «Отправить» в чате. */
+    val emailViaServer: Boolean = false,
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
+
+    /** Письма — продолжение ассистента на стенде: без него не действуют. */
+    val emailsOnServer: Boolean get() = assistantOnServer && emailViaServer
 
     val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
 
@@ -99,6 +104,7 @@ class SettingsRepository(private val context: Context) {
         val standAccessGranted = booleanPreferencesKey("stand_access_granted")
         val standScanIntervalMinutes = intPreferencesKey("stand_scan_interval_minutes")
         val standPasswordRejected = stringPreferencesKey("stand_password_rejected")
+        val emailViaServer = booleanPreferencesKey("email_via_server")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -126,6 +132,7 @@ class SettingsRepository(private val context: Context) {
         standAccessGranted = this[Keys.standAccessGranted] ?: false,
         standScanIntervalMinutes = this[Keys.standScanIntervalMinutes] ?: 15,
         standPasswordRejected = this[Keys.standPasswordRejected].orEmpty(),
+        emailViaServer = this[Keys.emailViaServer] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -159,6 +166,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.standAccessGranted] = new.standAccessGranted
             p[Keys.standScanIntervalMinutes] = new.standScanIntervalMinutes
             p[Keys.standPasswordRejected] = new.standPasswordRejected
+            p[Keys.emailViaServer] = new.emailViaServer
         }
     }
 }

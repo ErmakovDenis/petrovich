@@ -15,13 +15,24 @@ import java.util.UUID
 
 enum class Author { USER, AGENT }
 
+/** Что с черновиком письма в сообщении. */
+enum class DraftState { PENDING, SENDING, CANCELLING, SENT, CANCELLED, FAILED }
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val author: Author,
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
     val isError: Boolean = false,
+    /** Черновик письма от ассистента: показывается с кнопками «Отправить» и «Отменить». */
+    val draft: EmailDraft? = null,
+    val draftState: DraftState = DraftState.PENDING,
+    /** Почему письмо не отправлено (отказ стенда или ошибка SMTP). */
+    val draftError: String? = null,
 )
+
+/** Ответ агента: текст и (только у ассистента на стенде) черновики писем. */
+data class AgentReply(val text: String, val drafts: List<EmailDraft> = emptyList())
 
 /**
  * ИИ-агент, отвечающий о состоянии автопарка.
@@ -32,12 +43,12 @@ interface ChatAgent {
     /** false — заглушка: интерфейс должен честно сказать, что настоящего агента нет. */
     val connected: Boolean get() = true
 
-    suspend fun reply(history: List<ChatMessage>): String
+    suspend fun reply(history: List<ChatMessage>): AgentReply
 }
 
 /** Агент, которому можно передать аномалию, из карточки которой открыт чат. */
 interface ContextualChatAgent : ChatAgent {
-    suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): String
+    suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): AgentReply
 }
 
 /**
@@ -59,9 +70,9 @@ class SwitchingChatAgent(
 
     private fun pick(s: AppSettings): ChatAgent = if (s.assistantOnServer) remote else stub
 
-    override suspend fun reply(history: List<ChatMessage>): String = reply(history, null)
+    override suspend fun reply(history: List<ChatMessage>): AgentReply = reply(history, null)
 
-    override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): String =
+    override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): AgentReply =
         when (val agent = pick(settings.first())) {
             is ContextualChatAgent -> agent.reply(history, anomaly)
             else -> agent.reply(history)
@@ -72,8 +83,8 @@ class SwitchingChatAgent(
 class StubChatAgent : ChatAgent {
     override val connected = false
 
-    override suspend fun reply(history: List<ChatMessage>): String {
+    override suspend fun reply(history: List<ChatMessage>): AgentReply {
         delay(700)
-        return "ИИ-агент пока не подключён. Здесь появится ответ о состоянии машин и выявленных аномалиях."
+        return AgentReply("ИИ-агент пока не подключён. Здесь появится ответ о состоянии машин и выявленных аномалиях.")
     }
 }
