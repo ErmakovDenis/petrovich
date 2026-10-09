@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.anomaly.TimelineStep
 import ru.petrovich.telemetry.ui.common.AppTopBar
@@ -171,7 +172,15 @@ fun ResolutionScreen(anomalyId: String, onBack: () -> Unit, onOpenCard: (String)
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         val resolution = if (outcome == "Ложная тревога") Resolution.FALSE_ALARM else Resolution.CONFIRMED
-                        scope.launch { store.closeWithOutcome(anomaly.id, resolution, outcome!!, actions.toList()) }
+                        val detail = outcome!!
+                        scope.launch {
+                            // Решение — через синхронизацию: при хранилище на стенде оно уходит на стенд, иначе остаётся на устройстве.
+                            val reason = if (resolution == Resolution.FALSE_ALARM) detail else null
+                            runCatchingCancellable { ServiceLocator.anomalySync.resolve(anomaly.id, resolution, reason) }
+                                .onFailure { snackbar.showSnackbar("Решение не сохранено на стенде: ${it.message}") }
+                            // Итог, что сделали и журнал разбора стенд не хранит — они остаются на устройстве.
+                            store.closeWithOutcome(anomaly.id, resolution, detail, actions.toList())
+                        }
                     },
                 )
             }
