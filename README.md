@@ -106,6 +106,7 @@ docker compose up -d --build                                # fleet_service :808
 ml/fleet_service/scripts/smoke.sh                           # сквозная проверка с подставными OpenRouter и AutoGRAPH
 ```
 
+Развёртывание стенда на сервере (настройки, HTTPS, обновление, резервные копии) — [ml/DEPLOY.md](ml/DEPLOY.md).
 Ручная проверка приложения со стендом на реальных данных — [ml/MANUAL_CHECK.md](ml/MANUAL_CHECK.md).
 
 В приложении: Настройки → Подключение и данные → **Стенд** → адрес (например `http://10.0.2.2:8080` для эмулятора или
