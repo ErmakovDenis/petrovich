@@ -55,11 +55,12 @@ timedatectl | grep synchronized    # System clock synchronized: yes
 ## 3. Код
 
 ```bash
-git clone git@github.com:ErmakovDenis/petrovich.git ~/petrovich
-cd ~/petrovich
-git checkout fleet/step-6    # стенд целиком (шаги 1–6) — в этой ветке, пока она не влита в main
-cd ml
+git clone git@github.com:ErmakovDenis/petrovich.git ~/petrovich    # ветка main — стенд целиком (шаги 1–6)
+cd ~/petrovich/ml
 ```
+
+Для клонирования по SSH серверу нужен доступ к репозиторию — например, deploy key только на чтение
+(GitHub → Settings → Deploy keys) на ключ сервера `~/.ssh/id_ed25519.pub`.
 
 Дальше все команды — из каталога `~/petrovich/ml`, если не сказано иное. Имя проекта compose — по имени каталога
 (`ml`): контейнеры `ml-fleet_service-1`, `ml-predictive_antifraud-1`, том `ml_fleet_data`.
@@ -455,9 +456,10 @@ OpenRouter, AutoGRAPH и SMTP, свой проект compose на портах 1
 
 ## 12. Как проверена инструкция
 
-2026-10-20, ветка `fleet/step-6`, Docker 29.3 / Compose 5.1, nginx 1.27. Чистая копия `ml/` из git, пп. 4–8
-выполнены по тексту; AutoGRAPH, OpenRouter и SMTP заменены подставными (`fleet_service/tests/fakes.py`), домен и
-сертификат — самоподписанные, порты сдвинуты, чтобы не мешать рабочему стенду.
+2026-10-20, ветка `fleet/step-6` (тот же код влит в `main` PR #5), Docker 29.3 / Compose 5.1, nginx 1.27.
+Чистая копия `ml/` из git, пп. 4–8 выполнены по тексту; AutoGRAPH, OpenRouter и SMTP заменены подставными
+(`fleet_service/tests/fakes.py`), домен и сертификат — самоподписанные, порты сдвинуты, чтобы не мешать рабочему
+стенду.
 
 Проверено: `.env` из образцов, ключи из команд п. 4, `ml/.env` привязывает оба порта к `127.0.0.1`; сборка и
 `up --wait` (оба healthy); все ответы п. 5, включая 401 аналитики без ключа и 422 при пустом `PA_API_KEY`;
