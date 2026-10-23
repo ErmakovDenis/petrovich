@@ -8,6 +8,7 @@ from ..agent.loop import Agent
 from ..autograph.client import AutoGraphClient
 from ..autograph.session import AutoGraphSessionChecker, AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 from ..background.access import AccessRepository
+from ..limits import Limits
 from ..rules.check import AnomalyCheckService
 from ..store.repository import AnomalyRepository
 from ..store.scan import ScanService
@@ -56,6 +57,10 @@ def get_access(request: Request) -> AccessRepository:
 
 def get_autograph_client(request: Request) -> AutoGraphClient:
     return request.app.state.autograph_client
+
+
+def get_limits(request: Request) -> Limits:
+    return request.app.state.limits
 
 
 def user_name(x_user_name: Annotated[str | None, Header()] = None) -> str | None:

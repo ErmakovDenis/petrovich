@@ -10,6 +10,8 @@ from ..agent.loop import Agent
 from ..agent.prompt import build_messages
 from ..agent.tools import ToolContext
 from ..config import Settings, get_settings
+from ..autograph.session import session_key
+from ..limits import Limits, Overloaded
 from ..schemas.chat import ChatRequest, ChatResponse
 from ..store.repository import AnomalyRepository
 from ..telemetry.service import TelemetryService
@@ -17,6 +19,7 @@ from ..agent.mail_tools import EMAIL
 from .deps import (
     UserSession,
     get_agent,
+    get_limits,
     get_store,
     get_system_prompt,
     get_telemetry_service,
@@ -40,6 +43,7 @@ async def chat(
     store: Annotated[AnomalyRepository, Depends(get_store)],
     telemetry: Annotated[TelemetryService, Depends(get_telemetry_service)],
     name: Annotated[str | None, Depends(user_name)],
+    limits: Annotated[Limits, Depends(get_limits)],
 ) -> ChatResponse:
     """Ответ ассистента на последнее сообщение пользователя с учётом истории и контекста аномалии."""
     if not settings.llm_configured:
@@ -59,22 +63,32 @@ async def chat(
         for t in request.messages[-settings.chat_max_messages:]
     ]
     trimmed = request.model_copy(update={"messages": history})
+    # Лимит на пользователя: ключ — сессия и схема (хэш), логин из X-User-Name не проверен и не годится.
+    rate_key = session_key(user.session, user.schema_id)
+    limits.chat_rate.take(rate_key)
 
     started = time.monotonic()
     features = frozenset({EMAIL}) if request.allow_email and settings.email_configured else frozenset()
     ctx = ToolContext(user.session, user.schema_id, request.utc_offset_minutes, user_name=name, features=features)
-    stored = None
-    if request.anomaly_id:
-        # Чат из карточки при хранилище на стенде: приложение передаёт только id, данные и решение — отсюда.
-        visible = {v.id for v in await telemetry.vehicles(user.session, user.schema_id)}
-        record = await store.get(user.schema_id, request.anomaly_id, visible)
-        if record is not None:
-            stored = record.to_api(request.utc_offset_minutes).model_dump(by_alias=True, mode="json")
     try:
-        # Срок общий для asyncio.timeout и клиента модели: обращение, которое не успеет, не начинается.
+        # Срок общий для asyncio.timeout и клиента модели: обращение, которое не успеет, не начинается. Ожидание
+        # места среди FS_CHAT_CONCURRENCY ответов входит в срок; очередь полна — сразу Overloaded (503).
         with llm_scope(settings.chat_timeout_seconds) as scope:
             async with asyncio.timeout(settings.chat_timeout_seconds):
-                result = await agent.run(build_messages(system_prompt, trimmed, stored_anomaly=stored), ctx)
+                stored = None
+                if request.anomaly_id:
+                    # Чат из карточки при хранилище на стенде: приложение передаёт только id, данные и решение —
+                    # отсюда.
+                    visible = {v.id for v in await telemetry.vehicles(user.session, user.schema_id)}
+                    record = await store.get(user.schema_id, request.anomaly_id, visible)
+                    if record is not None:
+                        stored = record.to_api(request.utc_offset_minutes).model_dump(by_alias=True, mode="json")
+                async with limits.chat.slot():
+                    result = await agent.run(build_messages(system_prompt, trimmed, stored_anomaly=stored), ctx)
+    except Overloaded:
+        # Отказ по вине стенда не тратит лимит пользователя.
+        limits.chat_rate.refund(rate_key)
+        raise
     except TimeoutError:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,

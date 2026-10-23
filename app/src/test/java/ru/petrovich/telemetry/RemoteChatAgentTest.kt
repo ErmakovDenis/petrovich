@@ -165,6 +165,13 @@ class RemoteChatAgentTest {
         server.enqueue(reply(500, "<html>oops</html>"))
         assertFailsWith("Стенд ответил ошибкой 500") { agent().reply(history) }
 
+        // Пределы нагрузки стенда: пользователь видит текст стенда, а не общую ошибку.
+        server.enqueue(reply(429, """{"detail":"Слишком много вопросов подряд, повторите через 6 с"}""").setHeader("Retry-After", "6"))
+        assertFailsWith("Слишком много вопросов подряд, повторите через 6 с") { agent().reply(history) }
+
+        server.enqueue(reply(503, """{"detail":"Высокая нагрузка на ассистента, повторите через минуту"}""").setHeader("Retry-After", "60"))
+        assertFailsWith("Высокая нагрузка на ассистента, повторите через минуту") { agent().reply(history) }
+
         server.enqueue(reply(200, """{"reply":"  "}"""))
         assertFailsWith("Стенд вернул пустой ответ") { agent().reply(history) }
     }

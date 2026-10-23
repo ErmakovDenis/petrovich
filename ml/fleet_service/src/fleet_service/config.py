@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     chat_max_messages: int = Field(40, ge=1)
     chat_max_message_chars: int = Field(4000, ge=1)
 
+    # Нагрузка чата. Rate limit на пользователя (сессию AutoGRAPH и схему): FS_CHAT_BURST вопросов подряд, дальше —
+    # FS_CHAT_RATE_PER_MINUTE в минуту; сверх — 429. Один ответ — до FS_AGENT_MAX_ITERATIONS обращений к модели.
+    chat_rate_per_minute: float = Field(10, gt=0)
+    chat_burst: int = Field(3, ge=1)
+    # Одновременных ответов чата на процесс и ожидающих в очереди; очередь полна — сразу 503. Ожидание места
+    # входит в FS_CHAT_TIMEOUT_SECONDS.
+    chat_concurrency: int = Field(8, ge=1)
+    chat_queue_max: int = Field(16, ge=0)
+    # Общий на процесс предел одновременных запросов к AutoGRAPH и к predictive_antifraud — для всех путей (чат,
+    # проверки, scan, фоновая проверка). Фоновая проверка занимает не больше половины и уступает запросам
+    # пользователей.
+    autograph_concurrency: int = Field(8, ge=1)
+    predictive_concurrency: int = Field(4, ge=1)
+
     # AutoGRAPH: проверка токена сессии пользователя.
     autograph_base_url: str = "https://web.tk-ekat.ru/ServiceJSON/"
     autograph_timeout_seconds: float = Field(15, gt=0)
@@ -69,9 +83,11 @@ class Settings(BaseSettings):
     auth_cache_max_entries: int = Field(1000, ge=1)
 
     # AutoGRAPH: загрузка телеметрии (EnumDevices, EnumParameters, GetTripTables).
-    # Всего попыток запроса при сетевой ошибке и пауза перед n-й повторной попыткой (n × значение).
+    # Всего попыток запроса при сетевой ошибке. Пауза перед n-й повторной попыткой — база · 2^(n-1), не больше
+    # максимума, умноженная на случайное 0,5…1 (jitter: при массовом сбое повторы не приходят одновременно).
     autograph_retries: int = Field(3, ge=1)
     autograph_retry_delay_seconds: float = Field(1, ge=0)
+    autograph_retry_max_seconds: float = Field(10, ge=0)
     # GetTripTables отвечает медленно и много: отдельный таймаут и длина одной части периода.
     autograph_trip_tables_timeout_seconds: float = Field(60, gt=0)
     autograph_chunk_hours: int = Field(6, ge=1, le=24)

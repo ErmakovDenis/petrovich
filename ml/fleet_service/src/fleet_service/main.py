@@ -32,6 +32,7 @@ from .background.access import AccessRepository
 from .background.crypto import SecretBox
 from .background.scheduler import BackgroundScanner
 from .config import Settings, get_settings
+from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
@@ -96,10 +97,19 @@ def create_app(
     async def lifespan(app: FastAPI):
         client = http or httpx.AsyncClient()
         app.state.system_prompt = system_prompt
-        app.state.session_checker = AutoGraphSessionChecker(settings, client)
-        autograph = AutoGraphClient(settings, client)
+        # Пределы нагрузки на процесс (limits.py): общие для чата, проверок, scan и фоновой проверки.
+        autograph_limit = UpstreamLimiter("autograph", settings.autograph_concurrency)
+        predictive_limit = UpstreamLimiter("predictive", settings.predictive_concurrency)
+        app.state.limits = Limits(
+            chat_rate=TokenBuckets(settings.chat_rate_per_minute, settings.chat_burst),
+            chat=AdmissionLimiter("chat", settings.chat_concurrency, settings.chat_queue_max),
+            autograph=autograph_limit,
+            predictive=predictive_limit,
+        )
+        app.state.session_checker = AutoGraphSessionChecker(settings, client, autograph_limit)
+        autograph = AutoGraphClient(settings, client, autograph_limit)
         telemetry = TelemetryService(settings, autograph)
-        checks = AnomalyCheckService(settings, telemetry, AnalyticsClient(settings, client))
+        checks = AnomalyCheckService(settings, telemetry, AnalyticsClient(settings, client, predictive_limit))
         store = build_store(settings)
         access = AccessRepository(store, box)
         scans = ScanService(settings, telemetry, checks, store)

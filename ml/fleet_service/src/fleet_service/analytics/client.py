@@ -1,17 +1,21 @@
 """Клиент сервиса predictive_antifraud: POST /v1/predictive/analyze и /v1/antifraud/check с VehicleTelemetry.
 
 Сбой аналитики не ломает проверку по правилам: клиент не бросает исключений, а возвращает статус —
-`ok` (модель отработала), `not_ready` (модель не загружена), `unavailable` (сервис не настроен, не отвечает или
-ответил ошибкой). Ключ X-API-Key в логи не пишется.
+`ok` (модель отработала), `not_ready` (модель не загружена), `unavailable` (сервис не настроен, не отвечает,
+ответил ошибкой или нет места в пределе FS_PREDICTIVE_CONCURRENCY за FS_PREDICTIVE_TIMEOUT_SECONDS). Ключ X-API-Key
+в логи не пишется.
 """
 
+import asyncio
 import logging
+import time
 from typing import Literal
 
 import httpx
 from pydantic import Field, ValidationError
 
 from ..config import Settings
+from ..limits import UpstreamLimiter
 from ..schemas.contract import Anomaly, CamelModel, DetectionResponse, VehicleTelemetry
 
 log = logging.getLogger(__name__)
@@ -33,9 +37,11 @@ class AnalyticsStatus(CamelModel):
 
 
 class AnalyticsClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter):
+        """[limiter] — общий на процесс предел одновременных запросов к аналитике (FS_PREDICTIVE_CONCURRENCY)."""
         self._settings = settings
         self._http = http
+        self._limiter = limiter
 
     @staticmethod
     def payload(telemetry: VehicleTelemetry) -> dict:
@@ -50,16 +56,26 @@ class AnalyticsClient:
         headers = {}
         if s.predictive_api_key is not None and s.predictive_api_key.get_secret_value():
             headers["X-API-Key"] = s.predictive_api_key.get_secret_value()
+        # Ожидание места в пределе входит в FS_PREDICTIVE_TIMEOUT_SECONDS: проверка по правилам не ждёт аналитику дольше.
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(s.predictive_timeout_seconds):
+                slot = await self._limiter.acquire()
+        except TimeoutError:
+            log.warning("аналитика %s: нет места за %g с (FS_PREDICTIVE_CONCURRENCY)", kind, s.predictive_timeout_seconds)
+            return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики перегружен")
         try:
             resp = await self._http.post(
                 s.predictive_url.rstrip("/") + _PATHS[kind],
                 json=payload,
                 headers=headers,
-                timeout=s.predictive_timeout_seconds,
+                timeout=max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started)),
             )
         except httpx.HTTPError as e:
             log.warning("аналитика %s: сервис не ответил: %s", kind, type(e).__name__)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики не отвечает")
+        finally:
+            slot.release()
         if resp.status_code != 200:
             log.warning("аналитика %s: ответ %d", kind, resp.status_code)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики ответил ошибкой {resp.status_code}")

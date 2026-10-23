@@ -8,6 +8,9 @@ Login и EnumSchemas — для фоновой проверки, когда по
 
 import asyncio
 import logging
+import random
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -15,6 +18,7 @@ import httpx
 import ijson
 
 from ..config import Settings
+from ..limits import UpstreamLimiter
 from ..schemas.contract import Vehicle
 from ..telemetry.mapper import TripTablesBuilder
 from ..telemetry.parameters import RParameter
@@ -35,31 +39,56 @@ def chunk_ranges(from_: datetime, to: datetime, chunk: timedelta) -> list[tuple[
     return ranges
 
 
+def retry_delay(settings: Settings, attempt: int) -> float:
+    """Пауза перед повтором после [attempt]-й неудачной попытки: экспоненциальная, с jitter 0,5…1."""
+    base = settings.autograph_retry_delay_seconds * 2 ** (attempt - 1)
+    return min(settings.autograph_retry_max_seconds, base) * random.uniform(0.5, 1)
+
+
 class AutoGraphClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter):
+        """[limiter] — общий на процесс предел одновременных запросов к AutoGRAPH (main.create_app)."""
         self._settings = settings
         self._http = http
+        self._limiter = limiter
 
     def _url(self, method: str) -> str:
         return self._settings.autograph_base_url.rstrip("/") + "/" + method
 
-    async def _send(self, method: str, params: dict[str, Any], timeout: float, stream: bool = False) -> httpx.Response:
-        """Запрос с повторами при сетевой ошибке; 401/403 → SessionInvalid, иной код ≠ 200 → AutoGraphUnavailable."""
+    @asynccontextmanager
+    async def _request(
+        self, method: str, params: dict[str, Any], timeout: float, stream: bool = False
+    ) -> AsyncIterator[httpx.Response]:
+        """Ответ 200 с повторами при сетевой ошибке; 401/403 → SessionInvalid, иной код → AutoGraphUnavailable.
+        Место в пределе FS_AUTOGRAPH_CONCURRENCY занято на каждую попытку, у потокового ответа — пока его читают;
+        на паузу между попытками место освобождается."""
         attempts = self._settings.autograph_retries
         last: Exception | None = None
         for attempt in range(1, attempts + 1):
             request = self._http.build_request("GET", self._url(method), params=params, timeout=timeout)
+            slot = await self._limiter.acquire()
             try:
                 resp = await self._http.send(request, stream=stream)
             except httpx.TransportError as e:
+                slot.release()
                 last = e
                 log.warning("AutoGRAPH %s: попытка %d из %d не удалась: %s", method, attempt, attempts, type(e).__name__)
                 if attempt < attempts:
-                    await asyncio.sleep(self._settings.autograph_retry_delay_seconds * attempt)
+                    await asyncio.sleep(retry_delay(self._settings, attempt))
                 continue
-            if resp.status_code == 200:
-                return resp
-            await resp.aclose()
+            except BaseException:
+                slot.release()
+                raise
+            try:
+                if resp.status_code == 200:
+                    yield resp
+                    return
+            finally:
+                # Место освобождается, даже если закрытие ответа прервано (отмена запроса, обрыв связи).
+                try:
+                    await resp.aclose()
+                finally:
+                    slot.release()
             if resp.status_code in (401, 403):
                 raise SessionInvalid()
             log.warning("AutoGRAPH %s ответил %d", method, resp.status_code)
@@ -67,22 +96,22 @@ class AutoGraphClient:
         raise AutoGraphUnavailable(f"AutoGRAPH недоступен: нет ответа после {attempts} попыток") from last
 
     async def _json(self, method: str, params: dict[str, Any]) -> Any:
-        resp = await self._send(method, params, self._settings.autograph_timeout_seconds)
-        try:
-            return resp.json()
-        except ValueError:
-            # С недействительным токеном AutoGRAPH может ответить 200 не JSON-ом — как и при проверке сессии.
-            raise SessionInvalid() from None
+        async with self._request(method, params, self._settings.autograph_timeout_seconds) as resp:
+            try:
+                return resp.json()
+            except ValueError:
+                # С недействительным токеном AutoGRAPH может ответить 200 не JSON-ом — как и при проверке сессии.
+                raise SessionInvalid() from None
 
     async def login(self, user_name: str, password: str, utc_offset_minutes: int) -> str:
         """Вход по логину и паролю (фоновая проверка с согласия пользователя): токен сессии в поясе UTCOffset —
         как Login в приложении. Неверные логин или пароль — LoginRejected."""
         params = {"UserName": user_name, "Password": password, "UTCOffset": utc_offset_minutes}
         try:
-            resp = await self._send("Login", params, self._settings.autograph_timeout_seconds)
+            async with self._request("Login", params, self._settings.autograph_timeout_seconds) as resp:
+                token = resp.text.strip().strip('"')
         except SessionInvalid:
             raise LoginRejected() from None
-        token = resp.text.strip().strip('"')
         if not token:
             raise LoginRejected()
         return token
@@ -152,18 +181,15 @@ class AutoGraphClient:
             }
             for batch in self._batches(base, names):
                 params = {**base, "onlineParams": ",".join(batch)}
-                resp = await self._send(
-                    "GetTripTables", params, self._settings.autograph_trip_tables_timeout_seconds, stream=True
-                )
-                try:
-                    reader = builder.reader()
-                    async for data in resp.aiter_bytes():
-                        reader.feed(data)
-                    reader.close()
-                except httpx.TransportError as e:
-                    raise AutoGraphUnavailable("AutoGRAPH оборвал передачу данных") from e
-                except (ijson.JSONError, ValueError) as e:
-                    log.warning("AutoGRAPH GetTripTables: некорректный ответ: %s", type(e).__name__)
-                    raise AutoGraphUnavailable("AutoGRAPH вернул некорректный ответ") from e
-                finally:
-                    await resp.aclose()
+                timeout = self._settings.autograph_trip_tables_timeout_seconds
+                async with self._request("GetTripTables", params, timeout, stream=True) as resp:
+                    try:
+                        reader = builder.reader()
+                        async for data in resp.aiter_bytes():
+                            reader.feed(data)
+                        reader.close()
+                    except httpx.TransportError as e:
+                        raise AutoGraphUnavailable("AutoGRAPH оборвал передачу данных") from e
+                    except (ijson.JSONError, ValueError) as e:
+                        log.warning("AutoGRAPH GetTripTables: некорректный ответ: %s", type(e).__name__)
+                        raise AutoGraphUnavailable("AutoGRAPH вернул некорректный ответ") from e

@@ -6,7 +6,8 @@
   свежий, — EnumDevices показывает, какие машины ему видны (видимость у пользователей схемы может различаться);
 - каждая машина проверяется один раз, с доступом первого пользователя, которому она видна. Тяжёлые запросы
   (EnumParameters, GetTripTables) не удваиваются, лёгкий EnumDevices — по одному на пользователя.
-Параллельно — не больше FS_BACKGROUND_CONCURRENCY машин по всем схемам.
+Параллельно — не больше FS_BACKGROUND_CONCURRENCY машин по всем схемам; в общих пределах FS_AUTOGRAPH_CONCURRENCY и
+FS_PREDICTIVE_CONCURRENCY фоновая проверка занимает не больше половины мест и пропускает запросы пользователей вперёд.
 
 Токен истёк: с паролем (согласие пользователя) стенд входит сам, без пароля доступ ждёт нового токена от
 приложения. Отметка последней проверки схемы двигается, только если ответила хотя бы одна машина (как
@@ -23,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from ..autograph.client import AutoGraphClient
 from ..autograph.errors import AutoGraphUnavailable, LoginRejected, SessionInvalid
 from ..config import Settings
+from ..limits import background_priority
 from ..schemas.contract import Vehicle
 from ..store.repository import AnomalyRepository, to_local
 from ..store.scan import ScanService, error_text
@@ -91,6 +93,11 @@ class BackgroundScanner:
         if self._running.locked():
             log.warning("фоновая проверка: предыдущий проход ещё идёт — пропуск")
             return []
+        # Запросы к AutoGRAPH и аналитике прохода — фоновые: уступают запросам пользователей (limits.UpstreamLimiter).
+        with background_priority():
+            return await self._run_once()
+
+    async def _run_once(self) -> list[SchemaRun]:
         async with self._running:
             s = self._settings
             day_ms = 24 * 3600 * 1000

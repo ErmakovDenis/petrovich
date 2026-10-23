@@ -5,7 +5,6 @@
 заданном при Login токена. Перед выдачей (в том числе из кэша) машина проверяется по EnumDevices этого пользователя.
 """
 
-import hashlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Hashable
@@ -15,6 +14,7 @@ from typing import TypeVar
 
 from ..autograph.client import AutoGraphClient
 from ..autograph.errors import SessionInvalid
+from ..autograph.session import session_key
 from ..cache import TtlCache
 from ..config import Settings
 from ..schemas.contract import Vehicle
@@ -24,11 +24,6 @@ from .parameters import Aggregation, select
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-
-def _devices_key(session: str, schema_id: str) -> str:
-    # Ключ — хэш токена: сам токен в памяти кэша не хранится.
-    return hashlib.sha256(f"{session}\n{schema_id}".encode()).hexdigest()
 
 
 class VehicleNotFound(Exception):
@@ -67,12 +62,12 @@ class TelemetryService:
         self._telemetry: TtlCache[BuildResult] = TtlCache(s.telemetry_cache_ttl_seconds, s.telemetry_cache_max_entries)
 
     async def vehicles(self, session: str, schema_id: str) -> list[Vehicle]:
-        return await self._devices.get(_devices_key(session, schema_id), lambda: self._client.enum_devices(session, schema_id))
+        return await self._devices.get(session_key(session, schema_id), lambda: self._client.enum_devices(session, schema_id))
 
     async def fresh_vehicles(self, session: str, schema_id: str) -> list[Vehicle]:
         """Машины мимо кэша (заодно проверка, что токен жив), результат кладётся в кэш для следующих запросов."""
         vehicles = await self._client.enum_devices(session, schema_id)
-        self._devices.put(_devices_key(session, schema_id), vehicles)
+        self._devices.put(session_key(session, schema_id), vehicles)
         return vehicles
 
     async def vehicle(self, session: str, schema_id: str, vehicle_id: str) -> Vehicle:

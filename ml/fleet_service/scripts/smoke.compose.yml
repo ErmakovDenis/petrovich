@@ -44,6 +44,8 @@ services:
     environment:
       <<: *llm
       FS_LLM_PROXY_URL: http://llm_proxy:4000
+      # Сценарий задаёт вопросы подряд от одного пользователя; сам лимит проверяет tests/test_load_limits.py.
+      FS_CHAT_BURST: "100"
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
       # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
       FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
