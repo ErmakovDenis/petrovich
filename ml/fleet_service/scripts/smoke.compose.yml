@@ -16,11 +16,34 @@ services:
       timeout: 3s
       retries: 15
 
-  fleet_service:
-    environment:
+  # Прокси модели ходит в подставной OpenRouter; запасная модель x/fallback, короткие паузы между повторами. Всё,
+  # от чего зависят шаги smoke.sh, задано здесь, а не берётся из .env разработчика.
+  llm_proxy_config:
+    environment: &llm
       FS_OPENROUTER_API_KEY: test-key
       FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
       FS_LLM_MODEL: fake/model
+      FS_LLM_FALLBACK_MODELS: x/fallback
+      FS_LLM_RETRIES: "2"
+      FS_LLM_RETRY_BASE_SECONDS: "0.2"
+      FS_LLM_RETRY_MAX_SECONDS: "1"
+      FS_LLM_TIMEOUT_SECONDS: "60"
+      FS_CHAT_TIMEOUT_SECONDS: "100"
+      FS_OPENROUTER_REQUIRE_PARAMETERS: "true"
+      FS_OPENROUTER_DATA_COLLECTION: deny
+      FS_OPENROUTER_PROVIDER_SORT: ""
+      FS_OPENROUTER_ALLOW_FALLBACKS: "true"
+
+  llm_proxy:
+    depends_on:
+      fakes:
+        condition: service_healthy
+    restart: "no"
+
+  fleet_service:
+    environment:
+      <<: *llm
+      FS_LLM_PROXY_URL: http://llm_proxy:4000
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
       # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
       FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

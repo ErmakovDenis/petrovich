@@ -27,6 +27,23 @@ class Settings(BaseSettings):
     # и политика сбора данных провайдером.
     openrouter_require_parameters: bool = True
     openrouter_data_collection: Literal["allow", "deny"] = "deny"
+    # Порядок провайдеров одной модели (provider.sort); пусто — порядок OpenRouter по умолчанию. allow_fallbacks —
+    # переходить к следующему провайдеру при сбое.
+    openrouter_provider_sort: Literal["", "latency", "throughput", "price"] = ""
+    openrouter_allow_fallbacks: bool = True
+
+    # Прокси LiteLLM (сервис llm_proxy в docker compose): повторы и запасные модели. Пусто — стенд обращается
+    # к OpenRouter напрямую, без повторов. Конфигурацию прокси строит python -m fleet_service.llm_proxy из этих же FS_*.
+    llm_proxy_url: str = ""
+    # Запасные модели OpenRouter через запятую: берутся по порядку, если основная не ответила (через прокси — после
+    # исчерпания повторов основной, без прокси — полем models запроса).
+    # Только модели, прошедшие проверку на tools (python -m fleet_service.agent.eval_tools).
+    llm_fallback_models: str = ""
+    # Повторы обращения к модели через прокси (без первой попытки) при 408, 429, 5xx и сетевой ошибке. Пауза перед
+    # n-м повтором — base · 2^(n-1), не больше max, плюс случайные до 0,75 с; Retry-After провайдера до 60 с — как есть.
+    llm_retries: int = Field(2, ge=0, le=5)
+    llm_retry_base_seconds: float = Field(1, ge=0)
+    llm_retry_max_seconds: float = Field(10, ge=0)
 
     # Модель и генерация. Пустая модель — ассистент не настроен (/v1/chat отвечает 503).
     llm_model: str = ""
@@ -161,6 +178,12 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def fallback_models(self) -> list[str]:
+        """FS_LLM_FALLBACK_MODELS списком, без пустых и без повтора основной модели."""
+        names = [m.strip() for m in self.llm_fallback_models.split(",")]
+        return list(dict.fromkeys(m for m in names if m and m != self.llm_model))
 
     @property
     def email_configured(self) -> bool:

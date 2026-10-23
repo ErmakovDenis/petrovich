@@ -5,6 +5,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from ..agent.llm import llm_scope
 from ..agent.loop import Agent
 from ..agent.prompt import build_messages
 from ..agent.tools import ToolContext
@@ -70,16 +71,18 @@ async def chat(
         if record is not None:
             stored = record.to_api(request.utc_offset_minutes).model_dump(by_alias=True, mode="json")
     try:
-        async with asyncio.timeout(settings.chat_timeout_seconds):
-            result = await agent.run(build_messages(system_prompt, trimmed, stored_anomaly=stored), ctx)
+        # Срок общий для asyncio.timeout и клиента модели: обращение, которое не успеет, не начинается.
+        with llm_scope(settings.chat_timeout_seconds) as scope:
+            async with asyncio.timeout(settings.chat_timeout_seconds):
+                result = await agent.run(build_messages(system_prompt, trimmed, stored_anomaly=stored), ctx)
     except TimeoutError:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,
             f"Ассистент не успел ответить за {settings.chat_timeout_seconds:g} с",
         ) from None
     log.info(
-        "чат: схема %s, сообщений %d, обращений к модели %d, tools %s, черновиков писем %d, %.1f с",
-        user.schema_id, len(trimmed.messages), result.iterations, result.tool_calls or "—", len(ctx.drafts),
-        time.monotonic() - started,
+        "чат: схема %s, сообщений %d, обращений к модели %d (%s), tools %s, черновиков писем %d, %.1f с",
+        user.schema_id, len(trimmed.messages), result.iterations, ", ".join(scope.routes) or "—",
+        result.tool_calls or "—", len(ctx.drafts), time.monotonic() - started,
     )
     return ChatResponse(reply=result.reply, drafts=ctx.drafts)

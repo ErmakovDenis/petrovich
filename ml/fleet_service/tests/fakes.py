@@ -2,7 +2,8 @@
 smoke.sh (отдельный контейнер `fakes`, `uvicorn fakes:app`). Реальные ключи и учётные данные не нужны.
 
 OpenRouter `POST /openrouter/api/v1/chat/completions` принимает только ключ `test-key`. Тела запросов копятся в
-`app.state.llm_requests`. Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
+`app.state.llm_requests` (`GET /openrouter/_requests`); `POST /openrouter/_failures` ставит в очередь следующие
+ответы — ошибки с кодом и Retry-After или ответ запасной модели (smoke.sh проверяет повторы и переходы прокси). Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
@@ -293,6 +294,22 @@ def _scripted_reply(messages: list[dict]) -> dict:
             f"{fuel['unit']} за {period['from']} — {period['to']}."}
 
 
+def _completion(body: dict, model: str | None) -> dict:
+    """Ответ chat completions в полном формате OpenAI: его разбирает и стенд, и прокси LiteLLM."""
+    message = _scripted_reply(body["messages"]) if body.get("tools") else {"role": "assistant", "content": NO_DATA_REPLY}
+    return {
+        "id": "gen-fake",
+        "object": "chat.completion",
+        "created": 1788000000,
+        "model": model,
+        # Как у OpenRouter: какой провайдер ответил.
+        "provider": "FakeProvider",
+        "choices": [{"index": 0, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
+                     "message": message}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+
 def _call(call_id: str, name: str, arguments: dict) -> dict:
     return {"role": "assistant", "content": None, "tool_calls": [
         {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}},
@@ -304,6 +321,7 @@ def create_fakes() -> FastAPI:
     # AutoGRAPH отдаёт GetTripTables в gzip — клиент стенда должен это принимать.
     app.add_middleware(GZipMiddleware, minimum_size=500)
     app.state.llm_requests = []
+    app.state.llm_failures = []
     app.state.calls = Counter()
     app.state.trip_requests = []
     app.state.parameters = {}
@@ -347,14 +365,28 @@ def create_fakes() -> FastAPI:
             return JSONResponse({"error": {"message": "No auth credentials found", "code": 401}}, status_code=401)
         body = await request.json()
         app.state.llm_requests.append(body)
-        message = _scripted_reply(body["messages"]) if body.get("tools") else \
-            {"role": "assistant", "content": NO_DATA_REPLY}
-        return JSONResponse({
-            "id": "gen-fake",
-            "model": body.get("model"),
-            "choices": [{"index": 0, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
-                         "message": message}],
-        })
+        if app.state.llm_failures:
+            failure = app.state.llm_failures.pop(0)
+            if "status" not in failure:
+                # Ответила запасная модель из поля models.
+                return JSONResponse(_completion(body, failure["model"]))
+            headers = {"Retry-After": str(failure["retryAfter"])} if failure.get("retryAfter") is not None else None
+            return JSONResponse({"error": {"message": failure.get("message", "Provider error"), "code": failure["status"]}},
+                                status_code=failure["status"], headers=headers)
+        return JSONResponse(_completion(body, body.get("model")))
+
+    @app.post("/openrouter/_failures")
+    async def set_llm_failures(request: Request) -> dict[str, int]:
+        """Следующие ответы подставного OpenRouter: ошибки [{"status": 429, "retryAfter": 1}, …] или ответ запасной
+        модели {"model": "x/fallback"}. Журнал запросов очищается."""
+        app.state.llm_failures = list(await request.json())
+        app.state.llm_requests.clear()
+        return {"queued": len(app.state.llm_failures)}
+
+    @app.get("/openrouter/_requests")
+    async def llm_requests() -> list[dict]:
+        """Тела запросов к подставному OpenRouter (без сообщений — они длинные)."""
+        return [{k: v for k, v in b.items() if k not in ("messages", "tools")} for b in app.state.llm_requests]
 
     def rights(session: str) -> str:
         """Токен, чьи права у сессии: выданный входом по паролю — права учётной записи."""

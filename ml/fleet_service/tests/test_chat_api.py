@@ -179,13 +179,40 @@ def test_openrouter_timeout_is_504():
     assert r.status_code == 504 and r.json() == {"detail": "Модель не ответила за 60 с"}
 
 
-def test_provider_error_in_200_is_502():
+def test_provider_error_in_200_is_classified_by_code():
     def broken(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"error": {"message": "Provider returned error", "code": 502}})
 
+    def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": {"message": "Provider returned error", "code": 400}})
+
     with _with_openrouter(broken) as client:
         r = client.post("/v1/chat", json=ask(), headers=AUTH)
+    assert r.status_code == 503 and r.json() == {"detail": "Модель временно недоступна, повторите позже"}
+    with _with_openrouter(rejected) as client:
+        r = client.post("/v1/chat", json=ask(), headers=AUTH)
     assert r.status_code == 502 and "Provider returned error" in r.json()["detail"]
+
+
+def test_credits_exhausted_is_503_with_plain_text(caplog):
+    def no_credits(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"message": "Insufficient credits", "code": 402}})
+
+    with _with_openrouter(no_credits) as client:
+        r = client.post("/v1/chat", json=ask(), headers=AUTH)
+    assert r.status_code == 503 and r.json() == {"detail": "Ассистент временно недоступен, попробуйте позже"}
+    assert any(rec.levelname == "ERROR" and "402" in rec.getMessage() for rec in caplog.records)
+
+
+def test_rate_limited_model_is_503_with_retry_after():
+    def limited(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "Rate limit exceeded", "code": 429}},
+                              headers={"Retry-After": "12"})
+
+    with _with_openrouter(limited) as client:
+        r = client.post("/v1/chat", json=ask(), headers=AUTH)
+    assert r.status_code == 503 and r.headers["retry-after"] == "12"
+    assert r.json() == {"detail": "Модель временно недоступна, повторите позже"}
 
 
 def test_iteration_limit_is_502_with_text(make_client):

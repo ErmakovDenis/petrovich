@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from ..agent.llm import LLMError, LLMTimeout
+from ..agent.llm import LLMCreditsExhausted, LLMError, LLMRetryable, LLMTimeout
 from ..agent.loop import AgentIterationLimit
 from ..autograph.errors import AutoGraphUnavailable, SessionInvalid, TripTablesTooLarge
 
@@ -25,6 +25,20 @@ def install_error_handlers(app: FastAPI) -> None:
     async def llm_timeout(_: Request, e: LLMTimeout) -> JSONResponse:
         log.warning("модель: %s", e)
         return _detail(status.HTTP_504_GATEWAY_TIMEOUT, str(e))
+
+    @app.exception_handler(LLMCreditsExhausted)
+    async def llm_credits(_: Request, e: LLMCreditsExhausted) -> JSONResponse:
+        # В лог (ERROR) уже записал клиент модели; пользователю — без подробностей про кредиты.
+        return _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Ассистент временно недоступен, попробуйте позже")
+
+    @app.exception_handler(LLMRetryable)
+    async def llm_retryable(_: Request, e: LLMRetryable) -> JSONResponse:
+        # Подробности (текст провайдера или прокси) — только в лог: пользователю они ничего не скажут.
+        log.warning("модель: %s", e)
+        response = _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Модель временно недоступна, повторите позже")
+        if e.retry_after is not None:
+            response.headers["Retry-After"] = str(max(1, round(e.retry_after)))
+        return response
 
     @app.exception_handler(LLMError)
     async def llm_error(_: Request, e: LLMError) -> JSONResponse:

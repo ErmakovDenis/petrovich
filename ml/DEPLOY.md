@@ -14,13 +14,16 @@
 Телефон (приложение) ──HTTPS:443──▶ nginx на сервере ──▶ 127.0.0.1:8080 ──▶ fleet_service (контейнер, :8000)
                                                                               │
                      predictive_antifraud (контейнер, :8000) ◀── X-API-Key ───┤  внутренняя сеть compose
-                                                                              ├──▶ AutoGRAPH  https://web.tk-ekat.ru
-                                                                              ├──▶ OpenRouter https://openrouter.ai
+                   llm_proxy (LiteLLM, :4000) ◀──────────────────────────────┤  внутренняя сеть compose
+                     └──▶ OpenRouter https://openrouter.ai                    ├──▶ AutoGRAPH  https://web.tk-ekat.ru
                                                                               └──▶ SMTP-сервер (письма)
 ```
 
-- Оба сервиса — контейнеры одного `ml/docker-compose.yml`. Наружу (через nginx) открыт только `fleet_service`;
-  `predictive_antifraud` вызывается только стендом по внутренней сети compose (`http://predictive_antifraud:8000`).
+- Все сервисы — контейнеры одного `ml/docker-compose.yml`. Наружу (через nginx) открыт только `fleet_service`;
+  `predictive_antifraud` и прокси модели `llm_proxy` вызываются только стендом по внутренней сети compose
+  (`http://predictive_antifraud:8000`, `http://llm_proxy:4000`). Прокси повторяет обращения к модели и переходит
+  к запасным моделям; его конфигурацию при каждом `docker compose up` строит одноразовый `llm_proxy_config` из
+  `fleet_service/.env`.
 - Логин и пароль AutoGRAPH на стенд не приходят: приложение передаёт токен сессии (`Authorization: Bearer`) и id
   схемы (`X-Schema-Id`). Пароль стенд получает, только если пользователь включил «Разрешить стенду входить
   самостоятельно», и хранит его зашифрованным.
@@ -108,7 +111,15 @@ FS_LLM_MODEL=openai/gpt-4o-mini        # модель с поддержкой to
 Без ключа или модели стенд работает (телеметрия, аномалии), но `/v1/chat` отвечает 503 «ассистент не настроен».
 `FS_OPENROUTER_REQUIRE_PARAMETERS=true` и `FS_OPENROUTER_DATA_COLLECTION=deny` (по умолчанию) оставляют только
 провайдеров, которые поддерживают tools и не сохраняют запросы; если у выбранной модели таких нет, ассистент
-отвечает 502 — выберите другую модель (ослаблять `deny` — решение владельца).
+отвечает ошибкой — выберите другую модель (ослаблять `deny` — решение владельца).
+
+Повторы и запасные модели (`FS_LLM_RETRIES`, `FS_LLM_FALLBACK_MODELS` и др.) — в том же файле, описаны в
+`.env.example` и `fleet_service/README.md` («Модель: прокси, повторы, запасные модели»). Запасную модель ставьте
+только после проверки набором `python -m fleet_service.agent.eval_tools`. Кончились кредиты OpenRouter (402) —
+ассистент отвечает «временно недоступен», в логе `fleet_service` строка уровня ERROR `кончились кредиты`.
+Прокси не стартует (`docker compose ps -a`: `llm_proxy_config` не `Exited (0)` или `llm_proxy` не healthy) —
+телеметрия и аномалии работают, чат отвечает 503; временно обойти прокси: строка `FS_LLM_PROXY_URL=` в `ml/.env` и
+`docker compose up -d` (стенд пойдёт в OpenRouter напрямую, без повторов и запасных моделей).
 
 ### 4.3. Фоновая проверка на стенде
 
@@ -180,10 +191,11 @@ EOF
 
 ```bash
 docker compose up -d --build --wait
-docker compose ps        # оба контейнера Up (healthy), порты 127.0.0.1:8080 и 127.0.0.1:8001
+docker compose ps -a     # fleet_service, llm_proxy, predictive_antifraud — Up (healthy), порты 127.0.0.1:8080 и
+                         # 127.0.0.1:8001; llm_proxy_config — Exited (0): конфигурация прокси записана
 ```
 
-`--wait` ждёт healthcheck обоих сервисов (до минуты). Миграции базы применяются при старте
+`--wait` ждёт healthcheck сервисов (до двух минут: прокси модели стартует дольше). Миграции базы применяются при старте
 (`FS_DB_AUTO_MIGRATE=true`). Контейнеры с `restart: unless-stopped` поднимаются сами после перезагрузки сервера
 (служба docker должна быть включена: `sudo systemctl enable docker`).
 
@@ -209,7 +221,7 @@ docker compose logs fleet_service | tail -20      # без ERROR и Traceback
 
 ```bash
 docker compose exec fleet_service python -c "import httpx; print(httpx.get('https://web.tk-ekat.ru/ServiceJSON/EnumSchemas', timeout=15).status_code)"
-docker compose exec fleet_service python -c "import httpx; print(httpx.get('https://openrouter.ai/api/v1/models', timeout=15).status_code)"
+docker compose exec llm_proxy python -c "import urllib.request; print(urllib.request.urlopen('https://openrouter.ai/api/v1/models', timeout=15).status)"
 # ожидается 200 (у AutoGRAPH без сессии допустим и другой код) — важно, что нет ошибки соединения или таймаута
 ```
 
