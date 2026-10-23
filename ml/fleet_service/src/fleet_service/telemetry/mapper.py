@@ -142,6 +142,9 @@ class BuildResult:
     empty: list[ParameterInfo] = field(default_factory=list)
     zero: list[ParameterInfo] = field(default_factory=list)
     bucket: timedelta = timedelta(minutes=1)
+    # Период был закрыт уже при загрузке (TelemetryService): данные полные, запись живёт в кэше долго — и результаты
+    # аналитики по ней тоже.
+    closed: bool = False
 
 
 # Состояния разбора: где мы в структуре {dev: {Trips: [{DT: [...], Values: [{Name, Values: [...]}]}]}}.

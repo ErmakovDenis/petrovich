@@ -277,7 +277,11 @@ def _scripted_reply(messages: list[dict]) -> dict:
             return {"role": "assistant", "content": "Машин в схеме нет."}
         vehicle = next((v for v in last["vehicles"] if v["name"].split()[0].lower() in question), last["vehicles"][0])
         tool = "check_vehicle" if about_anomalies else "get_vehicle_summary"
-        return _call("call-2", tool, {"vehicle_id": vehicle["id"]})
+        args = {"vehicle_id": vehicle["id"]}
+        if "прошл" in question:
+            # «На прошлой неделе» — закрытый период (кэш телеметрии по смыслу данных).
+            args |= {"from": "2026-09-07T00:00", "to": "2026-09-14T00:00"}
+        return _call("call-2", tool, args)
     if "outcome" in last:
         name = last["vehicle"]["name"]
         if last["outcome"] == "anomalies_found":
@@ -332,11 +336,23 @@ def create_fakes() -> FastAPI:
     app.state.parameters = {}
     app.state.raw_trip_tables = {}
     app.state.analytics = "not_ready"
+    app.state.analytics_version = "fake-1"
     app.state.analytics_requests = []
     app.state.trip_tables_down = set()
     app.state.expired = set()
     app.state.issued = {}
     app.state.logins = []
+
+    @app.get("/predictive/ready")
+    async def analytics_ready() -> JSONResponse:
+        """Как /ready predictive_antifraud: модели загружены в режимах ready и found (версия — app.state.analytics_version)."""
+        app.state.calls["ready"] += 1
+        if app.state.analytics == "down":
+            return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        loaded = app.state.analytics in ("ready", "found")
+        version = app.state.analytics_version if loaded else None
+        return JSONResponse({"models": [{"name": n, "ready": loaded, "version": version}
+                                        for n in ("predictive", "antifraud")]})
 
     @app.post("/predictive/v1/{service}/{action}")
     async def analytics(service: str, action: str, request: Request) -> JSONResponse:
@@ -365,7 +381,7 @@ def create_fakes() -> FastAPI:
                 "description": "Модель оценила состояние как аномальное (score=0.91)", "value": 250.0, "score": 0.91,
                 "source": "Антифрод (ML)",
             })
-        return JSONResponse({"ready": True, "modelVersion": "fake-1", "anomalies": anomalies})
+        return JSONResponse({"ready": True, "modelVersion": app.state.analytics_version, "anomalies": anomalies})
 
     @app.post("/openrouter/api/v1/chat/completions")
     async def completions(request: Request) -> JSONResponse:

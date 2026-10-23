@@ -9,12 +9,14 @@
 import asyncio
 import logging
 import time
+from collections.abc import Hashable
 from typing import Literal
 
 import httpx
 from pydantic import Field, ValidationError
 
 from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
+from ..cache import TtlCache
 from ..config import Settings
 from ..limits import UpstreamLimiter
 from ..schemas.contract import Anomaly, CamelModel, DetectionResponse, VehicleTelemetry
@@ -22,6 +24,16 @@ from ..schemas.contract import Anomaly, CamelModel, DetectionResponse, VehicleTe
 log = logging.getLogger(__name__)
 
 Kind = Literal["predictive", "antifraud"]
+# Сколько ждать GET /ready (версии моделей для кэша): входит в FS_PREDICTIVE_TIMEOUT_SECONDS.
+READY_TIMEOUT_SECONDS = 2.0
+
+
+class _NotCached(Exception):
+    """Неуспешный статус аналитики — возвращается, но в кэш не попадает."""
+
+    def __init__(self, status: "AnalyticsStatus"):
+        super().__init__(status.status)
+        self.status = status
 
 _PATHS: dict[str, str] = {"predictive": "/v1/predictive/analyze", "antifraud": "/v1/antifraud/check"}
 _NAMES: dict[str, str] = {"predictive": "предиктивная аналитика", "antifraud": "антифрод"}
@@ -45,13 +57,59 @@ class AnalyticsClient:
         self._http = http
         self._limiter = limiter
         self._breaker = breaker
+        # Успешные результаты по (вид, версия модели, схема, машина, период) и версии моделей из GET /ready.
+        self._results: TtlCache[AnalyticsStatus] = TtlCache(settings.telemetry_cache_ttl_seconds,
+                                                            settings.analytics_cache_max_entries)
+        self._versions: TtlCache[dict[str, str]] = TtlCache(settings.predictive_ready_ttl_seconds, 1)
+
+    async def model_version(self, kind: Kind, timeout: float) -> str | None:
+        """Версия загруженной модели вида [kind] по GET /ready (помнится FS_PREDICTIVE_READY_TTL_SECONDS, неудача —
+        тоже: пустой список); None — модели нет или аналитика не ответила (тогда кэш не используется)."""
+        s = self._settings
+
+        async def load() -> dict[str, str]:
+            try:
+                resp = await self._http.get(s.predictive_url.rstrip("/") + "/ready", timeout=timeout)
+                resp.raise_for_status()
+                models = resp.json().get("models", [])
+                return {m["name"]: m["version"] for m in models if m.get("ready") and m.get("version")}
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+                return {}
+
+        return (await self._versions.get("ready", load)).get(kind)
+
+    async def run(self, kind: Kind, payload: dict, cache: tuple[Hashable, float] | None = None) -> AnalyticsStatus:
+        """[cache] — ключ телеметрии проверки и срок жизни результата: успешный результат той же версии модели
+        берётся из кэша без запроса к аналитике, одинаковые одновременные проверки ждут один запрос. Всё вместе —
+        не дольше FS_PREDICTIVE_TIMEOUT_SECONDS."""
+        s = self._settings
+        started = time.monotonic()
+        # Breaker не закрыт — аналитика сейчас не отвечает: ни /ready, ни кэша, сразу обычный путь (быстрый отказ).
+        if cache is None or not s.predictive_url.strip() or self._breaker.state != "closed":
+            return await self._run(kind, payload, s.predictive_timeout_seconds)
+        version = await self.model_version(kind, min(READY_TIMEOUT_SECONDS, s.predictive_timeout_seconds))
+        budget = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
+        if version is None:
+            return await self._run(kind, payload, budget)
+
+        async def load() -> AnalyticsStatus:
+            status = await self._run(kind, payload, budget)
+            if status.status != "ok" or status.model_version != version:
+                raise _NotCached(status)  # TtlCache не хранит ошибки — неуспешный статус не кэшируется
+            return status
+
+        try:
+            return await self._results.get((kind, version, cache[0]), load, cache[1])
+        except _NotCached as e:
+            return e.status
 
     @staticmethod
     def payload(telemetry: VehicleTelemetry) -> dict:
         """Тело запроса — VehicleTelemetry в контракте; строится один раз на проверку для обоих сервисов."""
         return telemetry.model_dump(by_alias=True, mode="json")
 
-    async def run(self, kind: Kind, payload: dict) -> AnalyticsStatus:
+    async def _run(self, kind: Kind, payload: dict, budget: float) -> AnalyticsStatus:
+        """Один запрос к аналитике не дольше [budget] секунд вместе с ожиданием места."""
         s = self._settings
         name = _NAMES[kind]
         if not s.predictive_url.strip():
@@ -63,17 +121,16 @@ class AnalyticsClient:
         try:
             # Breaker проверяется до ожидания места: открыт (или идёт пробный запрос) — сразу unavailable.
             with self._breaker.attempt() as outcome:
-                # Ожидание места в пределе входит в FS_PREDICTIVE_TIMEOUT_SECONDS: правила не ждут аналитику дольше.
+                # Ожидание места в пределе входит в срок: правила не ждут аналитику дольше FS_PREDICTIVE_TIMEOUT_SECONDS.
                 started = time.monotonic()
                 try:
-                    async with asyncio.timeout(s.predictive_timeout_seconds):
+                    async with asyncio.timeout(budget):
                         slot = await self._limiter.acquire()
                 except TimeoutError:
                     outcome.skip()  # до сервиса не дошли — ни успех, ни сбой
-                    log.warning("аналитика %s: нет места за %g с (FS_PREDICTIVE_CONCURRENCY)", kind,
-                                s.predictive_timeout_seconds)
+                    log.warning("аналитика %s: нет места за %.1f с (FS_PREDICTIVE_CONCURRENCY)", kind, budget)
                     return overloaded
-                left = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
+                left = max(0.1, budget - (time.monotonic() - started))
                 # Сколько стенд ещё ждёт: аналитика не держит запрос в своей очереди дольше (иначе считала бы впустую).
                 headers["X-Client-Timeout"] = f"{left:.1f}"
                 try:

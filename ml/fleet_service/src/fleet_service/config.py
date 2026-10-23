@@ -120,8 +120,12 @@ class Settings(BaseSettings):
     # Набор параметров прибора (EnumParameters) — по схеме и машине.
     parameters_cache_ttl_seconds: float = Field(3600, ge=0)
     parameters_cache_max_entries: int = Field(5000, ge=1)
-    # Готовая телеметрия — по схеме, машине, периоду и поясу, общая для всех пользователей схемы.
+    # Готовая телеметрия — по схеме, машине, периоду и поясу, общая для всех пользователей схемы. Период,
+    # захватывающий «сейчас», — FS_TELEMETRY_CACHE_TTL_SECONDS; закрытый период (конец раньше «сейчас − задержка
+    # поступления данных AutoGRAPH») уже не изменится — FS_TELEMETRY_CLOSED_CACHE_TTL_SECONDS.
     telemetry_cache_ttl_seconds: float = Field(120, ge=0)
+    telemetry_closed_cache_ttl_seconds: float = Field(21600, ge=0)
+    telemetry_settle_minutes: int = Field(30, ge=0)
     telemetry_cache_max_entries: int = Field(200, ge=1)
     # Самый длинный период одного запроса телеметрии (в приложении — 7 дней).
     telemetry_max_period_hours: int = Field(168, ge=1)
@@ -137,6 +141,10 @@ class Settings(BaseSettings):
     # Ключ X-API-Key сервиса (PA_API_KEY в его .env); пусто — заголовок не передаётся.
     predictive_api_key: SecretStr | None = None
     predictive_timeout_seconds: float = Field(30, gt=0)
+    # Кэш результатов аналитики (только status=ok) — по виду, схеме, машине, периоду и версии модели, с теми же
+    # сроками, что телеметрия. Версии моделей стенд узнаёт из GET /ready аналитики и помнит столько секунд.
+    analytics_cache_max_entries: int = Field(500, ge=1)
+    predictive_ready_ttl_seconds: float = Field(60, ge=0)
 
     # Пороги правил аномалий: FS_RULES__<ИМЯ>, по умолчанию — как в приложении (rules/thresholds.py).
     rules: RuleThresholds = Field(default_factory=RuleThresholds)

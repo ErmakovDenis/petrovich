@@ -143,6 +143,19 @@ echo "$reply" | json_check '"средний уровень топлива 250.0 
 fakes_api /openrouter/_requests | json_check 'len(d) >= 1' || fail "после срока breaker'а стенд не вернулся к OpenRouter"
 curl -fsS "$BASE/health" | json_check 'd["breakers"]["llm"] == "closed"' || fail "breaker модели не закрылся"
 
+step "повторный вопрос о прошлой неделе → телеметрия из кэша, AutoGRAPH не вызывается (видно в логе)"
+ASK_WEEK='{"messages":[{"role":"user","content":"Сколько топлива было у FAW на прошлой неделе?"}],"utcOffsetMinutes":300}'
+for _ in 1 2; do
+    reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$ASK_WEEK" "$BASE/v1/chat")
+    echo "$reply" | json_check '"средний уровень топлива 250.0 л за 2026-09-07T00:00" in d["reply"]' \
+        || fail "ответ о прошлой неделе: $reply"
+done
+week_logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
+[ "$(grep -c 'телеметрия: схема schema-1, машина veh-1, 2026-09-07 00:00:00 — 2026-09-14 00:00:00, параметров' <<<"$week_logs")" = 1 ] \
+    || fail "прошлая неделя загружалась из AutoGRAPH не один раз"
+grep -q 'машина veh-1, 2026-09-07 00:00:00 — 2026-09-14 00:00:00 — из кэша (закрытый период)' <<<"$week_logs" \
+    || fail "в логе нет ответа из кэша за прошлую неделю"
+
 CHECK='{"vehicleId":"veh-2","from":"2026-09-16T06:00:00","to":"2026-09-16T12:00:00","utcOffsetMinutes":300}'
 step "POST /v1/anomalies/check → правила нашли перегрев, модели аналитики не загружены"
 curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$CHECK" "$BASE/v1/anomalies/check" | json_check \
