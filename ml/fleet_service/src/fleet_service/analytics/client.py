@@ -64,18 +64,23 @@ class AnalyticsClient:
         except TimeoutError:
             log.warning("аналитика %s: нет места за %g с (FS_PREDICTIVE_CONCURRENCY)", kind, s.predictive_timeout_seconds)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики перегружен")
+        left = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
+        # Сколько стенд ещё ждёт: аналитика не держит запрос в своей очереди дольше (иначе считала бы впустую).
+        headers["X-Client-Timeout"] = f"{left:.1f}"
         try:
             resp = await self._http.post(
-                s.predictive_url.rstrip("/") + _PATHS[kind],
-                json=payload,
-                headers=headers,
-                timeout=max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started)),
+                s.predictive_url.rstrip("/") + _PATHS[kind], json=payload, headers=headers, timeout=left,
             )
         except httpx.HTTPError as e:
             log.warning("аналитика %s: сервис не ответил: %s", kind, type(e).__name__)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики не отвечает")
         finally:
             slot.release()
+        if resp.status_code == 503:
+            # Предел нагрузки аналитики (PA_MAX_CONCURRENCY): без повтора — правила уже посчитаны, повтор добавил бы
+            # нагрузки перегруженному сервису.
+            log.warning("аналитика %s: сервис перегружен (503)", kind)
+            return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики перегружен")
         if resp.status_code != 200:
             log.warning("аналитика %s: ответ %d", kind, resp.status_code)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики ответил ошибкой {resp.status_code}")

@@ -72,9 +72,10 @@ class Settings(BaseSettings):
     chat_queue_max: int = Field(16, ge=0)
     # Общий на процесс предел одновременных запросов к AutoGRAPH и к predictive_antifraud — для всех путей (чат,
     # проверки, scan, фоновая проверка). Фоновая проверка занимает не больше половины и уступает запросам
-    # пользователей.
+    # пользователей. FS_PREDICTIVE_CONCURRENCY держите не больше PA_MAX_CONCURRENCY аналитики: тогда очередь — здесь,
+    # где запросы пользователей идут вперёд фоновых, а не в простой очереди аналитики.
     autograph_concurrency: int = Field(8, ge=1)
-    predictive_concurrency: int = Field(4, ge=1)
+    predictive_concurrency: int = Field(2, ge=1)
 
     # AutoGRAPH: проверка токена сессии пользователя.
     autograph_base_url: str = "https://web.tk-ekat.ru/ServiceJSON/"

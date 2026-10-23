@@ -21,7 +21,7 @@ SMTP — `FakeSmtp`: принимает письма в память (`messages`
 если задан FAKES_SMTP_PORT; принятые письма — `GET /smtp/messages`.
 
 predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1/antifraud/check` (ключ `pa-key`):
-режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down.
+режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down, overloaded.
 
 С tools модель ведёт сценарий: вопрос об аномалиях/нарушениях/проверке → check_vehicle, иначе get_vehicle_summary;
 «какие аномалии [дд.мм]» → list_anomalies; «что решили» → get_anomaly по id аномалии из контекста карточки.
@@ -63,8 +63,9 @@ LOGINS = {"Пётр": VALID_TOKEN, "Иван": OTHER_TOKEN}
 
 FAKE_PA_KEY = "pa-key"
 # Режимы подставного predictive_antifraud (app.state.analytics): not_ready — моделей нет (как настоящий сервис без
-# моделей), ready — модели отработали без аномалий, found — модель нашла аномалию, down — 500.
-ANALYTICS_MODES = ("not_ready", "ready", "found", "down")
+# моделей), ready — модели отработали без аномалий, found — модель нашла аномалию, down — 500, overloaded — 503
+# (предел нагрузки PA_MAX_CONCURRENCY).
+ANALYTICS_MODES = ("not_ready", "ready", "found", "down", "overloaded")
 
 DEVICES = {
     VALID_TOKEN: [
@@ -344,6 +345,9 @@ def create_fakes() -> FastAPI:
         mode = app.state.analytics
         if mode == "down":
             return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        if mode == "overloaded":
+            return JSONResponse({"detail": "Сервис аналитики перегружен: очередь заполнена, повторите позже"},
+                                status_code=503, headers={"Retry-After": "5"})
         if mode == "not_ready":
             return JSONResponse({"ready": False, "modelVersion": None, "anomalies": []})
         anomalies = []

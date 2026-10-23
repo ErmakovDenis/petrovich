@@ -148,6 +148,21 @@ async def test_session_check_does_not_wait_for_a_slot_forever():
 
 
 @pytest.mark.anyio
+async def test_analytics_gets_the_stand_deadline():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["x-client-timeout"])
+        return httpx.Response(200, json={"ready": False, "modelVersion": None, "anomalies": []})
+
+    analytics = AnalyticsClient(test_settings(predictive_timeout_seconds=30),
+                                httpx.AsyncClient(transport=httpx.MockTransport(handler)), UpstreamLimiter("p", 2))
+    assert (await analytics.run("predictive", {})).status == "not_ready"
+    # Остаток срока стенда: аналитика не держит запрос в очереди дольше.
+    assert 29 <= float(seen[0]) <= 30
+
+
+@pytest.mark.anyio
 async def test_analytics_waiting_for_a_slot_counts_into_timeout():
     fakes = create_fakes()
     limiter = UpstreamLimiter("predictive", concurrency=1)
