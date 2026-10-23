@@ -3,7 +3,9 @@ smoke.sh (отдельный контейнер `fakes`, `uvicorn fakes:app`). �
 
 OpenRouter `POST /openrouter/api/v1/chat/completions` принимает только ключ `test-key`. Тела запросов копятся в
 `app.state.llm_requests` (`GET /openrouter/_requests`); `POST /openrouter/_failures` ставит в очередь следующие
-ответы — ошибки с кодом и Retry-After или ответ запасной модели (smoke.sh проверяет повторы и переходы прокси). Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
+ответы — ошибки с кодом и Retry-After или ответ запасной модели (smoke.sh проверяет повторы и переходы прокси).
+Резервная модель вне OpenRouter — `POST /reserve/v1/chat/completions` (ключ `reserve-key`, тот же сценарий), журнал —
+`GET /reserve/_requests`. Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
@@ -46,6 +48,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 
 FAKE_LLM_KEY = "test-key"
+FAKE_RESERVE_KEY = "reserve-key"
 VALID_TOKEN = "valid-token"
 OTHER_TOKEN = "other-token"
 FOREIGN_TOKEN = "foreign-token"
@@ -323,6 +326,7 @@ def create_fakes() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=500)
     app.state.llm_requests = []
     app.state.llm_failures = []
+    app.state.reserve_requests = []
     app.state.calls = Counter()
     app.state.trip_requests = []
     app.state.parameters = {}
@@ -379,12 +383,26 @@ def create_fakes() -> FastAPI:
                                 status_code=failure["status"], headers=headers)
         return JSONResponse(_completion(body, body.get("model")))
 
+    @app.post("/reserve/v1/chat/completions")
+    async def reserve_completions(request: Request) -> JSONResponse:
+        """Резервная модель вне OpenRouter (OpenAI-совместимый адрес, ключ reserve-key): тот же сценарий tools."""
+        if request.headers.get("authorization") != f"Bearer {FAKE_RESERVE_KEY}":
+            return JSONResponse({"error": {"message": "Unauthorized", "code": 401}}, status_code=401)
+        body = await request.json()
+        app.state.reserve_requests.append(body)
+        return JSONResponse(_completion(body, body.get("model")))
+
+    @app.get("/reserve/_requests")
+    async def reserve_requests() -> list[dict]:
+        return [{k: v for k, v in b.items() if k not in ("messages", "tools")} for b in app.state.reserve_requests]
+
     @app.post("/openrouter/_failures")
     async def set_llm_failures(request: Request) -> dict[str, int]:
         """Следующие ответы подставного OpenRouter: ошибки [{"status": 429, "retryAfter": 1}, …] или ответ запасной
         модели {"model": "x/fallback"}. Журнал запросов очищается."""
         app.state.llm_failures = list(await request.json())
         app.state.llm_requests.clear()
+        app.state.reserve_requests.clear()
         return {"queued": len(app.state.llm_failures)}
 
     @app.get("/openrouter/_requests")

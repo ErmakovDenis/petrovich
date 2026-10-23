@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 import ijson
 
+from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
 from ..limits import UpstreamLimiter
 from ..schemas.contract import Vehicle
@@ -46,11 +47,12 @@ def retry_delay(settings: Settings, attempt: int) -> float:
 
 
 class AutoGraphClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter):
-        """[limiter] — общий на процесс предел одновременных запросов к AutoGRAPH (main.create_app)."""
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+        """[limiter] и [breaker] — общие на процесс для AutoGRAPH (main.create_app), с проверкой сессии."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
+        self._breaker = breaker
 
     def _url(self, method: str) -> str:
         return self._settings.autograph_base_url.rstrip("/") + "/" + method
@@ -58,6 +60,31 @@ class AutoGraphClient:
     @asynccontextmanager
     async def _request(
         self, method: str, params: dict[str, Any], timeout: float, stream: bool = False
+    ) -> AsyncIterator[httpx.Response]:
+        """Запрос под breaker'ом AutoGRAPH. Сбой для breaker'а — запрос целиком (после всех повторов) не получил
+        ответа, получил 5xx или оборвался при чтении потока; 401/403 и прочие 4xx — AutoGRAPH работает. Breaker
+        открыт — сразу AutoGraphUnavailable, без запроса; начатые повторы он не прерывает."""
+        try:
+            with self._breaker.attempt() as outcome:
+                try:
+                    async with self._attempts(method, params, timeout, stream) as resp:
+                        yield resp
+                except AutoGraphUnavailable as e:
+                    if e.upstream_failure:
+                        outcome.fail()
+                    raise
+                except httpx.TransportError:
+                    outcome.fail()
+                    raise
+        except BreakerOpen as e:
+            log.warning("AutoGRAPH %s: breaker открыт — запрос не отправлен", method)
+            raise AutoGraphUnavailable(
+                f"AutoGRAPH недоступен: много сбоев подряд, повтор через {max(1, round(e.retry_after))} с"
+            ) from None
+
+    @asynccontextmanager
+    async def _attempts(
+        self, method: str, params: dict[str, Any], timeout: float, stream: bool
     ) -> AsyncIterator[httpx.Response]:
         """Ответ 200 с повторами при сетевой ошибке; 401/403 → SessionInvalid, иной код → AutoGraphUnavailable.
         Место в пределе FS_AUTOGRAPH_CONCURRENCY занято на каждую попытку, у потокового ответа — пока его читают;
@@ -92,7 +119,8 @@ class AutoGraphClient:
             if resp.status_code in (401, 403):
                 raise SessionInvalid()
             log.warning("AutoGRAPH %s ответил %d", method, resp.status_code)
-            raise AutoGraphUnavailable(f"AutoGRAPH ответил ошибкой {resp.status_code}")
+            raise AutoGraphUnavailable(f"AutoGRAPH ответил ошибкой {resp.status_code}",
+                                       upstream_failure=counts_as_failure(resp.status_code))
         raise AutoGraphUnavailable(f"AutoGRAPH недоступен: нет ответа после {attempts} попыток") from last
 
     async def _json(self, method: str, params: dict[str, Any]) -> Any:

@@ -14,6 +14,7 @@ from enum import Enum
 
 import httpx
 
+from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
 from ..limits import UpstreamLimiter
 from .errors import AutoGraphUnavailable, SchemaForbidden, SessionInvalid
@@ -35,11 +36,12 @@ class _Outcome(Enum):
 
 
 class AutoGraphSessionChecker:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter):
-        """[limiter] — общий с AutoGraphClient предел одновременных запросов к AutoGRAPH (один на процесс)."""
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+        """[limiter] и [breaker] — общие с AutoGraphClient (один на процесс)."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
+        self._breaker = breaker
         self._cache: OrderedDict[str, tuple[float, _Outcome]] = OrderedDict()
         self._lock = asyncio.Lock()
 
@@ -88,7 +90,17 @@ class AutoGraphSessionChecker:
             log.warning("AutoGRAPH: нет места для проверки сессии за %g с (FS_AUTOGRAPH_CONCURRENCY)", timeout)
             raise AutoGraphUnavailable() from None
         try:
-            resp = await self._http.get(url, params={"session": session}, timeout=timeout)
+            with self._breaker.attempt() as outcome:
+                try:
+                    resp = await self._http.get(url, params={"session": session}, timeout=timeout)
+                except httpx.HTTPError:
+                    outcome.fail()
+                    raise
+                if counts_as_failure(resp.status_code):
+                    outcome.fail()
+        except BreakerOpen:
+            # Недоступность AutoGRAPH не кэшируется и не превращается в 401 — как и при сетевой ошибке.
+            raise AutoGraphUnavailable() from None
         except httpx.HTTPError as e:
             log.warning("AutoGRAPH: проверка сессии не удалась: %s", type(e).__name__)
             raise AutoGraphUnavailable() from e

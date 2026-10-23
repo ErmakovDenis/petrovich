@@ -52,6 +52,34 @@ def test_without_fallbacks_one_model_and_no_chain():
     assert "fallbacks" not in config["router_settings"]
 
 
+def test_reserve_is_last_in_chain_and_its_key_only_in_env(tmp_path):
+    s = test_settings(llm_fallback_models="x/fallback", llm_reserve_base_url="http://reserve_llm:8000/v1/",
+                      llm_reserve_model="Qwen/Qwen2.5-7B-Instruct", llm_reserve_api_key="reserve-secret")
+    config = proxy_config(s)
+    reserve = config["model_list"][-1]
+    assert reserve["model_name"] == "assistant-reserve" and reserve["model_info"]["id"] == "reserve"
+    assert reserve["litellm_params"]["model"] == "openai/Qwen/Qwen2.5-7B-Instruct"
+    assert reserve["litellm_params"]["api_base"] == "http://reserve_llm:8000/v1"
+    assert reserve["litellm_params"]["api_key"] == "os.environ/FS_LLM_RESERVE_API_KEY"
+    assert config["router_settings"]["fallbacks"] == [{"assistant": ["assistant-fallback-1", "assistant-reserve"]}]
+    write(tmp_path, s)
+    assert "reserve-secret" not in (tmp_path / "litellm.yaml").read_text()
+    assert "FS_LLM_RESERVE_API_KEY='reserve-secret'" in (tmp_path / "litellm.env").read_text()
+
+
+def test_reserve_without_key_and_without_address():
+    s = test_settings(llm_reserve_base_url="http://reserve_llm:8000/v1", llm_reserve_model="m")
+    assert proxy_config(s)["model_list"][-1]["litellm_params"]["api_key"] == "no-key"
+    assert "FS_LLM_RESERVE_API_KEY" not in proxy_env(s)
+    # Адрес без модели (или наоборот) — резерва нет.
+    assert len(proxy_config(test_settings(llm_reserve_base_url="http://reserve_llm:8000/v1"))["model_list"]) == 1
+
+
+def test_proxy_cooldown_is_off_breaker_is_on_the_stand():
+    # Cooldown LiteLLM (раз на запрос, без охлаждения запасных групп) выключен: breaker OpenRouter — на стенде.
+    assert proxy_config(test_settings())["router_settings"]["disable_cooldowns"] is True
+
+
 def test_without_model_no_models():
     assert proxy_config(test_settings(llm_model=""))["model_list"] == []
 

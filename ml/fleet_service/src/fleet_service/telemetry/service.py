@@ -61,6 +61,10 @@ class TelemetryService:
         self._parameters: TtlCache[_Selected] = TtlCache(s.parameters_cache_ttl_seconds, s.parameters_cache_max_entries)
         self._telemetry: TtlCache[BuildResult] = TtlCache(s.telemetry_cache_ttl_seconds, s.telemetry_cache_max_entries)
 
+    def cache_sizes(self) -> dict[str, int]:
+        """Записей в кэшах (для /v1/status)."""
+        return {"devices": len(self._devices), "parameters": len(self._parameters), "telemetry": len(self._telemetry)}
+
     async def vehicles(self, session: str, schema_id: str) -> list[Vehicle]:
         return await self._devices.get(session_key(session, schema_id), lambda: self._client.enum_devices(session, schema_id))
 

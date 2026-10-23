@@ -9,7 +9,8 @@
 только этот одноразовый шаг на образе стенда.
 
 Группа `assistant` — основная модель OpenRouter. Каждая запасная модель (FS_LLM_FALLBACK_MODELS) — своя группа
-`assistant-fallback-<n>` в цепочке `fallbacks`: прокси переходит к ней, когда повторы основной исчерпаны. Не поле
+`assistant-fallback-<n>` в цепочке `fallbacks`: прокси переходит к ней, когда повторы основной исчерпаны; последняя
+в цепочке — резервная модель вне OpenRouter (`assistant-reserve`, FS_LLM_RESERVE_*), если задана. Не поле
 `models` OpenRouter, как при прямом обращении: через прокси иначе не видно, какая модель ответила (прокси подменяет
 `model` ответа именем группы), а по id копии в заголовке x-litellm-model-id — видно.
 """
@@ -19,7 +20,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .agent.llm import FALLBACK_ID, PRIMARY_ID, PROXY_MODEL, provider_preferences
+from pydantic import SecretStr
+
+from .agent.llm import FALLBACK_ID, PRIMARY_ID, PROXY_MODEL, RESERVE_GROUP, RESERVE_ID, provider_preferences
 from .config import Settings
 
 
@@ -48,10 +51,30 @@ def proxy_config(s: Settings) -> dict[str, Any]:
             name = f"{PROXY_MODEL}-fallback-{n}"
             models.append(_openrouter(s, name, model, FALLBACK_ID.format(n=n)))
             chain.append(name)
+        if s.reserve_configured:
+            name = RESERVE_GROUP
+            models.append({
+                "model_name": name,
+                "litellm_params": {
+                    # Любой OpenAI-совместимый адрес (vLLM, LiteLLM, другой провайдер).
+                    "model": f"openai/{s.llm_reserve_model.strip()}",
+                    "api_base": s.llm_reserve_base_url.strip().rstrip("/"),
+                    # Клиенту OpenAI нужен непустой ключ, даже если резерв (свой vLLM) его не проверяет.
+                    "api_key": "os.environ/FS_LLM_RESERVE_API_KEY" if _secret(s.llm_reserve_api_key) else "no-key",
+                    "timeout": s.llm_timeout_seconds,
+                    "max_retries": 0,
+                },
+                "model_info": {"id": RESERVE_ID},
+            })
+            chain.append(name)
     retries = s.llm_retries
     router: dict[str, Any] = {
         "num_retries": retries,
         "timeout": s.llm_timeout_seconds,
+        # Cooldown LiteLLM выключен: он считает сбой раз на запрос, окно у него — срок cooldown, а запасные группы
+        # в цепочке не охлаждает (проверено на этой версии). Breaker OpenRouter — на стенде (agent/llm.py): открыт —
+        # стенд обращается сразу к группе резерва, без запросов к OpenRouter.
+        "disable_cooldowns": True,
         # 400/401/403 и отказ модерации повторять бесполезно; 408, 429, 5xx и сеть — повторяем.
         "retry_policy": {
             "BadRequestErrorRetries": 0,
@@ -84,9 +107,15 @@ def proxy_env(s: Settings) -> dict[str, str]:
         # Таблица цен моделей — из образа, без загрузки из интернета при старте.
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
     }
-    if s.openrouter_api_key is not None and s.openrouter_api_key.get_secret_value():
-        env["FS_OPENROUTER_API_KEY"] = s.openrouter_api_key.get_secret_value()
+    if _secret(s.openrouter_api_key):
+        env["FS_OPENROUTER_API_KEY"] = _secret(s.openrouter_api_key)
+    if s.reserve_configured and _secret(s.llm_reserve_api_key):
+        env["FS_LLM_RESERVE_API_KEY"] = _secret(s.llm_reserve_api_key)
     return env
+
+
+def _secret(value: SecretStr | None) -> str:
+    return value.get_secret_value() if value is not None else ""
 
 
 def _env_line(name: str, value: str) -> str:
@@ -109,8 +138,9 @@ def main(argv: list[str]) -> None:
     s = Settings()
     write(Path(argv[0]), s)
     fallbacks = ", ".join(s.fallback_models) or "нет"
+    reserve = s.llm_reserve_model if s.reserve_configured else "нет"
     print(f"конфигурация прокси LiteLLM записана в {argv[0]}: модель {s.llm_model or 'не задана'}, "
-          f"запасные модели: {fallbacks}, повторов {s.llm_retries}")
+          f"запасные модели: {fallbacks}, резерв: {reserve}, повторов {s.llm_retries}")
 
 
 if __name__ == "__main__":

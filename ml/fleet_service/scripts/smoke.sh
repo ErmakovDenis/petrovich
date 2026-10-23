@@ -2,7 +2,7 @@
 # Сквозной сценарий стенда без реальных ключей: docker compose (fleet_service + прокси модели LiteLLM +
 # predictive_antifraud + подставные OpenRouter и AutoGRAPH; predictive_antifraud настоящий, без моделей) → /health →
 # машины → телеметрия → вопрос с вызовом tool → сбои модели через прокси (429 с повтором, переход к запасной модели,
-# 402 без повтора) → проверка машины → вопросы об аномалиях → проверка с сохранением → лента → решение → вопросы
+# 402 без повтора и ответ резерва, breaker: резерв без OpenRouter и пробный запрос) → проверка машины → вопросы об аномалиях → проверка с сохранением → лента → решение → вопросы
 # ассистенту о ленте и решении → перенос решений с устройства → фоновая проверка (доступ с паролем по согласию,
 # стенд проверяет сам, одно уведомление на пользователя) → письмо (черновик от ассистента → подтверждение → письмо
 # у подставного SMTP, повторное подтверждение отклонено) → перезапуск стенда (хранилище и доступ на месте) → отзыв
@@ -105,15 +105,43 @@ fakes_api /openrouter/_requests | json_check '[r["model"] for r in d][:4] == ["f
 "${COMPOSE[@]}" logs --no-color fleet_service | grep -q 'модель: ответила .* (fallback), копия прокси fallback-1' \
     || fail "в логе стенда не видно ответа запасной модели"
 
-step "OpenRouter ответил 402 → 503 «ассистент временно недоступен», без повторов, ERROR в логе"
-fakes_api /openrouter/_failures '[{"status":402},{"status":402},{"status":402}]' >/dev/null
-out=$(curl -s -w '\n%{http_code}' -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
-[ "$(tail -n1 <<<"$out")" = 503 ] || fail "ожидался 503 при 402: $out"
-head -n1 <<<"$out" | json_check 'd["detail"] == "Ассистент временно недоступен, попробуйте позже"' || fail "текст при 402: $out"
-# Основная и запасная модель — по одному разу: 402 не повторяется.
-fakes_api /openrouter/_requests | json_check 'len(d) == 2' || fail "402 повторялся"
-"${COMPOSE[@]}" logs --no-color fleet_service | grep -q 'ERROR.*кончились кредиты' || fail "нет ERROR о 402 в логе стенда"
+NOTICE="упрощённом режиме"
+step "OpenRouter ответил 402 → без повторов, ответила резервная модель вне OpenRouter с пометкой"
+fakes_api /openrouter/_failures '[{"status":402},{"status":402}]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d["reply"] and "'"$NOTICE"'" in d["reply"]' \
+    || fail "ответ резерва при 402: $reply"
+# Первое обращение: основная и запасная модель — по одному разу (402 не повторяется), ответил резерв; следующие
+# обращения ответа (402 в очереди кончились) — снова OpenRouter.
+fakes_api /openrouter/_requests | json_check '[r["model"] for r in d][:3] == ["fake/model", "x/fallback", "fake/model"]' \
+    || fail "402 повторялся"
+fakes_api /reserve/_requests | json_check '[r["model"] for r in d] == ["fake/reserve"]' || fail "резерв не вызывался"
+"${COMPOSE[@]}" logs --no-color fleet_service | grep -q 'WARNING.*модель: ответила .* (reserve), копия прокси reserve' \
+    || fail "в логе стенда нет WARNING об ответе резерва"
+
+step "OpenRouter лежит (503 подряд) → breaker стенда открыт: следующий ответ — резерв без запросов к OpenRouter"
+MANY_503=$(python3 -c 'import json; print(json.dumps([{"status": 503}] * 60))')
+fakes_api /openrouter/_failures "$MANY_503" >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"'"$NOTICE"'" in d["reply"]' || fail "ответ при лежащем OpenRouter: $reply"
+fakes_api /openrouter/_failures "$MANY_503" >/dev/null
+started=$(date +%s%N)
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+elapsed_ms=$(( ($(date +%s%N) - started) / 1000000 ))
+echo "$reply" | json_check '"'"$NOTICE"'" in d["reply"]' || fail "ответ при открытом breaker: $reply"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "при открытом breaker стенд всё равно ходил в OpenRouter"
+curl -fsS "$BASE/health" | json_check 'd["breakers"]["llm"] == "open" and d["reserveConfigured"]' \
+    || fail "/health не показывает открытый breaker модели"
+echo "  ответ при открытом breaker за ${elapsed_ms} мс, запросов к OpenRouter: 0"
+
+step "через FS_BREAKER_OPEN_SECONDS — пробный запрос к OpenRouter, ответ основной модели без пометки"
+sleep 4
 fakes_api /openrouter/_failures '[]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d["reply"] and "'"$NOTICE"'" not in d["reply"]' \
+    || fail "после cooldown: $reply"
+fakes_api /openrouter/_requests | json_check 'len(d) >= 1' || fail "после срока breaker'а стенд не вернулся к OpenRouter"
+curl -fsS "$BASE/health" | json_check 'd["breakers"]["llm"] == "closed"' || fail "breaker модели не закрылся"
 
 CHECK='{"vehicleId":"veh-2","from":"2026-09-16T06:00:00","to":"2026-09-16T12:00:00","utcOffsetMinutes":300}'
 step "POST /v1/anomalies/check → правила нашли перегрев, модели аналитики не загружены"
@@ -256,6 +284,13 @@ curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$CHECK" "$BASE/v1
     'd["rulesAnomalies"] == 6 and d["analytics"]["antifraud"]["status"] == "unavailable"' \
     || fail "проверка без аналитики"
 
+step "неверный адрес OpenRouter (FS_OPENROUTER_BASE_URL) при заданном резерве → чат отвечает через резерв"
+SMOKE_OPENROUTER_URL=http://openrouter.invalid/api/v1 "${COMPOSE[@]}" up -d --wait --wait-timeout 180 \
+    --force-recreate llm_proxy_config llm_proxy >/dev/null 2>&1
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d["reply"] and "'"$NOTICE"'" in d["reply"]' \
+    || fail "ответ при неверном адресе OpenRouter: $reply"
+
 logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
 step "вызовы tools видны в логе стенда"
 grep -q 'модель вызывает tool get_vehicle_summary' <<<"$logs" || fail "в логе нет вызова get_vehicle_summary"
@@ -267,13 +302,13 @@ step "фоновая проверка видна в логе стенда"
 grep -q 'фоновая проверка: схема schema-1' <<<"$logs" || fail "в логе нет фоновой проверки"
 
 step "в логах стенда нет токена, ключа, пароля, адресов и текста письма"
-if grep -qE 'valid-token|other-token|login-token|test-key|fake-password|smtp-pass|mechanic@example|системы охлаждения' <<<"$logs"; then
+if grep -qE 'valid-token|other-token|login-token|test-key|reserve-key|fake-password|smtp-pass|mechanic@example|системы охлаждения' <<<"$logs"; then
     fail "токен, ключ, пароль, адрес или текст письма попал в лог fleet_service"
 fi
 
-step "в логах прокси модели нет ключа OpenRouter"
-if "${COMPOSE[@]}" logs --no-color llm_proxy llm_proxy_config | grep -q 'test-key'; then
-    fail "ключ OpenRouter попал в лог прокси"
+step "в логах прокси модели нет ключей OpenRouter и резерва"
+if "${COMPOSE[@]}" logs --no-color llm_proxy llm_proxy_config | grep -qE 'test-key|reserve-key'; then
+    fail "ключ модели попал в лог прокси"
 fi
 
 step "в базе стенда нет токена и пароля в открытом виде"

@@ -21,7 +21,8 @@ services:
   llm_proxy_config:
     environment: &llm
       FS_OPENROUTER_API_KEY: test-key
-      FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
+      # SMOKE_OPENROUTER_URL — шаг «неверный адрес OpenRouter → ответ через резерв».
+      FS_OPENROUTER_BASE_URL: ${SMOKE_OPENROUTER_URL:-http://fakes:9000/openrouter/api/v1}
       FS_LLM_MODEL: fake/model
       FS_LLM_FALLBACK_MODELS: x/fallback
       FS_LLM_RETRIES: "2"
@@ -33,6 +34,14 @@ services:
       FS_OPENROUTER_DATA_COLLECTION: deny
       FS_OPENROUTER_PROVIDER_SORT: ""
       FS_OPENROUTER_ALLOW_FALLBACKS: "true"
+      # Резерв вне OpenRouter — подставной; breaker стенда — короткий, чтобы проверить и пробный запрос.
+      FS_LLM_RESERVE_BASE_URL: http://fakes:9000/reserve/v1
+      FS_LLM_RESERVE_MODEL: fake/reserve
+      FS_LLM_RESERVE_API_KEY: reserve-key
+      FS_LLM_RESERVE_DEGRADED: "true"
+      FS_BREAKER_FAILURES: "3"
+      FS_BREAKER_WINDOW_SECONDS: "30"
+      FS_BREAKER_OPEN_SECONDS: "3"
 
   llm_proxy:
     depends_on:

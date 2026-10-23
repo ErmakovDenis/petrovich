@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
+RESERVE_NOTICE = ("Ассистент сейчас работает в упрощённом режиме: основная модель недоступна. Цифры взяты из данных "
+                  "стенда, но ответ может быть менее точным в формулировках.")
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
@@ -99,4 +102,9 @@ async def chat(
         user.schema_id, len(trimmed.messages), result.iterations, ", ".join(scope.routes) or "—",
         result.tool_calls or "—", len(ctx.drafts), time.monotonic() - started,
     )
-    return ChatResponse(reply=result.reply, drafts=ctx.drafts)
+    reply = result.reply
+    if settings.llm_reserve_degraded and "reserve" in scope.routes:
+        # Резерв хуже основной модели (FS_LLM_RESERVE_DEGRADED): цифры те же — их считают tools, — но формулировки и
+        # выбор инструментов могут быть проще. Пользователь должен это знать.
+        reply = f"{reply}\n\n{RESERVE_NOTICE}"
+    return ChatResponse(reply=reply, drafts=ctx.drafts)

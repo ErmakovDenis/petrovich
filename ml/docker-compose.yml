@@ -70,6 +70,45 @@ services:
       retries: 24
     restart: unless-stopped
 
+  # Резервная модель на своём GPU (vLLM, OpenAI-совместимый API) — заготовка, обычный `docker compose up` её НЕ
+  # запускает: docker compose --profile reserve-llm up -d. Нужен сервер с GPU NVIDIA и nvidia-container-toolkit;
+  # базовый стенд инференс LLM не тянет — тогда резерв можно взять у внешнего провайдера (FS_LLM_RESERVE_*).
+  # Подключение — в fleet_service/.env: FS_LLM_RESERVE_BASE_URL=http://reserve_llm:8000/v1 и FS_LLM_RESERVE_MODEL
+  # (то же, что RESERVE_LLM_MODEL). Модель, парсер tool calls и длина контекста — переменные compose в ml/.env;
+  # модель допускается после проверки на tools (DEPLOY.md, «Резервная модель»).
+  reserve_llm:
+    image: vllm/vllm-openai:v0.31.0
+    profiles: ["reserve-llm"]
+    command:
+      - "${RESERVE_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "${RESERVE_LLM_TOOL_PARSER:-hermes}"
+      - "--max-model-len"
+      - "${RESERVE_LLM_MAX_MODEL_LEN:-16384}"
+    environment:
+      # Токен Hugging Face — только для закрытых моделей.
+      HF_TOKEN: ${HF_TOKEN:-}
+    # Скачанные веса — в томе: не качаются заново при пересоздании контейнера.
+    volumes:
+      - reserve_llm_cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      # Загрузка весов — минуты.
+      start_period: 600s
+      retries: 5
+    restart: unless-stopped
+
   predictive_antifraud:
     build: ./predictive_antifraud
     env_file:
@@ -89,3 +128,4 @@ services:
 volumes:
   fleet_data:
   llm_config:
+  reserve_llm_cache:

@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ..breaker import Attempt, BreakerOpen, CircuitBreaker
 from ..config import Settings
 from ..log_masking import mask_secrets
 
@@ -32,6 +33,9 @@ Message = dict[str, Any]
 PROXY_MODEL = "assistant"
 PRIMARY_ID = "openrouter"
 FALLBACK_ID = "fallback-{n}"
+RESERVE_ID = "reserve"
+# Группа резерва: последняя в цепочке группы assistant, к ней же стенд обращается напрямую при открытом breaker.
+RESERVE_GROUP = "assistant-reserve"
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 # Меньше этого до срока ответа чата — новое обращение к модели не начинается: ответ всё равно не успеет.
 MIN_CALL_SECONDS = 1.0
@@ -62,7 +66,7 @@ class LLMScope:
     """Обращения к модели в рамках одного ответа чата: срок ответа (time.monotonic) и кто отвечал."""
 
     deadline: float | None = None
-    # По обращению: primary — основная модель, fallback — запасная модель OpenRouter.
+    # По обращению: primary — основная модель, fallback — запасная модель OpenRouter, reserve — резерв вне OpenRouter.
     routes: list[str] = field(default_factory=list)
 
 
@@ -113,9 +117,13 @@ def _error_code(data: Any) -> int | None:
 class OpenRouterClient:
     """OpenAI-совместимый клиент: OpenRouter напрямую или прокси LiteLLM (FS_LLM_PROXY_URL)."""
 
-    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, breaker: CircuitBreaker | None = None):
+        """[breaker] — общий с /health; по умолчанию свой (клиент модели на процесс один)."""
         self._settings = settings
         self._http = http
+        self._breaker = breaker or CircuitBreaker(
+            "модель", settings.breaker_failures, settings.breaker_window_seconds, settings.breaker_open_seconds
+        )
 
     @property
     def via_proxy(self) -> bool:
@@ -160,12 +168,39 @@ class OpenRouterClient:
         url, body, headers = self._request(messages, tools)
         timeout = self._timeout()
         try:
+            with self._breaker.attempt() as attempt:
+                message, route = await self._call(url, body, headers, timeout, attempt)
+                if route == "reserve":
+                    # Ответил резерв — значит, основная и запасные модели OpenRouter не ответили: для breaker'а
+                    # OpenRouter это сбой, хотя пользователь ответ получил.
+                    attempt.fail()
+                return message
+        except BreakerOpen as e:
+            if self.via_proxy and self._settings.reserve_configured:
+                # OpenRouter только что не отвечал раз за разом — сразу к резерву, без запросов к OpenRouter и
+                # ожидания таймаутов и повторов. Пробный запрос к OpenRouter пройдёт по сроку breaker'а.
+                log.info("модель: breaker открыт — обращение сразу к резервной модели")
+                message, _ = await self._call(url, {**body, "model": RESERVE_GROUP}, headers, timeout, Attempt())
+                return message
+            # Модель (прокси или OpenRouter) только что не отвечала раз за разом — не ждём таймаута.
+            raise LLMRetryable(str(e), e.retry_after) from None
+
+    async def _call(
+        self, url: str, body: dict, headers: dict, timeout: float, attempt: Attempt
+    ) -> tuple[Message, str]:
+        """Одно обращение; сбой, говорящий о недоступности модели (LLMRetryable, таймаут), отмечается в breaker."""
+        try:
             resp = await self._http.post(url, json=body, headers=headers, timeout=timeout)
         except httpx.ConnectTimeout as e:
+            attempt.fail()
             raise LLMRetryable(f"{self._name} недоступен: {type(e).__name__}") from e
         except httpx.TimeoutException as e:
+            # Таймаут, укороченный сроком ответа чата (tools забрали время), — не признак недоступности модели.
+            if timeout >= self._settings.llm_timeout_seconds:
+                attempt.fail()
             raise LLMTimeout(f"Модель не ответила за {timeout:.0f} с") from e
         except httpx.HTTPError as e:
+            attempt.fail()
             raise LLMRetryable(f"{self._name} недоступен: {type(e).__name__}") from e
 
         try:
@@ -173,12 +208,19 @@ class OpenRouterClient:
         except ValueError:
             data = None
         if resp.status_code != 200:
-            raise self._status_error(resp, data)
+            error = self._status_error(resp, data)
+            if self.via_proxy and self._settings.reserve_configured and resp.status_code != 400:
+                # Через прокси с резервом ошибка — это ошибка последнего в цепочке, резерва (например, 401 при
+                # неверном ключе резерва): значит, и OpenRouter не ответил. Только 400 — ошибка самого запроса.
+                attempt.fail()
+                raise error
+            raise _counted(attempt, error)
         if not isinstance(data, dict):
             raise LLMError(f"{self._name} вернул ответ не в формате JSON")
         # OpenRouter может вернуть 200 с ошибкой провайдера в теле — класс по её коду.
         if data.get("error"):
-            raise self._classify(f"Ошибка провайдера модели: {_short(self._error_text(data))}", _error_code(data), None)
+            error = self._classify(f"Ошибка провайдера модели: {_short(self._error_text(data))}", _error_code(data), None)
+            raise _counted(attempt, error)
         choices = data.get("choices") or []
         choice = choices[0] if choices and isinstance(choices[0], dict) else {}
         # Ошибка провайдера посреди генерации: частичный текст пользователю не отдаём.
@@ -187,8 +229,7 @@ class OpenRouterClient:
         message = choice.get("message")
         if not isinstance(message, dict):
             raise LLMError("Модель вернула пустой ответ")
-        self._note_route(resp, data)
-        return message
+        return message, self._note_route(resp, data)
 
     @property
     def _name(self) -> str:
@@ -210,14 +251,20 @@ class OpenRouterClient:
             return LLMRetryable(text, retry_after)
         return LLMError(text)
 
-    def _note_route(self, resp: httpx.Response, data: dict[str, Any]) -> None:
-        """Какая модель и провайдер фактически ответили — в лог и в LLMScope (доля ответов запасных моделей)."""
+    def _note_route(self, resp: httpx.Response, data: dict[str, Any]) -> str:
+        """Какая модель и провайдер фактически ответили — в лог и в LLMScope (доля ответов запасных моделей);
+        возвращает маршрут: primary, fallback или reserve."""
         s = self._settings
         model = str(data.get("model") or "—")
         if self.via_proxy:
             # Прокси отдаёт модель и провайдера не всегда (без перехода — имя группы), копию — всегда.
             deployment = resp.headers.get("x-litellm-model-id", "")
-            route = "fallback" if deployment.startswith(FALLBACK_ID.format(n="")) else "primary"
+            if deployment == RESERVE_ID:
+                route = "reserve"
+            elif deployment.startswith(FALLBACK_ID.format(n="")):
+                route = "fallback"
+            else:
+                route = "primary"
             extra = (f", копия прокси {deployment or '—'}, повторов {resp.headers.get('x-litellm-attempted-retries', '0')}, "
                      f"переходов {resp.headers.get('x-litellm-attempted-fallbacks', '0')}")
         else:
@@ -227,7 +274,10 @@ class OpenRouterClient:
         scope = _scope.get()
         if scope is not None:
             scope.routes.append(route)
-        log.info("модель: ответила %s (%s)%s", model, route, extra)
+        # Ответ резерва — основная и запасные модели OpenRouter не ответили (недоступен, 402, cooldown): WARNING,
+        # чтобы это было видно, хотя пользователь ответ получил.
+        log.log(logging.WARNING if route == "reserve" else logging.INFO, "модель: ответила %s (%s)%s", model, route, extra)
+        return route
 
     @staticmethod
     def _error_text(data: Any) -> str:
@@ -236,6 +286,13 @@ class OpenRouterClient:
         if isinstance(data, dict) and data.get("error"):
             return str(data["error"])
         return ""
+
+
+def _counted(attempt: Attempt, error: LLMError) -> LLMError:
+    """Временный сбой модели — сбой для breaker'а; ошибка запроса или ключа (400, 401, 402, 403) — нет."""
+    if isinstance(error, LLMRetryable):
+        attempt.fail()
+    return error
 
 
 def provider_preferences(s: Settings) -> dict[str, Any]:

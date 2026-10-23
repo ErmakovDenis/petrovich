@@ -121,6 +121,32 @@ FS_LLM_MODEL=openai/gpt-4o-mini        # модель с поддержкой to
 телеметрия и аномалии работают, чат отвечает 503; временно обойти прокси: строка `FS_LLM_PROXY_URL=` в `ml/.env` и
 `docker compose up -d` (стенд пойдёт в OpenRouter напрямую, без повторов и запасных моделей).
 
+**Резервная модель (необязательно).** Отвечает, когда OpenRouter недоступен или кончились кредиты, и пока открыт
+breaker модели (`FS_BREAKER_*`) — тогда стенд сразу идёт к ней. Подключается при запуске контейнеров, без пересборки:
+
+- внешний OpenAI-совместимый адрес — в `fleet_service/.env`:
+  ```ini
+  FS_LLM_RESERVE_BASE_URL=https://<провайдер>/v1
+  FS_LLM_RESERVE_MODEL=<модель с tool calling>
+  FS_LLM_RESERVE_API_KEY=<ключ>
+  ```
+- своя модель на GPU-сервере — профиль `reserve-llm` (vLLM; базовый стенд инференс LLM не тянет, по умолчанию
+  профиль не запускается). В `ml/.env` — `RESERVE_LLM_MODEL` (по умолчанию `Qwen/Qwen2.5-7B-Instruct`),
+  `RESERVE_LLM_TOOL_PARSER` (`hermes` для Qwen), `RESERVE_LLM_MAX_MODEL_LEN`, при закрытой модели — `HF_TOKEN`; в
+  `fleet_service/.env` — `FS_LLM_RESERVE_BASE_URL=http://reserve_llm:8000/v1` и `FS_LLM_RESERVE_MODEL` (то же имя),
+  ключ не нужен. Нужны драйвер NVIDIA и nvidia-container-toolkit:
+  ```bash
+  docker compose --profile reserve-llm up -d --wait     # первая загрузка весов — минуты
+  docker compose logs reserve_llm | tail                # «Application startup complete»
+  ```
+
+После правки `.env` — `docker compose up -d` (конфигурация прокси пересоздаётся); `/health` покажет
+`"reserveConfigured": true`. До включения прогоните резерв набором проверки на tools
+(`python -m fleet_service.agent.eval_tools --base-url <адрес резерва> --model <модель>`, `fleet_service/README.md`):
+если он заметно хуже основной, оставьте `FS_LLM_RESERVE_DEGRADED=true` — ответы через него получат пометку
+«упрощённый режим». Ответ резерва — строка WARNING `модель: ответила … (reserve)` в логе `fleet_service`: если таких
+много, проверьте OpenRouter и кредиты.
+
 ### 4.3. Фоновая проверка на стенде
 
 Стенд сам проверяет машины по расписанию (по умолчанию каждые 15 минут за 3 часа), даже когда телефоны выключены.
@@ -437,6 +463,8 @@ curl -s 127.0.0.1:8001/ready                                       # ready: true
 ```
 
 Каталог `predictive_antifraud/models` смонтирован в контейнер только для чтения; файлы моделей в git не попадают.
+С моделью расчёт тяжелее: повторите нагрузочный тест и при необходимости поправьте `PA_MAX_CONCURRENCY`
+(`FS_PREDICTIVE_CONCURRENCY` стенда держите не больше него), `predictive_antifraud/README.md`, «Нагрузка».
 
 ## 10. Стенд для отладки в локальной сети (без HTTPS)
 

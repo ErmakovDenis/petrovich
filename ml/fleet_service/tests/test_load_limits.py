@@ -7,6 +7,7 @@ import pytest
 
 from fleet_service.analytics.client import AnalyticsClient
 from fleet_service.autograph import client as autograph_client
+from fleet_service.breaker import CircuitBreaker
 from fleet_service.autograph.errors import AutoGraphUnavailable
 from fleet_service.autograph.session import AutoGraphSessionChecker
 from fleet_service.limits import UpstreamLimiter
@@ -14,6 +15,11 @@ from fleet_service.main import create_app
 
 from .conftest import AUTH, FakeLLM, ask, test_settings, text
 from .fakes import create_fakes
+
+
+def _breaker() -> CircuitBreaker:
+    """Breaker, который в этих тестах не открывается."""
+    return CircuitBreaker("test", failures=1000, window_seconds=30, open_seconds=60)
 
 
 class BlockingLLM:
@@ -124,7 +130,7 @@ async def test_autograph_retry_delay_is_exponential_with_jitter(monkeypatch):
 
     settings = test_settings(autograph_retries=5, autograph_retry_delay_seconds=1, autograph_retry_max_seconds=5)
     client = autograph_client.AutoGraphClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(down)),
-                                              UpstreamLimiter("autograph", 8))
+                                              UpstreamLimiter("autograph", 8), _breaker())
     with pytest.raises(autograph_client.AutoGraphUnavailable):
         await client.enum_devices("valid-token", "schema-1")
     assert sleeps == [1, 2, 4, 5]
@@ -139,7 +145,8 @@ async def test_session_check_does_not_wait_for_a_slot_forever():
     limiter = UpstreamLimiter("autograph", concurrency=1)
     held = await limiter.acquire()
     checker = AutoGraphSessionChecker(test_settings(autograph_timeout_seconds=0.05),
-                                      httpx.AsyncClient(transport=httpx.ASGITransport(app=create_fakes())), limiter)
+                                      httpx.AsyncClient(transport=httpx.ASGITransport(app=create_fakes())), limiter,
+                                      _breaker())
     with pytest.raises(AutoGraphUnavailable):
         await checker.verify("valid-token", "schema-1")
     held.release()
@@ -156,7 +163,8 @@ async def test_analytics_gets_the_stand_deadline():
         return httpx.Response(200, json={"ready": False, "modelVersion": None, "anomalies": []})
 
     analytics = AnalyticsClient(test_settings(predictive_timeout_seconds=30),
-                                httpx.AsyncClient(transport=httpx.MockTransport(handler)), UpstreamLimiter("p", 2))
+                                httpx.AsyncClient(transport=httpx.MockTransport(handler)), UpstreamLimiter("p", 2),
+                                _breaker())
     assert (await analytics.run("predictive", {})).status == "not_ready"
     # Остаток срока стенда: аналитика не держит запрос в очереди дольше.
     assert 29 <= float(seen[0]) <= 30
@@ -168,7 +176,8 @@ async def test_analytics_waiting_for_a_slot_counts_into_timeout():
     limiter = UpstreamLimiter("predictive", concurrency=1)
     held = await limiter.acquire()
     settings = test_settings(predictive_timeout_seconds=0.05)
-    analytics = AnalyticsClient(settings, httpx.AsyncClient(transport=httpx.ASGITransport(app=fakes)), limiter)
+    analytics = AnalyticsClient(settings, httpx.AsyncClient(transport=httpx.ASGITransport(app=fakes)), limiter,
+                                _breaker())
     status = await analytics.run("antifraud", {"vehicle": {"id": "veh-1"}})
     assert status.status == "unavailable" and status.detail == "антифрод: сервис аналитики перегружен"
     assert fakes.state.analytics_requests == []

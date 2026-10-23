@@ -44,6 +44,23 @@ class Settings(BaseSettings):
     llm_retries: int = Field(2, ge=0, le=5)
     llm_retry_base_seconds: float = Field(1, ge=0)
     llm_retry_max_seconds: float = Field(10, ge=0)
+    # Резервная модель вне OpenRouter — любой OpenAI-совместимый адрес (свой vLLM, профиль reserve-llm в compose).
+    # Прокси переходит к ней, когда не ответили основная и запасные модели (в том числе при 402 и недоступном
+    # OpenRouter). Пустой адрес — резерва нет. Только через прокси.
+    llm_reserve_base_url: str = ""
+    llm_reserve_model: str = ""
+    llm_reserve_api_key: SecretStr | None = None
+    # Резерв хуже основной модели по проверке на tools — к ответу через него добавляется пометка «упрощённый режим».
+    llm_reserve_degraded: bool = True
+
+    # Circuit breaker на AutoGRAPH, predictive_antifraud и модель: после FS_BREAKER_FAILURES сбоев за
+    # FS_BREAKER_WINDOW_SECONDS — сразу отказ на FS_BREAKER_OPEN_SECONDS, затем один пробный запрос. Для модели сбой —
+    # и ответ резерва; пока открыт, стенд обращается сразу к резерву (если он задан), минуя OpenRouter.
+    breaker_failures: int = Field(5, ge=1)
+    breaker_window_seconds: float = Field(30, gt=0)
+    breaker_open_seconds: float = Field(60, gt=0)
+    # Ключ администратора для GET /v1/status (Authorization: Bearer); пусто — эндпоинт выключен (404).
+    admin_token: SecretStr | None = None
 
     # Модель и генерация. Пустая модель — ассистент не настроен (/v1/chat отвечает 503).
     llm_model: str = ""
@@ -195,6 +212,10 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def reserve_configured(self) -> bool:
+        return bool(self.llm_reserve_base_url.strip() and self.llm_reserve_model.strip())
 
     @property
     def fallback_models(self) -> list[str]:

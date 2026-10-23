@@ -14,6 +14,7 @@ from typing import Literal
 import httpx
 from pydantic import Field, ValidationError
 
+from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
 from ..limits import UpstreamLimiter
 from ..schemas.contract import Anomaly, CamelModel, DetectionResponse, VehicleTelemetry
@@ -37,11 +38,13 @@ class AnalyticsStatus(CamelModel):
 
 
 class AnalyticsClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter):
-        """[limiter] — общий на процесс предел одновременных запросов к аналитике (FS_PREDICTIVE_CONCURRENCY)."""
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+        """[limiter] — общий на процесс предел одновременных запросов к аналитике (FS_PREDICTIVE_CONCURRENCY),
+        [breaker] — её circuit breaker."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
+        self._breaker = breaker
 
     @staticmethod
     def payload(telemetry: VehicleTelemetry) -> dict:
@@ -56,26 +59,47 @@ class AnalyticsClient:
         headers = {}
         if s.predictive_api_key is not None and s.predictive_api_key.get_secret_value():
             headers["X-API-Key"] = s.predictive_api_key.get_secret_value()
-        # Ожидание места в пределе входит в FS_PREDICTIVE_TIMEOUT_SECONDS: проверка по правилам не ждёт аналитику дольше.
-        started = time.monotonic()
+        overloaded = AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики перегружен")
         try:
-            async with asyncio.timeout(s.predictive_timeout_seconds):
-                slot = await self._limiter.acquire()
-        except TimeoutError:
-            log.warning("аналитика %s: нет места за %g с (FS_PREDICTIVE_CONCURRENCY)", kind, s.predictive_timeout_seconds)
-            return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики перегружен")
-        left = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
-        # Сколько стенд ещё ждёт: аналитика не держит запрос в своей очереди дольше (иначе считала бы впустую).
-        headers["X-Client-Timeout"] = f"{left:.1f}"
-        try:
-            resp = await self._http.post(
-                s.predictive_url.rstrip("/") + _PATHS[kind], json=payload, headers=headers, timeout=left,
-            )
+            # Breaker проверяется до ожидания места: открыт (или идёт пробный запрос) — сразу unavailable.
+            with self._breaker.attempt() as outcome:
+                # Ожидание места в пределе входит в FS_PREDICTIVE_TIMEOUT_SECONDS: правила не ждут аналитику дольше.
+                started = time.monotonic()
+                try:
+                    async with asyncio.timeout(s.predictive_timeout_seconds):
+                        slot = await self._limiter.acquire()
+                except TimeoutError:
+                    outcome.skip()  # до сервиса не дошли — ни успех, ни сбой
+                    log.warning("аналитика %s: нет места за %g с (FS_PREDICTIVE_CONCURRENCY)", kind,
+                                s.predictive_timeout_seconds)
+                    return overloaded
+                left = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
+                # Сколько стенд ещё ждёт: аналитика не держит запрос в своей очереди дольше (иначе считала бы впустую).
+                headers["X-Client-Timeout"] = f"{left:.1f}"
+                try:
+                    resp = await self._http.post(
+                        s.predictive_url.rstrip("/") + _PATHS[kind], json=payload, headers=headers, timeout=left,
+                    )
+                except httpx.TimeoutException:
+                    # Таймаут, укороченный ожиданием места на стенде, — не признак недоступности сервиса.
+                    if left >= s.predictive_timeout_seconds * 0.9:
+                        outcome.fail()
+                    else:
+                        outcome.skip()
+                    raise
+                except httpx.HTTPError:
+                    outcome.fail()
+                    raise
+                finally:
+                    slot.release()
+                # 503 — намеренный отказ по пределу нагрузки аналитики (PA_MAX_CONCURRENCY): сервис жив.
+                if resp.status_code != 503 and counts_as_failure(resp.status_code):
+                    outcome.fail()
+        except BreakerOpen:
+            return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики временно отключён после сбоев")
         except httpx.HTTPError as e:
             log.warning("аналитика %s: сервис не ответил: %s", kind, type(e).__name__)
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики не отвечает")
-        finally:
-            slot.release()
         if resp.status_code == 503:
             # Предел нагрузки аналитики (PA_MAX_CONCURRENCY): без повтора — правила уже посчитаны, повтор добавил бы
             # нагрузки перегруженному сервису.
