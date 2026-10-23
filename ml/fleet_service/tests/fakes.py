@@ -2,7 +2,10 @@
 smoke.sh (отдельный контейнер `fakes`, `uvicorn fakes:app`). Реальные ключи и учётные данные не нужны.
 
 OpenRouter `POST /openrouter/api/v1/chat/completions` принимает только ключ `test-key`. Тела запросов копятся в
-`app.state.llm_requests`. Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
+`app.state.llm_requests` (`GET /openrouter/_requests`); `POST /openrouter/_failures` ставит в очередь следующие
+ответы — ошибки с кодом и Retry-After или ответ запасной модели (smoke.sh проверяет повторы и переходы прокси).
+Резервная модель вне OpenRouter — `POST /reserve/v1/chat/completions` (ключ `reserve-key`, тот же сценарий), журнал —
+`GET /reserve/_requests`. Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
 
 AutoGRAPH `/autograph/ServiceJSON/`:
@@ -20,7 +23,7 @@ SMTP — `FakeSmtp`: принимает письма в память (`messages`
 если задан FAKES_SMTP_PORT; принятые письма — `GET /smtp/messages`.
 
 predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1/antifraud/check` (ключ `pa-key`):
-режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down.
+режим `app.state.analytics` — not_ready (по умолчанию, как сервис без моделей), ready, found, down, overloaded.
 
 С tools модель ведёт сценарий: вопрос об аномалиях/нарушениях/проверке → check_vehicle, иначе get_vehicle_summary;
 «какие аномалии [дд.мм]» → list_anomalies; «что решили» → get_anomaly по id аномалии из контекста карточки.
@@ -45,6 +48,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
 
 FAKE_LLM_KEY = "test-key"
+FAKE_RESERVE_KEY = "reserve-key"
 VALID_TOKEN = "valid-token"
 OTHER_TOKEN = "other-token"
 FOREIGN_TOKEN = "foreign-token"
@@ -62,8 +66,9 @@ LOGINS = {"Пётр": VALID_TOKEN, "Иван": OTHER_TOKEN}
 
 FAKE_PA_KEY = "pa-key"
 # Режимы подставного predictive_antifraud (app.state.analytics): not_ready — моделей нет (как настоящий сервис без
-# моделей), ready — модели отработали без аномалий, found — модель нашла аномалию, down — 500.
-ANALYTICS_MODES = ("not_ready", "ready", "found", "down")
+# моделей), ready — модели отработали без аномалий, found — модель нашла аномалию, down — 500, overloaded — 503
+# (предел нагрузки PA_MAX_CONCURRENCY).
+ANALYTICS_MODES = ("not_ready", "ready", "found", "down", "overloaded")
 
 DEVICES = {
     VALID_TOKEN: [
@@ -272,7 +277,11 @@ def _scripted_reply(messages: list[dict]) -> dict:
             return {"role": "assistant", "content": "Машин в схеме нет."}
         vehicle = next((v for v in last["vehicles"] if v["name"].split()[0].lower() in question), last["vehicles"][0])
         tool = "check_vehicle" if about_anomalies else "get_vehicle_summary"
-        return _call("call-2", tool, {"vehicle_id": vehicle["id"]})
+        args = {"vehicle_id": vehicle["id"]}
+        if "прошл" in question:
+            # «На прошлой неделе» — закрытый период (кэш телеметрии по смыслу данных).
+            args |= {"from": "2026-09-07T00:00", "to": "2026-09-14T00:00"}
+        return _call("call-2", tool, args)
     if "outcome" in last:
         name = last["vehicle"]["name"]
         if last["outcome"] == "anomalies_found":
@@ -293,6 +302,22 @@ def _scripted_reply(messages: list[dict]) -> dict:
             f"{fuel['unit']} за {period['from']} — {period['to']}."}
 
 
+def _completion(body: dict, model: str | None) -> dict:
+    """Ответ chat completions в полном формате OpenAI: его разбирает и стенд, и прокси LiteLLM."""
+    message = _scripted_reply(body["messages"]) if body.get("tools") else {"role": "assistant", "content": NO_DATA_REPLY}
+    return {
+        "id": "gen-fake",
+        "object": "chat.completion",
+        "created": 1788000000,
+        "model": model,
+        # Как у OpenRouter: какой провайдер ответил.
+        "provider": "FakeProvider",
+        "choices": [{"index": 0, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
+                     "message": message}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+
 def _call(call_id: str, name: str, arguments: dict) -> dict:
     return {"role": "assistant", "content": None, "tool_calls": [
         {"id": call_id, "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}},
@@ -304,16 +329,30 @@ def create_fakes() -> FastAPI:
     # AutoGRAPH отдаёт GetTripTables в gzip — клиент стенда должен это принимать.
     app.add_middleware(GZipMiddleware, minimum_size=500)
     app.state.llm_requests = []
+    app.state.llm_failures = []
+    app.state.reserve_requests = []
     app.state.calls = Counter()
     app.state.trip_requests = []
     app.state.parameters = {}
     app.state.raw_trip_tables = {}
     app.state.analytics = "not_ready"
+    app.state.analytics_version = "fake-1"
     app.state.analytics_requests = []
     app.state.trip_tables_down = set()
     app.state.expired = set()
     app.state.issued = {}
     app.state.logins = []
+
+    @app.get("/predictive/ready")
+    async def analytics_ready() -> JSONResponse:
+        """Как /ready predictive_antifraud: модели загружены в режимах ready и found (версия — app.state.analytics_version)."""
+        app.state.calls["ready"] += 1
+        if app.state.analytics == "down":
+            return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        loaded = app.state.analytics in ("ready", "found")
+        version = app.state.analytics_version if loaded else None
+        return JSONResponse({"models": [{"name": n, "ready": loaded, "version": version}
+                                        for n in ("predictive", "antifraud")]})
 
     @app.post("/predictive/v1/{service}/{action}")
     async def analytics(service: str, action: str, request: Request) -> JSONResponse:
@@ -326,6 +365,9 @@ def create_fakes() -> FastAPI:
         mode = app.state.analytics
         if mode == "down":
             return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        if mode == "overloaded":
+            return JSONResponse({"detail": "Сервис аналитики перегружен: очередь заполнена, повторите позже"},
+                                status_code=503, headers={"Retry-After": "5"})
         if mode == "not_ready":
             return JSONResponse({"ready": False, "modelVersion": None, "anomalies": []})
         anomalies = []
@@ -339,7 +381,7 @@ def create_fakes() -> FastAPI:
                 "description": "Модель оценила состояние как аномальное (score=0.91)", "value": 250.0, "score": 0.91,
                 "source": "Антифрод (ML)",
             })
-        return JSONResponse({"ready": True, "modelVersion": "fake-1", "anomalies": anomalies})
+        return JSONResponse({"ready": True, "modelVersion": app.state.analytics_version, "anomalies": anomalies})
 
     @app.post("/openrouter/api/v1/chat/completions")
     async def completions(request: Request) -> JSONResponse:
@@ -347,14 +389,42 @@ def create_fakes() -> FastAPI:
             return JSONResponse({"error": {"message": "No auth credentials found", "code": 401}}, status_code=401)
         body = await request.json()
         app.state.llm_requests.append(body)
-        message = _scripted_reply(body["messages"]) if body.get("tools") else \
-            {"role": "assistant", "content": NO_DATA_REPLY}
-        return JSONResponse({
-            "id": "gen-fake",
-            "model": body.get("model"),
-            "choices": [{"index": 0, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
-                         "message": message}],
-        })
+        if app.state.llm_failures:
+            failure = app.state.llm_failures.pop(0)
+            if "status" not in failure:
+                # Ответила запасная модель из поля models.
+                return JSONResponse(_completion(body, failure["model"]))
+            headers = {"Retry-After": str(failure["retryAfter"])} if failure.get("retryAfter") is not None else None
+            return JSONResponse({"error": {"message": failure.get("message", "Provider error"), "code": failure["status"]}},
+                                status_code=failure["status"], headers=headers)
+        return JSONResponse(_completion(body, body.get("model")))
+
+    @app.post("/reserve/v1/chat/completions")
+    async def reserve_completions(request: Request) -> JSONResponse:
+        """Резервная модель вне OpenRouter (OpenAI-совместимый адрес, ключ reserve-key): тот же сценарий tools."""
+        if request.headers.get("authorization") != f"Bearer {FAKE_RESERVE_KEY}":
+            return JSONResponse({"error": {"message": "Unauthorized", "code": 401}}, status_code=401)
+        body = await request.json()
+        app.state.reserve_requests.append(body)
+        return JSONResponse(_completion(body, body.get("model")))
+
+    @app.get("/reserve/_requests")
+    async def reserve_requests() -> list[dict]:
+        return [{k: v for k, v in b.items() if k not in ("messages", "tools")} for b in app.state.reserve_requests]
+
+    @app.post("/openrouter/_failures")
+    async def set_llm_failures(request: Request) -> dict[str, int]:
+        """Следующие ответы подставного OpenRouter: ошибки [{"status": 429, "retryAfter": 1}, …] или ответ запасной
+        модели {"model": "x/fallback"}. Журнал запросов очищается."""
+        app.state.llm_failures = list(await request.json())
+        app.state.llm_requests.clear()
+        app.state.reserve_requests.clear()
+        return {"queued": len(app.state.llm_failures)}
+
+    @app.get("/openrouter/_requests")
+    async def llm_requests() -> list[dict]:
+        """Тела запросов к подставному OpenRouter (без сообщений — они длинные)."""
+        return [{k: v for k, v in b.items() if k not in ("messages", "tools")} for b in app.state.llm_requests]
 
     def rights(session: str) -> str:
         """Токен, чьи права у сессии: выданный входом по паролю — права учётной записи."""

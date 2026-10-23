@@ -20,8 +20,12 @@ class LoginRejected(Exception):
 
 
 class AutoGraphUnavailable(Exception):
-    def __init__(self, message: str = "AutoGRAPH недоступен"):
+    """[upstream_failure] — признак недоступности AutoGRAPH для circuit breaker'а (сеть, 5xx, обрыв ответа); ответ
+    4xx на запрос — AutoGRAPH работает, breaker его не учитывает."""
+
+    def __init__(self, message: str = "AutoGRAPH недоступен", upstream_failure: bool = True):
         super().__init__(message)
+        self.upstream_failure = upstream_failure
 
 
 class TripTablesTooLarge(Exception):

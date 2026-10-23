@@ -48,8 +48,12 @@ class AnomalyCheckService:
         episodes = baseline.detect_episodes(telemetry, self._settings.rules)
         rules = [e.anomaly for e in episodes]
         payload = self._analytics.payload(telemetry)
+        # Результат аналитики кэшируется по ключу телеметрии и с её сроком: закрытым считается период, закрытый уже
+        # при загрузке этих данных (иначе результат по неполным данным прожил бы 6 ч).
+        cache = (self._telemetry.cache_key(schema_id, vehicle_id, from_, to, utc_offset_minutes, bucket),
+                 self._telemetry.cache_ttl(loaded.closed))
         predictive, antifraud = await asyncio.gather(
-            self._analytics.run("predictive", payload), self._analytics.run("antifraud", payload)
+            self._analytics.run("predictive", payload, cache), self._analytics.run("antifraud", payload, cache)
         )
         # Как CompositeAnomalyDetector(ml, правила): порядок детекторов и без повторов по id.
         merged, seen = [], set()

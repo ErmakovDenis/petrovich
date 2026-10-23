@@ -28,7 +28,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-fleet_service = ["prompts/*.md", "store/migrations/*.py", "store/migrations/*.mako", "store/migrations/versions/*.py"]
+fleet_service = ["prompts/*.md", "agent/eval_cases.jsonl","store/migrations/*.py", "store/migrations/*.mako", "store/migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

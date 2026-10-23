@@ -14,12 +14,19 @@ from enum import Enum
 
 import httpx
 
+from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
+from ..limits import UpstreamLimiter
 from .errors import AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 
 log = logging.getLogger(__name__)
 
-__all__ = ["AutoGraphSessionChecker", "AutoGraphUnavailable", "SchemaForbidden", "SessionInvalid"]
+__all__ = ["AutoGraphSessionChecker", "AutoGraphUnavailable", "SchemaForbidden", "SessionInvalid", "session_key"]
+
+
+def session_key(session: str, schema_id: str) -> str:
+    """Ключ пользователя стенда в кэшах и лимитах — хэш токена и схемы: сам токен в памяти не хранится."""
+    return hashlib.sha256(f"{session}\n{schema_id}".encode()).hexdigest()
 
 
 class _Outcome(Enum):
@@ -29,15 +36,18 @@ class _Outcome(Enum):
 
 
 class AutoGraphSessionChecker:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+        """[limiter] и [breaker] — общие с AutoGraphClient (один на процесс)."""
         self._settings = settings
         self._http = http
+        self._limiter = limiter
+        self._breaker = breaker
         self._cache: OrderedDict[str, tuple[float, _Outcome]] = OrderedDict()
         self._lock = asyncio.Lock()
 
     async def verify(self, session: str, schema_id: str) -> None:
         """Ничего не возвращает при успехе; иначе SessionInvalid / SchemaForbidden / AutoGraphUnavailable."""
-        key = hashlib.sha256(f"{session}\n{schema_id}".encode()).hexdigest()
+        key = session_key(session, schema_id)
         outcome = await self._cached(key)
         if outcome is None:
             outcome = await self._check(session, schema_id)
@@ -70,13 +80,32 @@ class AutoGraphSessionChecker:
 
     async def _check(self, session: str, schema_id: str) -> _Outcome:
         url = self._settings.autograph_base_url.rstrip("/") + "/EnumSchemas"
+        timeout = self._settings.autograph_timeout_seconds
+        # Проверка сессии идёт до срока любого запроса (в том числе чата) — место ждём не дольше таймаута AutoGRAPH,
+        # иначе приложение висело бы, пока все места заняты длинными GetTripTables.
         try:
-            resp = await self._http.get(
-                url, params={"session": session}, timeout=self._settings.autograph_timeout_seconds
-            )
+            async with asyncio.timeout(timeout):
+                slot = await self._limiter.acquire()
+        except TimeoutError:
+            log.warning("AutoGRAPH: нет места для проверки сессии за %g с (FS_AUTOGRAPH_CONCURRENCY)", timeout)
+            raise AutoGraphUnavailable() from None
+        try:
+            with self._breaker.attempt() as outcome:
+                try:
+                    resp = await self._http.get(url, params={"session": session}, timeout=timeout)
+                except httpx.HTTPError:
+                    outcome.fail()
+                    raise
+                if counts_as_failure(resp.status_code):
+                    outcome.fail()
+        except BreakerOpen:
+            # Недоступность AutoGRAPH не кэшируется и не превращается в 401 — как и при сетевой ошибке.
+            raise AutoGraphUnavailable() from None
         except httpx.HTTPError as e:
             log.warning("AutoGRAPH: проверка сессии не удалась: %s", type(e).__name__)
             raise AutoGraphUnavailable() from e
+        finally:
+            slot.release()
         if resp.status_code in (401, 403):
             return _Outcome.INVALID
         if resp.status_code != 200:

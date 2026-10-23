@@ -16,11 +16,45 @@ services:
       timeout: 3s
       retries: 15
 
+  # Прокси модели ходит в подставной OpenRouter; запасная модель x/fallback, короткие паузы между повторами. Всё,
+  # от чего зависят шаги smoke.sh, задано здесь, а не берётся из .env разработчика.
+  llm_proxy_config:
+    environment: &llm
+      FS_OPENROUTER_API_KEY: test-key
+      # SMOKE_OPENROUTER_URL — шаг «неверный адрес OpenRouter → ответ через резерв».
+      FS_OPENROUTER_BASE_URL: ${SMOKE_OPENROUTER_URL:-http://fakes:9000/openrouter/api/v1}
+      FS_LLM_MODEL: fake/model
+      FS_LLM_FALLBACK_MODELS: x/fallback
+      FS_LLM_RETRIES: "2"
+      FS_LLM_RETRY_BASE_SECONDS: "0.2"
+      FS_LLM_RETRY_MAX_SECONDS: "1"
+      FS_LLM_TIMEOUT_SECONDS: "60"
+      FS_CHAT_TIMEOUT_SECONDS: "100"
+      FS_OPENROUTER_REQUIRE_PARAMETERS: "true"
+      FS_OPENROUTER_DATA_COLLECTION: deny
+      FS_OPENROUTER_PROVIDER_SORT: ""
+      FS_OPENROUTER_ALLOW_FALLBACKS: "true"
+      # Резерв вне OpenRouter — подставной; breaker стенда — короткий, чтобы проверить и пробный запрос.
+      FS_LLM_RESERVE_BASE_URL: http://fakes:9000/reserve/v1
+      FS_LLM_RESERVE_MODEL: fake/reserve
+      FS_LLM_RESERVE_API_KEY: reserve-key
+      FS_LLM_RESERVE_DEGRADED: "true"
+      FS_BREAKER_FAILURES: "3"
+      FS_BREAKER_WINDOW_SECONDS: "30"
+      FS_BREAKER_OPEN_SECONDS: "3"
+
+  llm_proxy:
+    depends_on:
+      fakes:
+        condition: service_healthy
+    restart: "no"
+
   fleet_service:
     environment:
-      FS_OPENROUTER_API_KEY: test-key
-      FS_OPENROUTER_BASE_URL: http://fakes:9000/openrouter/api/v1
-      FS_LLM_MODEL: fake/model
+      <<: *llm
+      FS_LLM_PROXY_URL: http://llm_proxy:4000
+      # Сценарий задаёт вопросы подряд от одного пользователя; сам лимит проверяет tests/test_load_limits.py.
+      FS_CHAT_BURST: "100"
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
       # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
       FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

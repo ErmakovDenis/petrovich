@@ -1,4 +1,5 @@
-# Стенд «Петрович Телеметрия»: fleet_service (ассистент, телеметрия, аномалии и их хранилище) и predictive_antifraud.
+# Стенд «Петрович Телеметрия»: fleet_service (ассистент, телеметрия, аномалии и их хранилище), прокси модели
+# llm_proxy (LiteLLM) и predictive_antifraud.
 #   cd ml && docker compose up -d --build
 # Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
 # Ключ X-API-Key аналитики: PA_API_KEY и FS_PREDICTIVE_API_KEY задаются одним значением.
@@ -19,8 +20,17 @@ services:
     # Стенд вызывает predictive_antifraud (FS_PREDICTIVE_URL, по умолчанию http://predictive_antifraud:8000) при
     # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
     # останавливать чат и проверку по правилам.
+    # Ассистент обращается к модели через прокси LiteLLM (повторы, запасные модели). Обойти прокси (он не стартует,
+    # а чат нужен): в ml/.env строка `FS_LLM_PROXY_URL=` (пусто) и docker compose up -d — стенд пойдёт в OpenRouter
+    # напрямую, без повторов.
+    environment:
+      FS_LLM_PROXY_URL: ${FS_LLM_PROXY_URL-http://llm_proxy:4000}
     depends_on:
       predictive_antifraud:
+        condition: service_started
+        required: false
+      # Сбой прокси ломает только чат: телеметрия и аномалии работают и без него.
+      llm_proxy:
         condition: service_started
         required: false
     healthcheck:
@@ -28,6 +38,75 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
+
+  # Конфигурация прокси LiteLLM из FS_* в ml/fleet_service/.env (модель, запасные модели, повторы): пишется в том
+  # llm_config при каждом запуске compose — поправили .env, перезапустите: docker compose up -d.
+  llm_proxy_config:
+    build: ./fleet_service
+    env_file:
+      - path: ./fleet_service/.env
+        required: false
+    command: ["python", "-m", "fleet_service.llm_proxy", "/config"]
+    volumes:
+      - llm_config:/config
+    restart: "no"
+
+  # Прокси LiteLLM: повторы с паузой и Retry-After, запасные модели OpenRouter. Порт наружу не открыт — к нему
+  # обращается только fleet_service. Весь .env стенда стороннему образу не передаётся: окружение прокси (паузы
+  # повторов и ключ OpenRouter) — в litellm.env (права 600) из тома llm_config, модели — в litellm.yaml.
+  llm_proxy:
+    image: ghcr.io/berriai/litellm:main-v1.83.14-stable
+    entrypoint: ["sh", "-c", "set -a && . /config/litellm.env && set +a && exec litellm --config /config/litellm.yaml --port 4000"]
+    volumes:
+      - llm_config:/config:ro
+    depends_on:
+      llm_proxy_config:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    restart: unless-stopped
+
+  # Резервная модель на своём GPU (vLLM, OpenAI-совместимый API) — заготовка, обычный `docker compose up` её НЕ
+  # запускает: docker compose --profile reserve-llm up -d. Нужен сервер с GPU NVIDIA и nvidia-container-toolkit;
+  # базовый стенд инференс LLM не тянет — тогда резерв можно взять у внешнего провайдера (FS_LLM_RESERVE_*).
+  # Подключение — в fleet_service/.env: FS_LLM_RESERVE_BASE_URL=http://reserve_llm:8000/v1 и FS_LLM_RESERVE_MODEL
+  # (то же, что RESERVE_LLM_MODEL). Модель, парсер tool calls и длина контекста — переменные compose в ml/.env;
+  # модель допускается после проверки на tools (DEPLOY.md, «Резервная модель»).
+  reserve_llm:
+    image: vllm/vllm-openai:v0.31.0
+    profiles: ["reserve-llm"]
+    command:
+      - "${RESERVE_LLM_MODEL:-Qwen/Qwen2.5-7B-Instruct}"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "${RESERVE_LLM_TOOL_PARSER:-hermes}"
+      - "--max-model-len"
+      - "${RESERVE_LLM_MAX_MODEL_LEN:-16384}"
+    environment:
+      # Токен Hugging Face — только для закрытых моделей.
+      HF_TOKEN: ${HF_TOKEN:-}
+    # Скачанные веса — в томе: не качаются заново при пересоздании контейнера.
+    volumes:
+      - reserve_llm_cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      # Загрузка весов — минуты.
+      start_period: 600s
+      retries: 5
     restart: unless-stopped
 
   predictive_antifraud:
@@ -48,3 +127,5 @@ services:
 
 volumes:
   fleet_data:
+  llm_config:
+  reserve_llm_cache:

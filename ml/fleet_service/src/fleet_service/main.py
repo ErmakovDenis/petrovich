@@ -24,6 +24,7 @@ from .analytics.client import AnalyticsClient
 from .api import anomalies as anomalies_api
 from .api import background as background_api
 from .api import chat, emails as emails_api, health
+from .api import status as status_api
 from .api import telemetry as telemetry_api
 from .api.errors import install_error_handlers
 from .autograph.client import AutoGraphClient
@@ -31,7 +32,9 @@ from .autograph.session import AutoGraphSessionChecker
 from .background.access import AccessRepository
 from .background.crypto import SecretBox
 from .background.scheduler import BackgroundScanner
+from .breaker import CircuitBreaker
 from .config import Settings, get_settings
+from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
@@ -96,10 +99,25 @@ def create_app(
     async def lifespan(app: FastAPI):
         client = http or httpx.AsyncClient()
         app.state.system_prompt = system_prompt
-        app.state.session_checker = AutoGraphSessionChecker(settings, client)
-        autograph = AutoGraphClient(settings, client)
+        # Пределы нагрузки на процесс (limits.py): общие для чата, проверок, scan и фоновой проверки.
+        autograph_limit = UpstreamLimiter("autograph", settings.autograph_concurrency)
+        predictive_limit = UpstreamLimiter("predictive", settings.predictive_concurrency)
+        app.state.limits = Limits(
+            chat_rate=TokenBuckets(settings.chat_rate_per_minute, settings.chat_burst),
+            chat=AdmissionLimiter("chat", settings.chat_concurrency, settings.chat_queue_max),
+            autograph=autograph_limit,
+            predictive=predictive_limit,
+        )
+        # Circuit breaker'ы на процесс (breaker.py): состояние — в /health и /v1/status.
+        breakers = {name: CircuitBreaker(name, settings.breaker_failures, settings.breaker_window_seconds,
+                                         settings.breaker_open_seconds)
+                    for name in ("llm", "autograph", "predictive")}
+        app.state.breakers = breakers
+        app.state.session_checker = AutoGraphSessionChecker(settings, client, autograph_limit, breakers["autograph"])
+        autograph = AutoGraphClient(settings, client, autograph_limit, breakers["autograph"])
         telemetry = TelemetryService(settings, autograph)
-        checks = AnomalyCheckService(settings, telemetry, AnalyticsClient(settings, client))
+        analytics = AnalyticsClient(settings, client, predictive_limit, breakers["predictive"])
+        checks = AnomalyCheckService(settings, telemetry, analytics)
         store = build_store(settings)
         access = AccessRepository(store, box)
         scans = ScanService(settings, telemetry, checks, store)
@@ -114,7 +132,7 @@ def create_app(
         app.state.access = access
         app.state.background = background
         app.state.agent = Agent(
-            llm or OpenRouterClient(settings, client),
+            llm or OpenRouterClient(settings, client, breakers["llm"]),
             tools if tools is not None else build_tools(settings, telemetry, checks, store, emails),
             settings.agent_max_iterations,
         )
@@ -144,4 +162,5 @@ def create_app(
     app.include_router(anomalies_api.router)
     app.include_router(background_api.router)
     app.include_router(emails_api.router)
+    app.include_router(status_api.router)
     return app

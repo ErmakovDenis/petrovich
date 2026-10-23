@@ -1,0 +1,25 @@
+{"id": "fleet-list", "question": "Какие машины есть в парке?", "expect": {"tool": "list_vehicles"}}
+{"id": "fleet-list-2", "question": "Покажи список машин", "expect": {"tool": "list_vehicles"}}
+{"id": "find-ural", "question": "Сколько топлива у Урала?", "expect": {"tool": "list_vehicles"}}
+{"id": "find-faw", "question": "Найди машину FAW №2 и скажи, где она стоит", "expect": {"tool": "list_vehicles"}}
+{"id": "feed-yesterday", "question": "Какие аномалии были вчера?", "expect": {"tool": "list_anomalies", "args": {"from": "^2026-09-16"}}}
+{"id": "feed-open", "question": "Какие аномалии ждут моего решения?", "expect": {"tool": "list_anomalies", "args": {"status": "open"}}}
+{"id": "feed-date", "question": "Какие аномалии были 15.09?", "expect": {"tool": "list_anomalies", "args": {"from": "^2026-09-15"}}}
+{"id": "feed-critical", "question": "Покажи критические аномалии за неделю", "expect": {"tool": "list_anomalies", "args": {"severity": ["CRITICAL"]}}}
+{"id": "fuel-ural", "fleet": true, "question": "Сколько топлива у Урала?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-2"}}}
+{"id": "fuel-faw-yesterday", "fleet": true, "question": "Какой средний уровень топлива был у FAW №1 вчера?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-1", "from": "^2026-09-16"}}}
+{"id": "check-ural", "fleet": true, "question": "Проверь Урал на аномалии", "expect": {"tool": "check_vehicle", "args": {"vehicle_id": "veh-2"}}}
+{"id": "drain-faw-3d", "fleet": true, "question": "Были ли сливы топлива у FAW №1 за последние 3 дня?", "expect": {"tool": ["check_vehicle", "list_anomalies"], "args": {"vehicle_id": "veh-1", "from": "^2026-09-14"}}}
+{"id": "battery-ural", "fleet": true, "question": "Какое напряжение аккумулятора у Урала?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-2"}}}
+{"id": "overheat-faw2", "fleet": true, "question": "Перегревался ли двигатель FAW №2 вчера?", "expect": {"tool": ["check_vehicle", "get_vehicle_summary"], "args": {"vehicle_id": "veh-3", "from": "^2026-09-16"}}}
+{"id": "mileage-ural", "fleet": true, "question": "Сколько проехал Урал за последние сутки?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-2"}}}
+{"id": "violations-faw2", "fleet": true, "question": "Есть ли нарушения у FAW №2?", "expect": {"tool": "check_vehicle", "args": {"vehicle_id": "veh-3"}}}
+{"id": "rpm-faw-morning", "fleet": true, "question": "Какие обороты двигателя были у FAW №1 сегодня с 8 до 10 утра?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-1", "from": "^2026-09-17T08", "to": "^2026-09-17T10"}}}
+{"id": "check-ural-date", "fleet": true, "question": "Проверь Урал за 15 сентября", "expect": {"tool": "check_vehicle", "args": {"vehicle_id": "veh-2", "from": "^2026-09-15"}}}
+{"id": "coolant-ural-week", "fleet": true, "question": "Какая была температура охлаждающей жидкости у Урала за неделю?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-2", "from": "^2026-09-1[01]"}}}
+{"id": "ignition-faw-night", "fleet": true, "question": "Был ли включён двигатель FAW №1 этой ночью?", "expect": {"tool": "get_vehicle_summary", "args": {"vehicle_id": "veh-1", "from": "^2026-09-1[67]"}}}
+{"id": "feed-ural-yesterday", "fleet": true, "question": "Какие аномалии были у Урала вчера?", "expect": {"tool": ["list_anomalies", "check_vehicle"], "args": {"vehicle_id": "veh-2", "from": "^2026-09-16"}}}
+{"id": "card-decision", "anomaly": {"id": "rule|overheat|veh-2|TemperatureCOOL|2026-09-16T01:30Z", "vehicleId": "veh-2", "vehicleName": "Урал NEXT А001АА", "title": "Перегрев двигателя", "eventTime": "2026-09-16T06:30", "severity": "WARNING"}, "question": "Что решили по этой аномалии?", "expect": {"tool": "get_anomaly", "args": {"id": "rule|overheat|veh-2|TemperatureCOOL|2026-09-16T01:30Z"}}}
+{"id": "no-tool-greeting", "question": "Привет! Что ты умеешь?", "expect": {"tool": null}}
+{"id": "no-tool-weather", "question": "Какая сейчас погода в Екатеринбурге?", "expect": {"tool": null}}
+{"id": "no-tool-email-unavailable", "question": "Отправь письмо механику о перегреве", "expect": {"tool": null}}

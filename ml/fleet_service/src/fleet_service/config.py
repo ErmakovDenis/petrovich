@@ -27,6 +27,40 @@ class Settings(BaseSettings):
     # и политика сбора данных провайдером.
     openrouter_require_parameters: bool = True
     openrouter_data_collection: Literal["allow", "deny"] = "deny"
+    # Порядок провайдеров одной модели (provider.sort); пусто — порядок OpenRouter по умолчанию. allow_fallbacks —
+    # переходить к следующему провайдеру при сбое.
+    openrouter_provider_sort: Literal["", "latency", "throughput", "price"] = ""
+    openrouter_allow_fallbacks: bool = True
+
+    # Прокси LiteLLM (сервис llm_proxy в docker compose): повторы и запасные модели. Пусто — стенд обращается
+    # к OpenRouter напрямую, без повторов. Конфигурацию прокси строит python -m fleet_service.llm_proxy из этих же FS_*.
+    llm_proxy_url: str = ""
+    # Запасные модели OpenRouter через запятую: берутся по порядку, если основная не ответила (через прокси — после
+    # исчерпания повторов основной, без прокси — полем models запроса).
+    # Только модели, прошедшие проверку на tools (python -m fleet_service.agent.eval_tools).
+    llm_fallback_models: str = ""
+    # Повторы обращения к модели через прокси (без первой попытки) при 408, 429, 5xx и сетевой ошибке. Пауза перед
+    # n-м повтором — base · 2^(n-1), не больше max, плюс случайные до 0,75 с; Retry-After провайдера до 60 с — как есть.
+    llm_retries: int = Field(2, ge=0, le=5)
+    llm_retry_base_seconds: float = Field(1, ge=0)
+    llm_retry_max_seconds: float = Field(10, ge=0)
+    # Резервная модель вне OpenRouter — любой OpenAI-совместимый адрес (свой vLLM, профиль reserve-llm в compose).
+    # Прокси переходит к ней, когда не ответили основная и запасные модели (в том числе при 402 и недоступном
+    # OpenRouter). Пустой адрес — резерва нет. Только через прокси.
+    llm_reserve_base_url: str = ""
+    llm_reserve_model: str = ""
+    llm_reserve_api_key: SecretStr | None = None
+    # Резерв хуже основной модели по проверке на tools — к ответу через него добавляется пометка «упрощённый режим».
+    llm_reserve_degraded: bool = True
+
+    # Circuit breaker на AutoGRAPH, predictive_antifraud и модель: после FS_BREAKER_FAILURES сбоев за
+    # FS_BREAKER_WINDOW_SECONDS — сразу отказ на FS_BREAKER_OPEN_SECONDS, затем один пробный запрос. Для модели сбой —
+    # и ответ резерва; пока открыт, стенд обращается сразу к резерву (если он задан), минуя OpenRouter.
+    breaker_failures: int = Field(5, ge=1)
+    breaker_window_seconds: float = Field(30, gt=0)
+    breaker_open_seconds: float = Field(60, gt=0)
+    # Ключ администратора для GET /v1/status (Authorization: Bearer); пусто — эндпоинт выключен (404).
+    admin_token: SecretStr | None = None
 
     # Модель и генерация. Пустая модель — ассистент не настроен (/v1/chat отвечает 503).
     llm_model: str = ""
@@ -45,6 +79,21 @@ class Settings(BaseSettings):
     chat_max_messages: int = Field(40, ge=1)
     chat_max_message_chars: int = Field(4000, ge=1)
 
+    # Нагрузка чата. Rate limit на пользователя (сессию AutoGRAPH и схему): FS_CHAT_BURST вопросов подряд, дальше —
+    # FS_CHAT_RATE_PER_MINUTE в минуту; сверх — 429. Один ответ — до FS_AGENT_MAX_ITERATIONS обращений к модели.
+    chat_rate_per_minute: float = Field(10, gt=0)
+    chat_burst: int = Field(3, ge=1)
+    # Одновременных ответов чата на процесс и ожидающих в очереди; очередь полна — сразу 503. Ожидание места
+    # входит в FS_CHAT_TIMEOUT_SECONDS.
+    chat_concurrency: int = Field(8, ge=1)
+    chat_queue_max: int = Field(16, ge=0)
+    # Общий на процесс предел одновременных запросов к AutoGRAPH и к predictive_antifraud — для всех путей (чат,
+    # проверки, scan, фоновая проверка). Фоновая проверка занимает не больше половины и уступает запросам
+    # пользователей. FS_PREDICTIVE_CONCURRENCY держите не больше PA_MAX_CONCURRENCY аналитики: тогда очередь — здесь,
+    # где запросы пользователей идут вперёд фоновых, а не в простой очереди аналитики.
+    autograph_concurrency: int = Field(8, ge=1)
+    predictive_concurrency: int = Field(2, ge=1)
+
     # AutoGRAPH: проверка токена сессии пользователя.
     autograph_base_url: str = "https://web.tk-ekat.ru/ServiceJSON/"
     autograph_timeout_seconds: float = Field(15, gt=0)
@@ -52,9 +101,11 @@ class Settings(BaseSettings):
     auth_cache_max_entries: int = Field(1000, ge=1)
 
     # AutoGRAPH: загрузка телеметрии (EnumDevices, EnumParameters, GetTripTables).
-    # Всего попыток запроса при сетевой ошибке и пауза перед n-й повторной попыткой (n × значение).
+    # Всего попыток запроса при сетевой ошибке. Пауза перед n-й повторной попыткой — база · 2^(n-1), не больше
+    # максимума, умноженная на случайное 0,5…1 (jitter: при массовом сбое повторы не приходят одновременно).
     autograph_retries: int = Field(3, ge=1)
     autograph_retry_delay_seconds: float = Field(1, ge=0)
+    autograph_retry_max_seconds: float = Field(10, ge=0)
     # GetTripTables отвечает медленно и много: отдельный таймаут и длина одной части периода.
     autograph_trip_tables_timeout_seconds: float = Field(60, gt=0)
     autograph_chunk_hours: int = Field(6, ge=1, le=24)
@@ -69,8 +120,12 @@ class Settings(BaseSettings):
     # Набор параметров прибора (EnumParameters) — по схеме и машине.
     parameters_cache_ttl_seconds: float = Field(3600, ge=0)
     parameters_cache_max_entries: int = Field(5000, ge=1)
-    # Готовая телеметрия — по схеме, машине, периоду и поясу, общая для всех пользователей схемы.
+    # Готовая телеметрия — по схеме, машине, периоду и поясу, общая для всех пользователей схемы. Период,
+    # захватывающий «сейчас», — FS_TELEMETRY_CACHE_TTL_SECONDS; закрытый период (конец раньше «сейчас − задержка
+    # поступления данных AutoGRAPH») уже не изменится — FS_TELEMETRY_CLOSED_CACHE_TTL_SECONDS.
     telemetry_cache_ttl_seconds: float = Field(120, ge=0)
+    telemetry_closed_cache_ttl_seconds: float = Field(21600, ge=0)
+    telemetry_settle_minutes: int = Field(30, ge=0)
     telemetry_cache_max_entries: int = Field(200, ge=1)
     # Самый длинный период одного запроса телеметрии (в приложении — 7 дней).
     telemetry_max_period_hours: int = Field(168, ge=1)
@@ -86,6 +141,10 @@ class Settings(BaseSettings):
     # Ключ X-API-Key сервиса (PA_API_KEY в его .env); пусто — заголовок не передаётся.
     predictive_api_key: SecretStr | None = None
     predictive_timeout_seconds: float = Field(30, gt=0)
+    # Кэш результатов аналитики (только status=ok) — по виду, схеме, машине, периоду и версии модели, с теми же
+    # сроками, что телеметрия. Версии моделей стенд узнаёт из GET /ready аналитики и помнит столько секунд.
+    analytics_cache_max_entries: int = Field(500, ge=1)
+    predictive_ready_ttl_seconds: float = Field(60, ge=0)
 
     # Пороги правил аномалий: FS_RULES__<ИМЯ>, по умолчанию — как в приложении (rules/thresholds.py).
     rules: RuleThresholds = Field(default_factory=RuleThresholds)
@@ -161,6 +220,16 @@ class Settings(BaseSettings):
     def llm_configured(self) -> bool:
         key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
         return bool(key and self.llm_model)
+
+    @property
+    def reserve_configured(self) -> bool:
+        return bool(self.llm_reserve_base_url.strip() and self.llm_reserve_model.strip())
+
+    @property
+    def fallback_models(self) -> list[str]:
+        """FS_LLM_FALLBACK_MODELS списком, без пустых и без повтора основной модели."""
+        names = [m.strip() for m in self.llm_fallback_models.split(",")]
+        return list(dict.fromkeys(m for m in names if m and m != self.llm_model))
 
     @property
     def email_configured(self) -> bool:

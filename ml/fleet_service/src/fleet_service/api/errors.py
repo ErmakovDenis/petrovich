@@ -1,14 +1,16 @@
 """Ошибки — ответ `{"detail": "<понятный текст по-русски>"}` без стека; стек только в логе (замаскированный)."""
 
 import logging
+import math
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from ..agent.llm import LLMError, LLMTimeout
+from ..agent.llm import LLMCreditsExhausted, LLMError, LLMRetryable, LLMTimeout
 from ..agent.loop import AgentIterationLimit
 from ..autograph.errors import AutoGraphUnavailable, SessionInvalid, TripTablesTooLarge
+from ..limits import Overloaded, RateLimited
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +28,38 @@ def install_error_handlers(app: FastAPI) -> None:
         log.warning("модель: %s", e)
         return _detail(status.HTTP_504_GATEWAY_TIMEOUT, str(e))
 
+    @app.exception_handler(LLMCreditsExhausted)
+    async def llm_credits(_: Request, e: LLMCreditsExhausted) -> JSONResponse:
+        # В лог (ERROR) уже записал клиент модели; пользователю — без подробностей про кредиты.
+        return _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Ассистент временно недоступен, попробуйте позже")
+
+    @app.exception_handler(LLMRetryable)
+    async def llm_retryable(_: Request, e: LLMRetryable) -> JSONResponse:
+        # Подробности (текст провайдера или прокси) — только в лог: пользователю они ничего не скажут.
+        log.warning("модель: %s", e)
+        response = _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Модель временно недоступна, повторите позже")
+        if e.retry_after is not None:
+            response.headers["Retry-After"] = str(max(1, round(e.retry_after)))
+        return response
+
     @app.exception_handler(LLMError)
     async def llm_error(_: Request, e: LLMError) -> JSONResponse:
         log.warning("модель: %s", e)
         return _detail(status.HTTP_502_BAD_GATEWAY, f"Модель не ответила: {e}")
+
+    @app.exception_handler(RateLimited)
+    async def rate_limited(_: Request, e: RateLimited) -> JSONResponse:
+        log.info("лимит чата пользователя: повтор через %.0f с", e.retry_after)
+        response = _detail(status.HTTP_429_TOO_MANY_REQUESTS, str(e))
+        response.headers["Retry-After"] = str(math.ceil(e.retry_after))
+        return response
+
+    @app.exception_handler(Overloaded)
+    async def overloaded(_: Request, e: Overloaded) -> JSONResponse:
+        log.warning("перегрузка: %s — отказ", e)
+        response = _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Высокая нагрузка на ассистента, повторите через минуту")
+        response.headers["Retry-After"] = "60"
+        return response
 
     @app.exception_handler(AgentIterationLimit)
     async def iteration_limit(_: Request, e: AgentIterationLimit) -> JSONResponse:

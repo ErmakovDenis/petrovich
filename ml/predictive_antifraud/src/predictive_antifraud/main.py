@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from . import __version__
 from .api import health, v1
+from .api.limits import ConcurrencyLimitMiddleware, RequestLimiter
 from .config import Settings, get_settings
 from .models.registry import ModelRegistry
 from .services.antifraud import AntifraudService
@@ -29,6 +30,14 @@ def create_app(settings: Settings | None = None, registry: ModelRegistry | None 
 
     app = FastAPI(title=settings.app_name, version=__version__, lifespan=lifespan)
     app.dependency_overrides[get_settings] = lambda: settings
+    # Предел нагрузки на /v1/*: быстрый отказ вместо очереди без границы (api/limits.py).
+    app.state.limiter = RequestLimiter(settings.max_concurrency, settings.queue_max)
+    app.add_middleware(
+        ConcurrencyLimitMiddleware,
+        limiter=app.state.limiter,
+        deadline_seconds=settings.request_deadline_seconds,
+        api_key=settings.api_key,
+    )
     app.include_router(health.router)
     app.include_router(v1.router)
     return app

@@ -67,6 +67,8 @@ def test_ml_anomalies_come_first_without_duplicates(make_client, fakes):
 
 @pytest.mark.parametrize("setup, detail", [
     ({"mode": "down"}, "ответил ошибкой 500"),
+    # Предел нагрузки аналитики: unavailable без повтора, правила работают как раньше.
+    ({"mode": "overloaded", "requests": 2}, "сервис аналитики перегружен"),
     ({"settings": {"predictive_api_key": "wrong"}}, "ответил ошибкой 401"),
     ({"settings": {"predictive_url": ""}}, "не настроен"),
 ])
@@ -80,6 +82,9 @@ def test_analytics_failure_does_not_break_rules(make_client, fakes, setup, detai
     assert body["modelsReady"] is False
     assert body["analytics"]["predictive"]["status"] == "unavailable"
     assert detail in body["analytics"]["predictive"]["detail"]
+    if "requests" in setup:
+        # По одному запросу к каждому сервису аналитики — без повторов.
+        assert len(fakes.state.analytics_requests) == setup["requests"]
 
 
 def test_analytics_unreachable(fakes):
