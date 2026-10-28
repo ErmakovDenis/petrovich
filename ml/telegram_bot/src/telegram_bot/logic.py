@@ -10,11 +10,12 @@ callback_data кнопок: `<действие>:<ключ>[:<аргумент>]`
 """
 
 import logging
-from contextlib import suppress
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from . import charts, exports, pdf
 from . import texts as T
 from .refs import Refs
 from .stand import Stand, StandError
@@ -25,6 +26,16 @@ PAGE = 8
 PREVIOUS_MAX = 2000
 LIMITS = [3, 5, 10, None]
 QUIET = [(22, 7), (23, 7), (None, None)]
+# «Показать данные»: ряд параметра за столько часов до и после начала события — топливо за сутки (макет 6),
+# остальное — ±3 часа (макет 9).
+DATA_HOURS = {"FUEL": 12}
+DATA_HOURS_DEFAULT = 3
+# «Проверено повторно»: окно вокруг начала события, минут.
+RECHECK_MINUTES = 30
+# Обороты двигателя (параметр AutoGRAPH, как P.RPM на стенде).
+RPM = "Rotation"
+ALL = "a"
+EXPORT_PERIODS = {"d": "За сутки", "w": "За прошлую неделю", "m": "За 30 дней"}
 # Время доклада по кругу в /settings (None — выключен) и день и время сводки; точнее — в приложении.
 DAILY_TIMES = ["07:00", "08:00", "09:00", "09:30", "10:00", None]
 WEEKLY = [(1, "09:30"), (5, "17:00"), None]
@@ -44,6 +55,9 @@ class Reply:
     menu: bool = False
     # Изменить сообщение, на котором нажата кнопка, а не присылать новое.
     edit: bool = False
+    # Картинка (PNG) или файл (имя, содержимое): text — подпись к ним.
+    photo: bytes | None = None
+    file: tuple[str, bytes] | None = None
 
 
 @dataclass
@@ -98,6 +112,25 @@ def next_limit(sub: dict) -> dict:
     return {**sub, "dailyLimit": LIMITS[(i + 1) % len(LIMITS)]}
 
 
+def vehicle_groups(vehicles: list[dict]) -> list[tuple[str, set[str]]]:
+    """Группы машин (Vehicle.group из AutoGRAPH) по имени; машины без группы — «Без группы», если группы вообще есть."""
+    groups: dict[str, set[str]] = {}
+    for v in vehicles:
+        groups.setdefault(v.get("group") or "", set()).add(v["id"])
+    if set(groups) == {""}:
+        return []
+    return sorted(((name or "Без группы", ids) for name, ids in groups.items()), key=lambda g: (g[0] == "Без группы", g[0]))
+
+
+def export_period(code: str, now: datetime) -> tuple[datetime, datetime]:
+    """Период выгрузки по местному времени: сутки до сейчас, прошлая неделя пн–вс, 30 дней до сейчас."""
+    now = now.replace(second=0, microsecond=0)
+    if code == "w":
+        monday = datetime.combine(now.date() - timedelta(days=now.weekday()), datetime.min.time())
+        return monday - timedelta(days=7), monday
+    return now - timedelta(days=30 if code == "m" else 1), now
+
+
 def next_daily(sub: dict) -> dict:
     """Время доклада по кругу; после последнего — выключен."""
     r = sub.get("reports") or {}
@@ -131,12 +164,21 @@ def next_quiet(sub: dict) -> dict:
 # --- клавиатуры ---
 
 
-def card_buttons(key: str, resolved: bool, card: dict | None = None) -> list[list[Button]] | None:
-    """Кнопки карточки; какие показывать — настройки чата (card.reviewButton, card.resolveButtons)."""
+def data_hours(a: dict) -> int:
+    return DATA_HOURS.get(a.get("category") or "", DATA_HOURS_DEFAULT)
+
+
+def card_buttons(key: str, resolved: bool, card: dict | None = None, hours: int = DATA_HOURS_DEFAULT) \
+        -> list[list[Button]] | None:
+    """Кнопки карточки; какие показывать — настройки чата (card.reviewButton, card.dataButton, card.resolveButtons).
+    С решением — только «Вернуть в работу» (макет 3)."""
     card = card or {}
     rows = []
-    if card.get("reviewButton", True):
+    if card.get("reviewButton", True) and not resolved:
         rows.append([Button("Разобраться с Петровичем", f"rv:{key}")])
+    if card.get("dataButton", True) and not resolved:
+        rows.append([Button(f"График за ±{hours} {'час' if hours == 1 else 'часа' if hours < 5 else 'часов'}",
+                            f"dt:{key}")])
     if card.get("resolveButtons", True):
         rows.append([Button("Вернуть в работу", f"re:{key}")] if resolved else
                     [Button("Подтвердить", f"ok:{key}"), Button("Ложная тревога", f"fa:{key}")])
@@ -149,7 +191,7 @@ def reason_buttons(key: str, suffix: str) -> list[list[Button]]:
 
 
 def review_buttons(key: str) -> list[list[Button]]:
-    return [[Button("Написать письмо", f"rm:{key}")],
+    return [[Button("Написать письмо", f"rm:{key}"), Button("Показать данные", f"dt:{key}:n")],
             [Button("Подтвердить", f"ok:{key}:n"), Button("Ложная тревога", f"fa:{key}:n")],
             [Button("Завершить разбор", f"rx:{key}")]]
 
@@ -177,8 +219,9 @@ class Petrovich:
         self._history_max = history_max
         self._clock = clock
         self._states: dict[int, ChatState] = {}
-        # «Петрович помнит» из уведомления — чтобы не терять строку при перерисовке карточки.
+        # «Петрович помнит» из уведомления и повторная проверка — чтобы не терять строки при перерисовке карточки.
         self._previous: dict[str, list[str]] = {}
+        self._checks: dict[str, str] = {}
 
     def state(self, chat_id: int) -> ChatState:
         return self._states.setdefault(chat_id, ChatState())
@@ -224,8 +267,27 @@ class Petrovich:
                 await self._me(chat_id)
         card = st.card or {}
         key = self._refs.key(a["id"])
-        text = T.card(a, offset, self._previous.get(key), self._clock(), card, repeats)
-        return Reply(text, card_buttons(key, bool(a.get("resolution")), card), edit=edit)
+        text = T.card(a, offset, self._previous.get(key), self._clock(), card, repeats, self._checks.get(key))
+        return Reply(text, card_buttons(key, bool(a.get("resolution")), card, data_hours(a)), edit=edit)
+
+    async def _recheck(self, chat_id: int, a: dict, offset: int) -> None:
+        """«Проверено повторно» для новой карточки: данные вокруг события ещё раз из AutoGRAPH через стенд."""
+        start = datetime.fromisoformat(a["eventTime"])
+        now = T.local_now(offset, self._clock()).replace(second=0, microsecond=0)
+        window = timedelta(minutes=RECHECK_MINUTES)
+        to = min(start + window, now)
+        if to <= start - window:
+            return
+        try:
+            telemetry = await self._stand.telemetry(chat_id, a["vehicleId"], start - window, to, offset)
+        except StandError as e:
+            log.info("повторная проверка не удалась: %s", e.detail)
+            return
+        key = self._refs.key(a["id"])
+        self._checks[key] = T.recheck(charts.find_series(telemetry, a["parameterName"]),
+                                      charts.find_series(telemetry, RPM), start)
+        while len(self._checks) > PREVIOUS_MAX:
+            del self._checks[next(iter(self._checks))]
 
     # --- команды ---
 
@@ -295,7 +357,10 @@ class Petrovich:
     @staticmethod
     def _weekly(data: dict) -> Reply:
         """Недельная сводка (макет 8)."""
-        return Reply(T.weekly_report(data), [[Button("Незакрытые события", "pl")]] if data["open"] else None)
+        rows = [[Button("Незакрытые события", "pl")]] if data["open"] else []
+        rows += [[Button("Отчёт по группе", "gr:w"), Button("Сравнить недели", "cw")],
+                 [Button("Выгрузить в Excel", "x:w")]]
+        return Reply(T.weekly_report(data), rows)
 
     async def settings(self, chat_id: int, edit: bool = False) -> Reply:
         try:
@@ -315,11 +380,14 @@ class Petrovich:
             anomaly_id, st.pending_reason = st.pending_reason, None
             answer = await self._resolve(chat_id, anomaly_id, "FALSE_ALARM", text[:500], new_message=True)
             return answer.replies or [Reply(T.h(answer.toast or ""))]
-        aliases = {"проблемы": self.problems, "настройки": self.settings, "парк": self.park}
+        aliases = {"проблемы": self.problems, "настройки": self.settings, "уведомления": self.settings,
+                   "парк": self.park, "доклад сейчас": self.report, "доклад": self.report}
         if text.lower() in aliases:
             return [await aliases[text.lower()](chat_id)]
         if text.lower() == "помощь":
             return [self.help()]
+        if text.lower().startswith("выгруз"):
+            return [self.export_menu()]
         return await self._ask(chat_id, text)
 
     async def _ask(self, chat_id: int, question: str) -> list[Reply]:
@@ -352,6 +420,12 @@ class Petrovich:
             return Answer([await self.problems(chat_id)])
         if action == "rq":
             return await self._next_in_queue(chat_id, rest)
+        if action in ("x", "xc", "xv"):
+            return await self._export(chat_id, rest, action)
+        if action in ("gr", "gp", "gx", "go"):
+            return await self._group_report(chat_id, action, rest)
+        if action == "cw":
+            return await self._compare_weeks(chat_id)
         key, _, arg = rest.partition(":")
         value = self._refs.value(key)
         if value is None:
@@ -397,6 +471,8 @@ class Petrovich:
                 st.history.clear()
                 return Answer([Reply("Разбор завершён. Решение по событию можно принять на карточке или в /problems.",
                                      menu=True)])
+            if action in ("dt", "dc"):
+                return await self._data(chat_id, value, table=action == "dc")
             if action in ("ms", "mc"):
                 return await self._email(chat_id, value, send=action == "ms", message_text=message_text)
         except StandError as e:
@@ -404,6 +480,134 @@ class Petrovich:
         except (ValueError, IndexError):
             pass
         return Answer(toast=T.STALE_BUTTON, alert=True)
+
+    # --- «Откуда цифра» (макет 6) и выгрузка (макет 10) ---
+
+    async def _data(self, chat_id: int, anomaly_id: str, table: bool) -> Answer:
+        """Ряд параметра события за ±DATA_HOURS: сводка и график ([table] — таблица CSV)."""
+        offset = await self._offset(chat_id)
+        a = await self._stand.anomaly(chat_id, anomaly_id, offset)
+        start = datetime.fromisoformat(a["eventTime"])
+        now = T.local_now(offset, self._clock()).replace(second=0, microsecond=0)
+        hours = timedelta(hours=data_hours(a))
+        frm, to = start - hours, min(start + hours, now)
+        series = charts.find_series(await self._stand.telemetry(chat_id, a["vehicleId"], frm, to, offset),
+                                    a["parameterName"])
+        if series is None or not series.points():
+            return Answer([Reply(T.no_data(a, frm, to))])
+        key = self._refs.key(a["id"])
+        caption = T.data_caption(a, series, frm, to)
+        if table:
+            name = f"dannye_{series.name}_{start:%d.%m.%Y}.csv"
+            return Answer([Reply(caption, file=(name, charts.csv_bytes(series)))])
+        photo = charts.png(series, start, f"{series.caption}, {a['vehicleName']}")
+        return Answer([Reply(T.data_summary(a, series, frm, to, to == now)),
+                       Reply(caption, [[Button("Таблица CSV", f"dc:{key}"), Button("Карточка события", f"c:{key}")]],
+                             photo=photo)])
+
+    @staticmethod
+    def export_menu() -> Reply:
+        return Reply("<b>Выгрузка событий</b>\nЗа какой период? Пришлю Excel: все события ваших машин с решениями и "
+                     "лист «По машинам».",
+                     [[Button(label, f"x:{code}")] for code, label in EXPORT_PERIODS.items()])
+
+    async def _export(self, chat_id: int, period: str, kind: str) -> Answer:
+        """x — сводка и Excel, xc — CSV, xv — по машинам текстом."""
+        if period not in EXPORT_PERIODS:
+            return Answer(toast=T.STALE_BUTTON, alert=True)
+        try:
+            me = await self._me(chat_id)
+            offset = me["utcOffsetMinutes"]
+            frm, to = export_period(period, T.local_now(offset, self._clock()))
+            items = [a for a in await self._stand.events(chat_id, frm, to, offset)
+                     if frm <= datetime.fromisoformat(a["eventTime"]) < to]
+        except StandError as e:
+            return Answer(toast=e.detail[:200], alert=True)
+        items.sort(key=lambda a: a["eventTime"])
+        vehicles = me.get("vehicles") or []
+        label = T.period_label(frm, to)
+        if kind == "xv":
+            return Answer([Reply(T.by_vehicles(exports.vehicle_rows(items, vehicles), label))])
+        name = f"sobytiya_{T.period_file(frm, to)}"
+        if kind == "xc":
+            return Answer([Reply(f"События {label}, CSV · {len(items)} строк",
+                                 file=(f"{name}.csv", exports.events_csv(items, offset)))])
+        return Answer([
+            Reply(T.export_summary(items, len(vehicles), label)),
+            Reply(f"Excel · {len(items)} {T.plural(len(items), 'строка', 'строки', 'строк')}",
+                  [[Button("Скачать CSV", f"xc:{period}"), Button("По машинам", f"xv:{period}")]],
+                  file=(f"{name}.xlsx", exports.xlsx(items, vehicles, offset))),
+        ])
+
+    async def _events(self, chat_id: int, period: str) -> tuple[dict, datetime, datetime, list[dict]]:
+        """Подключение (машины, пояс), период выгрузки и события, начавшиеся в нём, по времени."""
+        me = await self._me(chat_id)
+        offset = me["utcOffsetMinutes"]
+        frm, to = export_period(period, T.local_now(offset, self._clock()))
+        items = [a for a in await self._stand.events(chat_id, frm, to, offset)
+                 if frm <= datetime.fromisoformat(a["eventTime"]) < to]
+        items.sort(key=lambda a: a["eventTime"])
+        return me, frm, to, items
+
+    async def _group_report(self, chat_id: int, action: str, rest: str) -> Answer:
+        """Отчёт по группе (макет 8): gr:<период> — выбор группы, gp:<период>:<группа> — PDF, gx — Excel,
+        go:<группа> — выбор другого периода. Группа — номер в списке групп машин или «a» — все машины."""
+        try:
+            if action == "go":
+                return Answer([Reply("За какой период отчёт?",
+                                     [[Button(label, f"gp:{code}:{rest}")] for code, label in EXPORT_PERIODS.items()])])
+            period, _, group = rest.partition(":")
+            if period not in EXPORT_PERIODS:
+                return Answer(toast=T.STALE_BUTTON, alert=True)
+            if action == "gr":
+                me = await self._me(chat_id)
+                groups = vehicle_groups(me.get("vehicles") or [])
+                frm, to = export_period(period, T.local_now(me["utcOffsetMinutes"], self._clock()))
+                rows = [[Button(f"{name} · {len(ids)}"[:64], f"gp:{period}:{i}")] for i, (name, ids) in enumerate(groups)]
+                rows.append([Button(f"Все машины · {len(me.get('vehicles') or [])}", f"gp:{period}:{ALL}")])
+                return Answer([Reply(T.group_choice([(n, len(ids)) for n, ids in groups], len(me.get("vehicles") or []),
+                                                    T.period_label(frm, to)), rows)])
+            me, frm, to, items = await self._events(chat_id, period)
+        except StandError as e:
+            return Answer(toast=e.detail[:200], alert=True)
+        vehicles = me.get("vehicles") or []
+        groups = vehicle_groups(vehicles)
+        if group == ALL:
+            name, ids = "Все машины", {v["id"] for v in vehicles}
+        elif group.isdigit() and int(group) < len(groups):
+            name, ids = groups[int(group)]
+        else:
+            return Answer(toast=T.STALE_BUTTON, alert=True)
+        cars = [v for v in vehicles if v["id"] in ids]
+        items = [a for a in items if a["vehicleId"] in ids]
+        label = T.period_label(frm, to)
+        file = f"otchet_{T.slug(name)}_{T.period_file(frm, to)}"
+        if action == "gx":
+            return Answer([Reply(f"{T.h(name)}, {label} · Excel",
+                                 file=(f"{file}.xlsx", exports.xlsx(items, cars, me["utcOffsetMinutes"])))])
+        summary = T.export_summary(items, len(cars), label).removeprefix("Готово. ")
+        content = pdf.group_report(f"Отчёт: {name}", f"{label.capitalize()} · схема «{me['schemaName']}» · "
+                                   f"машин: {len(cars)}", [line for line in summary.splitlines()],
+                                   exports.vehicle_rows(items, cars), items)
+        return Answer([Reply(f"{T.h(name)}: события и решения · PDF",
+                             [[Button("Excel", f"gx:{period}:{group}"), Button("Другой период", f"go:{group}")]],
+                             file=(f"{file}.pdf", content))])
+
+    async def _compare_weeks(self, chat_id: int) -> Answer:
+        """Прошлая неделя против позапрошлой (макет 8, «Сравнить недели»)."""
+        try:
+            me = await self._me(chat_id)
+            offset = me["utcOffsetMinutes"]
+            frm, to = export_period("w", T.local_now(offset, self._clock()))
+            before = frm - timedelta(days=7)
+            items = [a for a in await self._stand.events(chat_id, before, to, offset)
+                     if before <= datetime.fromisoformat(a["eventTime"]) < to]
+        except StandError as e:
+            return Answer(toast=e.detail[:200], alert=True)
+        cur = [a for a in items if datetime.fromisoformat(a["eventTime"]) >= frm]
+        prev = [a for a in items if datetime.fromisoformat(a["eventTime"]) < frm]
+        return Answer([Reply(T.compare_weeks(cur, prev, T.period_label(frm, to), T.period_label(before, frm)),
+                             [[Button("Отчёт по группе", "gr:w"), Button("Выгрузить в Excel", "x:w")]])])
 
     async def _next_in_queue(self, chat_id: int, index: str) -> Answer:
         """Следующее событие из утреннего доклада — новой карточкой, с кнопкой «Следующее»."""
@@ -542,6 +746,8 @@ class Petrovich:
                     del self._previous[next(iter(self._previous))]
             if n.get("card") is not None:
                 self.state(chat_id).card = n["card"]
+            if (n.get("card") or {}).get("recheck", True):
+                await self._recheck(chat_id, n["anomaly"], n["utcOffsetMinutes"])
             out.append((chat_id, await self._card(chat_id, n["anomaly"], n["utcOffsetMinutes"],
                                                   repeats=n.get("repeats") or 0)))
         for m in data.get("messages") or []:

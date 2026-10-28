@@ -1,8 +1,11 @@
 """Тексты бота (HTML-разметка Telegram) по макетам «Прототип Telegram-бота «Петрович»». Данные со стенда
 (названия машин, описания событий) экранируются: они приходят из внешней системы."""
 
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from html import escape
+
+from .charts import Series, number
 
 SEVERITY = {"CRITICAL": "Критично", "WARNING": "Предупреждение", "INFO": "Инфо"}
 # События, которые можно выключить (KINDS стенда, schemas/telegram.py), в том же порядке, что в приложении.
@@ -32,6 +35,7 @@ HELP = (
     "/problems — события, которые ждут решения\n"
     "/park — машины и где есть неразобранное\n"
     "/report — доклад за сутки, /week — сводка за прошлую неделю\n"
+    "/export — выгрузить события в Excel\n"
     "/settings — что и по каким машинам присылать, когда доклад\n"
     "/new — начать разговор заново\n\n"
     "Можно просто спросить текстом: «Что у меня не так?», «Что с топливом у КАМАЗа за сутки?»"
@@ -86,11 +90,16 @@ def _number(v: float) -> str:
 
 
 def card(a: dict, offset: int, previous: list[str] | None = None, now_utc: datetime | None = None,
-         show: dict | None = None, repeats: int = 0) -> str:
+         show: dict | None = None, repeats: int = 0, check: str | None = None) -> str:
     """Карточка события (макет 3): важность и машина, что и когда, затем по настройкам чата [show] (card стенда) —
-    описание, параметр и значение, «Петрович помнит», источник, решение и кто его принял."""
+    описание, параметр и значение, «Петрович помнит», повторная проверка [check], источник. С решением — коротко:
+    решение, машина и событие, кто отметил."""
     show = show or {}
     today = local_now(offset, now_utc).date()
+    if a.get("resolution"):
+        head, _, tail = decision(a, offset, who=show.get("resolvedBy", True)).partition("\n")
+        what = a["title"][:1].lower() + a["title"][1:]
+        return "\n".join([head, f"{h(a['vehicleName'])}, {h(what)} {when(a['eventTime'], today)}.", tail])
     lines = [f"<b>{h(SEVERITY.get(a['severity'], a['severity']))} · {h(a['vehicleName'])}</b>",
              f"{h(a['title'])} {when(a['eventTime'], today)}."]
     if show.get("description", True) and a.get("description"):
@@ -102,12 +111,30 @@ def card(a: dict, offset: int, previous: list[str] | None = None, now_utc: datet
         lines.append(f"Петрович помнит: на этой машине такое уже было {h(dates)}.")
     if repeats:
         lines.append(f"С прошлого уведомления повторялось ещё {repeats} {plural(repeats, 'раз', 'раза', 'раз')}.")
+    if show.get("recheck", True) and check:
+        lines.append(check)
     if show.get("source", False) and a.get("source"):
         lines.append(f"Источник: {h(a['source'])}")
-    status = decision(a, offset, who=show.get("resolvedBy", True))
-    if status:
-        lines += ["", status]
     return "\n".join(lines)
+
+
+def recheck(series: Series | None, rpm: Series | None, start: datetime) -> str:
+    """«✓ Проверено повторно» (макет 3): есть ли пропуски в данных вокруг события и работал ли двигатель."""
+    if series is None or not series.points():
+        return "⚠ Проверено повторно: данных по параметру за это время нет — возможен сбой связи с машиной."
+    gaps = sum(v is None for v in series.values)
+    data = "данные без пропусков" if gaps == 0 else f"пропуски в {gaps} из {len(series.values)} интервалов"
+    engine = ""
+    if rpm is not None and rpm.points():
+        _, v = min(rpm.points(), key=lambda p: abs((p[0] - start).total_seconds()))
+        turns = f"{round(v):,}".replace(",", "\u00a0")
+        engine = f", двигатель работал ({turns} об/мин)" if v >= ENGINE_RUNNING_RPM else f", двигатель не работал ({turns} об/мин)"
+    mark = "✓" if gaps == 0 else "⚠"
+    return f"{mark} Проверено повторно: {data}{engine}."
+
+
+def daily_analytics_note(r: dict) -> str:
+    return "Предиктивная проверка недоступна — выводы только по правилам." if r.get("analyticsUnavailable") else ""
 
 
 def decision(a: dict, offset: int, who: bool = True) -> str:
@@ -264,6 +291,9 @@ def settings(me: dict) -> str:
     return "\n".join(lines)
 
 
+# Обороты, выше которых двигатель считается работающим (как engine_running в правилах стенда — от 500 об/мин).
+ENGINE_RUNNING_RPM = 500
+
 WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
 _WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
@@ -299,7 +329,8 @@ def daily_report(r: dict, offset: int, now_utc: datetime | None = None) -> str:
     n, total = r["vehicles"], r["total"]
     where = f"С {since:%H:%M} {day_month(since.date())} по {n} {plural(n, 'машине', 'машинам', 'машинам')}"
     if total == 0:
-        return f"<b>{head}</b>\n{where} событий не найдено — всё спокойно."
+        note = daily_analytics_note(r)
+        return f"<b>{head}</b>\n{where} событий не найдено — всё спокойно." + (f"\n{note}" if note else "")
     found = f"{where} найдено {total} {plural(total, 'событие', 'события', 'событий')}"
     critical = r["critical"]
     if critical == total:
@@ -317,6 +348,9 @@ def daily_report(r: dict, offset: int, now_utc: datetime | None = None) -> str:
             lines.append(f"• {h(e['vehicleName'])}, {_event_time(e['eventTime'], now.date())}{mark}")
         if g["count"] > len(g["items"]):
             lines.append(f"• и ещё {g['count'] - len(g['items'])}")
+    note = daily_analytics_note(r)
+    if note:
+        lines += ["", note]
     return "\n".join(lines)
 
 
@@ -347,6 +381,123 @@ def weekly_report(r: dict) -> str:
     q, n = r["quietVehicles"], r["vehicles"]
     lines += ["", f"Без событий: {q} {plural(q, 'машина', 'машины', 'машин')} из {n}."]
     return "\n".join(lines)
+
+
+def _span(frm: datetime, to: datetime) -> str:
+    """«с 18:00 15 сентября до 18:00 16 сентября»."""
+    return f"с {frm:%H:%M} {day_month(frm.date())} до {to:%H:%M} {day_month(to.date())}"
+
+
+def data_summary(a: dict, series: Series, frm: datetime, to: datetime, until_now: bool) -> str:
+    """«Откуда цифра» (макет 6): что было с параметром вокруг события, и само событие."""
+    values = [v for _, v in series.points()]
+    unit = f" {series.unit}" if series.unit else ""
+    last = "сейчас" if until_now else "в конце"
+    start = datetime.fromisoformat(a["eventTime"])
+    lines = [f"{h(series.caption)} {_span(frm, to)}: от {number(min(values))} до {number(max(values))}{unit}, "
+             f"в среднем {number(sum(values) / len(values))}{unit}, {last} {number(values[-1])}{unit}.",
+             f"Событие: {h(a['title'].lower())} {when(a['eventTime'], start.date())}"
+             + (f" — {h(_sentence(a['description']))}" if a.get("description") else ".")]
+    return "\n".join(lines)
+
+
+def data_caption(a: dict, series: Series, frm: datetime, to: datetime) -> str:
+    """Подпись к графику: что на нём и по каким данным."""
+    step = series.step_minutes()
+    total = len(series.times)
+    filled = len(series.points())
+    days = f"{frm.day}–{day_month(to.date())}" if frm.date() != to.date() else day_month(to.date())
+    coverage = f"данные по всем {total} интервалам" if filled == total else f"данные по {filled} из {total} интервалов"
+    return (f"{h(series.caption)}, {h(a['vehicleName'])}, {days}. Красная точка — событие «{h(a['title'])}».\n"
+            f"Параметр «{h(series.caption)}» ({h(series.name)})" + (f" · интервалы {step} мин" if step else "")
+            + f" · {coverage}")
+
+
+def no_data(a: dict, frm: datetime, to: datetime) -> str:
+    return (f"По параметру «{h(a.get('parameterCaption') or a['parameterName'])}» у {h(a['vehicleName'])} "
+            f"{_span(frm, to)} данных нет — AutoGRAPH их не вернул.")
+
+
+def period_label(frm: datetime, to: datetime) -> str:
+    """«за 7–13 сентября», «за 15–16 сентября»; конец периода не включается."""
+    last = (to - timedelta(minutes=1)).date()
+    if frm.date() == last:
+        return f"за {day_month(last)}"
+    if frm.month == last.month:
+        return f"за {frm.day}–{day_month(last)}"
+    return f"за {day_month(frm.date())} – {day_month(last)}"
+
+
+def period_file(frm: datetime, to: datetime) -> str:
+    """Часть имени файла: «07-13.09», «16.09», «17.08-16.09»."""
+    last = (to - timedelta(minutes=1)).date()
+    if frm.date() == last:
+        return f"{last:%d.%m}"
+    if frm.month == last.month:
+        return f"{frm:%d}-{last:%d.%m}"
+    return f"{frm:%d.%m}-{last:%d.%m}"
+
+
+def export_summary(items: list[dict], vehicles_total: int, label: str) -> str:
+    """Выгрузка (макет 10): сколько событий, по каким машинам и типам, решения."""
+    if not items:
+        return f"Готово. {label.capitalize()} событий нет — файл пустой, только заголовки и список машин."
+    n = len(items)
+    cars = len({a["vehicleId"] for a in items})
+    kinds = Counter(a["title"] for a in items).most_common(3)
+    confirmed = sum(a.get("resolution") == "CONFIRMED" for a in items)
+    false_alarms = sum(a.get("resolution") == "FALSE_ALARM" for a in items)
+    left = n - confirmed - false_alarms
+    lines = [f"Готово. {label.capitalize()} — {n} {plural(n, 'событие', 'события', 'событий')} по {cars} "
+             f"{plural(cars, 'машине', 'машинам', 'машинам')} из {vehicles_total}:",
+             ", ".join(f"{h(t.lower())} — {c}" for t, c in kinds) + "."]
+    lines.append("Решений по ним пока нет." if left == n else
+                 f"Подтверждено {confirmed}, ложных тревог {false_alarms}, ждут решения {left}.")
+    return "\n".join(lines)
+
+
+def by_vehicles(rows: list[list], label: str) -> str:
+    """«По машинам» (макет 10): события по каждой машине и машины без событий."""
+    busy = [r for r in rows if r[1]]
+    quiet = [r for r in rows if not r[1]]
+    lines = [f"<b>По машинам {label}</b>"]
+    lines += [f"• {h(r[0])} — {r[1]}, чаще всего {h(r[4].lower())}" + (f"; ждут решения {r[3]}" if r[3] else "")
+              for r in busy]
+    if quiet:
+        lines += ["", f"Без событий — {len(quiet)}:"] + [f"• {h(r[0])}" for r in quiet]
+    return "\n".join(lines)
+
+
+def compare_weeks(cur: list[dict], prev: list[dict], cur_label: str, prev_label: str) -> str:
+    """«Сравнить недели» (макет 8): прошлая неделя против позапрошлой — всего, по типам и где больше всего изменилось."""
+    def delta(a: int, b: int) -> str:
+        return "без изменений" if a == b else f"{'+' if a > b else '−'}{abs(a - b)}"
+
+    lines = ["<b>Сравнение недель</b>",
+             f"{cur_label.capitalize()}: {len(cur)} {plural(len(cur), 'событие', 'события', 'событий')}; "
+             f"{prev_label}: {len(prev)} ({delta(len(cur), len(prev))})."]
+    for field, title in (("title", "По типам"), ("vehicleName", "По машинам — где больше всего изменилось")):
+        now, before = Counter(a[field] for a in cur), Counter(a[field] for a in prev)
+        names = sorted(set(now) | set(before), key=lambda k: (-abs(now[k] - before[k]), -now[k], k))[:5]
+        if names:
+            lines += ["", f"{title}:"]
+            lines += [f"• {h(k)} — {now[k]} (было {before[k]}, {delta(now[k], before[k])})" for k in names]
+    return "\n".join(lines)
+
+
+_TRANSLIT = dict(zip("абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+                     ["a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t",
+                      "u", "f", "h", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya"], strict=True))
+
+
+def slug(name: str) -> str:
+    """Имя файла латиницей: «Колонна №1» → «kolonna-1»."""
+    out = "".join(_TRANSLIT.get(ch, ch) for ch in name.lower())
+    return "-".join("".join(ch if ch.isascii() and ch.isalnum() else " " for ch in out).split()) or "gruppa"
+
+
+def group_choice(groups: list[tuple[str, int]], total: int, label: str) -> str:
+    return f"Отчёт по какой группе машин? Период — {label}." if groups else f"Отчёт по всем машинам ({total}), {label}."
 
 
 def draft(d: dict, offset: int) -> str:

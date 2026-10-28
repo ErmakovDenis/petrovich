@@ -141,7 +141,8 @@ def create_app(
         telegram_sessions = TelegramSessions(access, app.state.session_checker, autograph)
         app.state.telegram_links = telegram_links
         app.state.telegram_sessions = telegram_sessions
-        app.state.telegram_reports = TelegramReports(settings, store)
+        app.state.telegram_reports = TelegramReports(settings, store,
+                                                     lambda: breakers["predictive"].state == "closed")
         app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store,
                                                        app.state.telegram_reports)
         app.state.agent = Agent(

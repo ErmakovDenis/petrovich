@@ -440,9 +440,11 @@ private val CARD_LINES = listOf(
     CardPart("«Петрович помнит» — когда такое уже было", { it.memory }, { c, v -> c.copy(memory = v) }),
     CardPart("Источник: правила или аналитика", { it.source }, { c, v -> c.copy(source = v) }),
     CardPart("Кто и когда принял решение", { it.resolvedBy }, { c, v -> c.copy(resolvedBy = v) }),
+    CardPart("«Проверено повторно» — пропуски в данных и двигатель", { it.recheck }, { c, v -> c.copy(recheck = v) }),
 )
 private val CARD_BUTTONS = listOf(
     CardPart("«Разобраться с Петровичем»", { it.reviewButton }, { c, v -> c.copy(reviewButton = v) }),
+    CardPart("«График» — данные вокруг события", { it.dataButton }, { c, v -> c.copy(dataButton = v) }),
     CardPart("«Подтвердить», «Ложная тревога», «Вернуть в работу»", { it.resolveButtons }, { c, v -> c.copy(resolveButtons = v) }),
 )
 private val REPEATS = listOf<Pair<Int?, String>>(null to "Всегда", 1 to "1 ч", 3 to "3 ч", 6 to "6 ч", 12 to "12 ч")

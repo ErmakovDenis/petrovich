@@ -62,9 +62,13 @@ class CardSettings(CamelModel):
     source: bool = False
     # Кто и когда принял решение.
     resolved_by: bool = True
+    # «Проверено повторно»: нет ли пропусков в данных вокруг события и работал ли двигатель (макет 3).
+    recheck: bool = True
     review_button: bool = True
     # «Подтвердить», «Ложная тревога», «Вернуть в работу».
     resolve_buttons: bool = True
+    # «Показать данные»: график параметра вокруг события (макет 6).
+    data_button: bool = True
 
 
 # Время суток «ЧЧ:ММ».
@@ -250,6 +254,8 @@ class DailyReport(CamelModel):
     open: int
     # По типу события, сначала самые частые; в группе — не больше нескольких событий.
     groups: list[ReportGroup] = Field(default_factory=list)
+    # Аналитика стенда (predictive_antifraud) сейчас не отвечает — в докладе только события по правилам.
+    analytics_unavailable: bool = False
 
 
 class NamedCount(CamelModel):

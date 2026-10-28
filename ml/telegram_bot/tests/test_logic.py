@@ -1,12 +1,15 @@
 """Сценарии бота по макетам без Telegram и без стенда: подставной стенд в памяти."""
 
 import asyncio
-from datetime import UTC, datetime
+import io
+from datetime import UTC, datetime, timedelta
+
+from openpyxl import load_workbook
 
 import pytest
 
 from telegram_bot import texts as T
-from telegram_bot.logic import Petrovich, next_limit, next_quiet, toggle_kind, toggle_vehicle
+from telegram_bot.logic import Petrovich, data_hours, next_limit, next_quiet, toggle_kind, toggle_vehicle, vehicle_groups
 from telegram_bot.refs import Refs
 from telegram_bot.stand import StandError
 
@@ -19,7 +22,7 @@ ANOMALY_ID = "rule|overheat|veh-2|TemperatureCOOL|2026-09-16T06:40Z"
 
 def anomaly(**extra) -> dict:
     return {"id": ANOMALY_ID, "vehicleId": "veh-2", "vehicleName": "Scania R450 К417АУ96", "severity": "CRITICAL",
-            "title": "Перегрев двигателя", "eventTime": "2026-09-16T11:40",
+            "title": "Перегрев двигателя", "eventTime": "2026-09-16T11:40", "parameterName": "TemperatureCOOL",
             "description": "Температура охлаждающей жидкости 111,7 °C (норма до 100 °C)", **extra}
 
 
@@ -55,6 +58,16 @@ class FakeStand:
         self.outbox_data = {"notices": [], "messages": []}
         self.pair_titles: list[str | None] = []
         self.chat_error: StandError | None = None
+        self.telemetry_calls: list = []
+        self.telemetry_gap = True
+        self.vehicles = [{"id": "veh-1", "name": "КАМАЗ 43118"}, {"id": "veh-2", "name": "Scania R450"}]
+        self.events_calls: list = []
+        self.export_items = [
+            anomaly(),
+            anomaly(id="e2", vehicleId="veh-2", eventTime="2026-09-15T08:00", resolution="FALSE_ALARM",
+                    falseAlarmReason="Ошибка датчика", resolvedBy="ivanov", resolvedAt=1_789_540_860_000, value=111.7),
+            anomaly(id="e3", vehicleId="veh-2", eventTime="2026-07-01T08:00"),  # раньше периода — не попадает
+        ]
         self.lists = {"subscribedOnly": False, "minSeverity": "INFO", "periodHours": None, "pageSize": 10,
                       "order": "newest"}
 
@@ -77,7 +90,7 @@ class FakeStand:
         self._linked()
         return {"chatId": str(chat_id), "schemaId": "s-1", "schemaName": "Колонна <1>", "userName": "ivanov",
                 "utcOffsetMinutes": OFFSET, "subscription": dict(self.subscription), "linkedAt": 0,
-                "vehicles": [{"id": "veh-1", "name": "КАМАЗ 43118"}, {"id": "veh-2", "name": "Scania R450"}],
+                "vehicles": self.vehicles,
                 "vehiclesError": None}
 
     async def set_subscription(self, chat_id, sub):
@@ -92,6 +105,24 @@ class FakeStand:
         self._linked()
         items = [a for a in self.items.values() if not a.get("resolution")]
         return {"total": len(items), "items": items[:limit or 10], "lists": self.lists}
+
+    async def telemetry(self, chat_id, vehicle_id, start, end, offset):
+        self._linked()
+        self.telemetry_calls.append((vehicle_id, start, end))
+        times = [start + timedelta(minutes=30 * i) for i in range(int((end - start).total_seconds() // 1800) + 1)]
+        values = [90.0 + i for i in range(len(times))]
+        if self.telemetry_gap:
+            values[1] = None
+        return {"tables": {"ENGINE": {"category": "ENGINE", "timestamps": [t.isoformat() for t in times], "columns": [
+            {"parameter": {"name": "TemperatureCOOL", "caption": "Температура ОЖ", "unit": "°C", "category": "ENGINE"},
+             "values": values},
+            {"parameter": {"name": "Rotation", "caption": "Обороты", "unit": "об/мин", "category": "ENGINE"},
+             "values": [1744.0] * len(times)}]}}}
+
+    async def events(self, chat_id, start, end, offset):
+        self._linked()
+        self.events_calls.append((start, end))
+        return self.export_items
 
     async def report(self, chat_id, kind="daily"):
         self._linked()
@@ -187,6 +218,7 @@ def test_start_with_code_greets_and_shows_menu(bot):
 
 def test_notice_card_with_memory(bot, stand):
     stand.linked = True
+    stand.telemetry_gap = False
     stand.outbox_data = {"notices": [{"chatId": str(CHAT), "anomaly": anomaly(), "utcOffsetMinutes": OFFSET,
                                       "previous": ["2026-09-15T15:40"]}],
                          "messages": [{"chatId": str(CHAT), "text": "И ещё 2 события ждут решения — /problems"}]}
@@ -197,8 +229,11 @@ def test_notice_card_with_memory(bot, stand):
         "Перегрев двигателя в 11:40.",
         "Температура охлаждающей жидкости 111,7 °C (норма до 100 °C).",
         "Петрович помнит: на этой машине такое уже было 15 сентября в 15:40.",
+        "✓ Проверено повторно: данные без пропусков, двигатель работал (1\u00a0744 об/мин).",
     ]
-    assert [[b.text for b in row] for row in card.buttons] == [["Разобраться с Петровичем"],
+    # Повторная проверка — ±30 минут вокруг 11:40, но не позже «сейчас» (12:00).
+    assert stand.telemetry_calls == [("veh-2", datetime(2026, 9, 16, 11, 10), datetime(2026, 9, 16, 12, 0))]
+    assert [[b.text for b in row] for row in card.buttons] == [["Разобраться с Петровичем"], ["График за ±3 часа"],
                                                                 ["Подтвердить", "Ложная тревога"]]
     assert more.text == "И ещё 2 события ждут решения — /problems"
 
@@ -212,9 +247,10 @@ def test_false_alarm_with_reason_and_return_to_work(bot, stand):
     answer = press(bot, reasons.buttons[2][0].data)
     [done] = answer.replies
     assert answer.toast == "Отмечено: ложная тревога" and done.edit
-    assert "<b>Ложная тревога · Уже известно</b>\nОтметил: ivanov, 11:41. Решение видно всем, в том числе в приложении." \
+    assert "<b>Ложная тревога · Уже известно</b>\nScania R450 К417АУ96, перегрев двигателя в 11:40.\n" \
+           "Отметил: ivanov, 11:41. Решение видно всем, в том числе в приложении." \
         in done.text
-    assert [b.text for b in done.buttons[1]] == ["Вернуть в работу"]
+    assert [b.text for b in done.buttons[-1]] == ["Вернуть в работу"]
     [back] = press(bot, f"re:{key}").replies
     assert "Ложная тревога" not in back.text and stand.items[ANOMALY_ID]["resolution"] is None
 
@@ -253,7 +289,8 @@ def test_review_asks_assistant_about_the_event(bot, stand):
     assert intro.text.startswith("<b>Разбор</b> · Перегрев двигателя · Scania")
     assert stand.chats[-1] == {"messages": [{"role": "user", "content": T.REVIEW_FIRST_QUESTION}],
                                "anomalyId": ANOMALY_ID}
-    assert [b.text for row in reply.buttons for b in row] == ["Написать письмо", "Подтвердить", "Ложная тревога",
+    assert [b.text for row in reply.buttons for b in row] == ["Написать письмо", "Показать данные", "Подтвердить",
+                                                              "Ложная тревога",
                                                               "Завершить разбор"]
     # Вопрос в разборе идёт с историей и id события; решение из разбора — новой карточкой, ответ не стирается.
     run(bot.text(CHAT, "А вчера?"))
@@ -298,7 +335,7 @@ def test_failed_question_is_not_kept_in_history(bot, stand):
 def test_card_follows_chat_settings(bot, stand):
     stand.linked = True
     card = {"description": False, "memory": False, "parameter": True, "source": True, "resolvedBy": True,
-            "reviewButton": False, "resolveButtons": True}
+            "reviewButton": False, "resolveButtons": True, "dataButton": False}
     stand.outbox_data = {"notices": [{"chatId": str(CHAT), "utcOffsetMinutes": OFFSET, "repeats": 2, "card": card,
                                       "previous": ["2026-09-15T15:40"],
                                       "anomaly": anomaly(value=111.7, parameterCaption="Температура ОЖ",
@@ -372,6 +409,117 @@ def test_report_settings_in_bot(bot, stand):
     [r] = press(bot, "s:rw").replies
     assert (stand.subscription["reports"]["weeklyDay"], stand.subscription["reports"]["weeklyTime"]) == (5, "17:00")
     assert "Доклад: выкл, по будням" in r.text and "Недельная сводка: пятница, 17:00" in r.text
+
+
+# --- «Откуда цифра» (макет 6) и выгрузка (макет 10) ---
+
+
+def test_data_around_event(bot, stand):
+    stand.linked = True
+    card = run(bot._card(CHAT, anomaly(), OFFSET))
+    assert card.buttons[1][0].text == "График за ±3 часа"
+    summary, chart = press(bot, card.buttons[1][0].data).replies
+    # ±12 часов вокруг 11:40, но не позже «сейчас» (12:00).
+    # Перегрев — ±3 часа вокруг 11:40, но не позже «сейчас» (12:00); топливо — ±12 часов.
+    assert stand.telemetry_calls == [("veh-2", datetime(2026, 9, 16, 8, 40), datetime(2026, 9, 16, 12, 0))]
+    assert data_hours({"category": "FUEL"}) == 12
+    assert summary.text.startswith("Температура ОЖ с 08:40 16 сентября до 12:00 16 сентября: от 90 до 96 °C, "
+                                   "в среднем 93,3 °C, сейчас 96 °C.")
+    assert "Событие: перегрев двигателя в 11:40 — Температура охлаждающей" in summary.text
+    assert chart.photo.startswith(b"\x89PNG")
+    assert "Красная точка — событие «Перегрев двигателя»" in chart.text
+    assert "интервалы 30 мин · данные по 6 из 7 интервалов" in chart.text
+    assert [b.text for b in chart.buttons[0]] == ["Таблица CSV", "Карточка события"]
+    [table] = press(bot, chart.buttons[0][0].data).replies
+    name, content = table.file
+    assert name == "dannye_TemperatureCOOL_16.09.2026.csv"
+    lines = content.decode("utf-8-sig").splitlines()
+    assert lines[:3] == ["Время;Температура ОЖ, °C", "16.09.2026 08:40;90,0", "16.09.2026 09:10;"]
+
+
+def test_export_to_excel(bot, stand):
+    stand.linked = True
+    menu = run(bot.text(CHAT, "Выгрузи события за неделю"))[0]
+    assert [b.data for row in menu.buttons for b in row] == ["x:d", "x:w", "x:m"]
+    summary, doc = press(bot, "x:d").replies
+    # Сутки до «сейчас» (12:00 16.09).
+    assert stand.events_calls == [(datetime(2026, 9, 15, 12, 0), datetime(2026, 9, 16, 12, 0))]
+    assert summary.text.splitlines() == [
+        "Готово. За 15–16 сентября — 1 событие по 1 машине из 2:", "перегрев двигателя — 1.",
+        "Решений по ним пока нет."]
+    name, content = doc.file
+    assert name == "sobytiya_15-16.09.xlsx" and doc.text == "Excel · 1 строка"
+    [summary, doc] = press(bot, "x:m").replies
+    assert "Подтверждено 0, ложных тревог 1, ждут решения 1." in summary.text
+    wb = load_workbook(io.BytesIO(doc.file[1]))
+    events = list(wb["События"].values)
+    assert events[0][:4] == ("Начало", "Машина", "Событие", "Важность") and len(events) == 3
+    assert events[1][1] == "Scania R450 К417АУ96" and events[1][7] == "Ложная тревога" and events[1][8] == "Ошибка датчика"
+    assert list(wb["По машинам"].values)[1:] == [("Scania R450", 2, 2, 1, "Перегрев двигателя"),
+                                                 ("КАМАЗ 43118", 0, 0, 0, None)]
+    [csv_doc] = press(bot, "xc:m").replies
+    assert csv_doc.file[0] == "sobytiya_17.08-16.09.csv"
+    assert csv_doc.file[1].decode("utf-8-sig").splitlines()[1].startswith("15.09.2026 08:00;Scania R450 К417АУ96")
+    [cars] = press(bot, "xv:m").replies
+    assert "• Scania R450 — 2, чаще всего перегрев двигателя; ждут решения 1" in cars.text
+    assert "Без событий — 1:\n• КАМАЗ 43118" in cars.text
+    assert press(bot, "x:zz").alert
+
+
+def test_group_report_pdf_and_excel(bot, stand):
+    stand.linked = True
+    stand.vehicles = [{"id": "veh-1", "name": "КАМАЗ 43118", "group": "Колонна №1"},
+                      {"id": "veh-2", "name": "Scania R450", "group": "Колонна №2"},
+                      {"id": "veh-3", "name": "Урал 4320", "group": "Колонна №2"}]
+    weekly = run(bot.report(CHAT, weekly=True))
+    assert [b.text for b in weekly.buttons[1]] == ["Отчёт по группе", "Сравнить недели"]
+    [choice] = press(bot, "gr:m").replies
+    assert choice.text == "Отчёт по какой группе машин? Период — за 17 августа – 16 сентября."
+    assert [b.text for row in choice.buttons for b in row] == ["Колонна №1 · 1", "Колонна №2 · 2", "Все машины · 3"]
+    [doc] = press(bot, choice.buttons[1][0].data).replies
+    name, content = doc.file
+    assert name == "otchet_kolonna-2_17.08-16.09.pdf" and content.startswith(b"%PDF")
+    assert doc.text == "Колонна №2: события и решения · PDF"
+    assert [b.text for b in doc.buttons[0]] == ["Excel", "Другой период"]
+    [xlsx] = press(bot, doc.buttons[0][0].data).replies
+    rows = list(load_workbook(io.BytesIO(xlsx.file[1]))["По машинам"].values)[1:]
+    assert [r[0] for r in rows] == ["Scania R450", "Урал 4320"]  # только машины группы
+    [periods] = press(bot, doc.buttons[0][1].data).replies
+    assert [b.data for row in periods.buttons for b in row] == ["gp:d:1", "gp:w:1", "gp:m:1"]
+    assert press(bot, "gp:m:7").alert
+    assert vehicle_groups([{"id": "a", "name": "A"}]) == []
+    assert T.slug("Колонна №1") == "kolonna-1"
+
+
+def test_compare_weeks(bot, stand):
+    stand.linked = True
+    stand.export_items = [
+        anomaly(id="w1", eventTime="2026-09-08T10:00"), anomaly(id="w2", eventTime="2026-09-09T10:00"),
+        anomaly(id="p1", eventTime="2026-09-02T10:00", vehicleName="КАМАЗ 43118", title="Слив топлива"),
+    ]
+    [r] = press(bot, "cw").replies
+    assert stand.events_calls[-1] == (datetime(2026, 8, 31), datetime(2026, 9, 14))
+    assert r.text.splitlines()[:2] == ["<b>Сравнение недель</b>",
+                                       "За 7–13 сентября: 2 события; за 31 августа – 6 сентября: 1 (+1)."]
+    assert "• Перегрев двигателя — 2 (было 0, +2)" in r.text and "• Слив топлива — 0 (было 1, −1)" in r.text
+
+
+def test_menu_and_analytics_note(bot, stand):
+    stand.linked = True
+    assert run(bot.text(CHAT, "Доклад сейчас"))[0].text.startswith("<b>Доклад за сутки</b>")
+    assert run(bot.text(CHAT, "Уведомления"))[0].text.startswith("<b>Настройки</b>")
+    note = T.daily_report({**DAILY, "analyticsUnavailable": True}, OFFSET, NOW_UTC)
+    assert note.endswith("\n\nПредиктивная проверка недоступна — выводы только по правилам.")
+
+
+def test_export_periods():
+    from telegram_bot.logic import export_period
+
+    wednesday = datetime(2026, 9, 16, 12, 30, 15)
+    assert export_period("w", wednesday) == (datetime(2026, 9, 7), datetime(2026, 9, 14))
+    assert T.period_label(*export_period("w", wednesday)) == "за 7–13 сентября"
+    assert T.period_file(*export_period("w", wednesday)) == "07-13.09"
+    assert T.period_label(datetime(2026, 8, 31), datetime(2026, 9, 7)) == "за 31 августа – 6 сентября"
 
 
 # --- списки и настройки (макет 11) ---

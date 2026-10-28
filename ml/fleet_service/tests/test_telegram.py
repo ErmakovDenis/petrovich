@@ -493,6 +493,7 @@ def test_daily_report_comes_once_at_its_time(client):
     [report] = pull_at(client, WEDNESDAY_10)["daily"]
     assert report["chatId"] == CHAT and report["since"] == "2026-09-15T10:00" and report["vehicles"] == 2
     assert report["total"] == 3 and report["open"] == 3
+    assert report["analyticsUnavailable"] is False
     [group] = report["groups"]
     assert group["title"] == "Перегрев двигателя" and group["count"] == 3
     assert [e["eventTime"] for e in group["items"]] == ["2026-09-16T08:30", "2026-09-16T07:30", "2026-09-16T06:30"]

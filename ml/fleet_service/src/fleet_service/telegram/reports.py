@@ -10,6 +10,7 @@
 """
 
 from collections import Counter
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 
 from ..config import Settings
@@ -38,9 +39,11 @@ def _due(local: datetime, at: str, sent_on: str | None) -> bool:
 
 
 class TelegramReports:
-    def __init__(self, settings: Settings, store: AnomalyRepository):
+    def __init__(self, settings: Settings, store: AnomalyRepository, analytics_ok: Callable[[], bool] = lambda: True):
+        """[analytics_ok] — отвечает ли сейчас аналитика (circuit breaker predictive закрыт)."""
         self._settings = settings
         self._store = store
+        self._analytics_ok = analytics_ok
 
     @staticmethod
     def due(link: Link, now_utc: datetime) -> tuple[bool, bool]:
@@ -91,6 +94,7 @@ class TelegramReports:
                             event_time=java_time(to_local(r.start_utc, offset)), resolved=r.resolution is not None)
                 for r in rs[:GROUP_ITEMS]
             ]) for rs in groups],
+            analytics_unavailable=not self._analytics_ok(),
         )
 
     async def weekly(self, link: Link, vehicles: list[Vehicle], now_utc: datetime) -> WeeklyReport:

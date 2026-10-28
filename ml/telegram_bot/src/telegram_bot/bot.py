@@ -12,6 +12,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     BotCommand,
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -34,12 +35,15 @@ COMMANDS = [
     BotCommand(command="park", description="Парк"),
     BotCommand(command="report", description="Доклад за сутки"),
     BotCommand(command="week", description="Сводка за неделю"),
+    BotCommand(command="export", description="Выгрузить события в Excel"),
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="new", description="Новый разговор"),
     BotCommand(command="help", description="Помощь"),
 ]
 MENU = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=T.WHATS_WRONG)], [KeyboardButton(text="Проблемы"), KeyboardButton(text="Настройки")]],
+    # Как в макете 2: вопрос, доклад сейчас и настройки уведомлений; остальное — в меню команд.
+    keyboard=[[KeyboardButton(text=T.WHATS_WRONG)],
+              [KeyboardButton(text="Доклад сейчас"), KeyboardButton(text="Уведомления")]],
     resize_keyboard=True, is_persistent=True, input_field_placeholder=T.ASK_PLACEHOLDER,
 )
 
@@ -53,7 +57,15 @@ def markup(reply: Reply) -> InlineKeyboardMarkup | ReplyKeyboardMarkup | None:
 
 
 async def send(bot: Bot, chat_id: int, reply: Reply) -> None:
-    await bot.send_message(chat_id, reply.text, reply_markup=markup(reply), disable_web_page_preview=True)
+    if reply.photo is not None:
+        await bot.send_photo(chat_id, BufferedInputFile(reply.photo, "chart.png"), caption=reply.text,
+                             reply_markup=markup(reply))
+    elif reply.file is not None:
+        name, content = reply.file
+        await bot.send_document(chat_id, BufferedInputFile(content, name), caption=reply.text,
+                                reply_markup=markup(reply))
+    else:
+        await bot.send_message(chat_id, reply.text, reply_markup=markup(reply), disable_web_page_preview=True)
 
 
 def chat_title(message: Message) -> str | None:
@@ -104,6 +116,10 @@ def build_router(logic: Petrovich) -> Router:
     async def week(message: Message) -> None:
         await deliver(message, [await logic.report(message.chat.id, weekly=True)])
 
+    @router.message(Command("export"))
+    async def export(message: Message) -> None:
+        await deliver(message, [logic.export_menu()])
+
     @router.message(Command("settings"))
     async def settings(message: Message) -> None:
         await deliver(message, [await logic.settings(message.chat.id)])
@@ -125,8 +141,9 @@ def build_router(logic: Petrovich) -> Router:
         if msg is None or not hasattr(msg, "chat"):
             await query.answer(T.STALE_BUTTON, show_alert=True)
             return
-        # Разбор и письмо — обращение к ассистенту и SMTP: сразу снимаем «часики» с кнопки.
-        slow = query.data.split(":", 1)[0] in ("rv", "rm")
+        # Разбор и письмо — обращение к ассистенту и SMTP, данные и выгрузка — к AutoGRAPH и хранилищу: сразу снимаем
+        # «часики» с кнопки.
+        slow = query.data.split(":", 1)[0] in ("rv", "rm", "dt", "dc", "x", "xc", "xv", "gp", "gx", "cw")
         if slow:
             await query.answer()
             async with ChatActionSender.typing(bot=query.bot, chat_id=msg.chat.id):

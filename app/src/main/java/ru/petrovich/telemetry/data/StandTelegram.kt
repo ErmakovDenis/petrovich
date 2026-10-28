@@ -47,8 +47,12 @@ data class TelegramCardSettings(
     val parameter: Boolean = false,
     val source: Boolean = false,
     val resolvedBy: Boolean = true,
+    /** «Проверено повторно»: пропуски в данных вокруг события и работал ли двигатель. */
+    val recheck: Boolean = true,
     val reviewButton: Boolean = true,
     val resolveButtons: Boolean = true,
+    /** «Показать данные»: график параметра вокруг события. */
+    val dataButton: Boolean = true,
 )
 
 /** Утренний доклад и недельная сводка в боте — по местному времени. */

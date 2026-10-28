@@ -426,7 +426,7 @@ vehicleName, kind, parameterName, title, eventTime, resolution?, reason?}]}`, н
   - `lists` `{subscribedOnly, minSeverity, periodHours, pageSize, order}` — списки бота: `GET /v1/telegram/me/problems`
     отдаёт ждущие решения уже отфильтрованными (без выключенных событий; только выбранные машины, не ниже важности,
     за период, сначала новые или критичные);
-  - `card` `{description, memory, parameter, source, resolvedBy, reviewButton, resolveButtons}` — что бот показывает в
+  - `card` `{description, memory, parameter, source, resolvedBy, recheck, reviewButton, resolveButtons, dataButton}` — что бот показывает в
     карточке; уходит с каждой карточкой выдачи (`Notice.card`);
   - `reports` `{daily, dailyTime, weekdaysOnly, whenEmpty, weekly, weeklyDay, weeklyTime}` — утренний доклад и недельная
     сводка (`telegram/reports.py`) по местному времени чата. Когда пришло время, они уходят с выдачей (`daily`,

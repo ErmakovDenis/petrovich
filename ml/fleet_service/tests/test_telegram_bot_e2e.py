@@ -48,7 +48,8 @@ def test_bot_end_to_end(client):  # noqa: F811
     key = card.buttons[0][0].data.split(":")[1]
     answer = call(bot.callback, CHAT_ID, f"fr:{key}:1", "")
     assert answer.toast == "Отмечено: ложная тревога"
-    assert "<b>Ложная тревога · Ошибка датчика</b>\nОтметил: Пётр" in answer.replies[0].text
+    assert answer.replies[0].text.startswith("<b>Ложная тревога · Ошибка датчика</b>\nУрал NEXT А001АА, перегрев")
+    assert "\nОтметил: Пётр, " in answer.replies[0].text
     problems = call(bot.problems, CHAT_ID)
     assert problems.text.startswith("<b>Ждут решения: 2</b>")
 

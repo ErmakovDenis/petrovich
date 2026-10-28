@@ -2,6 +2,7 @@
 пользователя чата (`ml/fleet_service`, api/telegram.py). Ответы — JSON стенда как есть (camelCase)."""
 
 import logging
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -79,6 +80,25 @@ class Stand:
     async def report(self, chat_id: int, kind: str = "daily") -> dict:
         """Доклад за сутки (daily) или сводка за прошлую неделю (weekly) сейчас."""
         return await self._call("GET", "/v1/telegram/me/report", chat_id, params={"kind": kind})
+
+    async def events(self, chat_id: int, start: datetime, end: datetime, offset: int, page: int = 500,
+                     most: int = 5000) -> list[dict]:
+        """Все события машин пользователя, пересекающиеся с периодом (местное время), с решениями — для выгрузки."""
+        items: list[dict] = []
+        while len(items) < most:
+            data = await self._call("GET", "/v1/anomalies", chat_id, params={
+                "utcOffsetMinutes": offset, "from": f"{start:%Y-%m-%dT%H:%M}", "to": f"{end:%Y-%m-%dT%H:%M}",
+                "limit": page, "offset": len(items)})
+            items += data["items"]
+            if len(items) >= data["total"] or not data["items"]:
+                break
+        return items
+
+    async def telemetry(self, chat_id: int, vehicle_id: str, start: datetime, end: datetime, offset: int) -> dict:
+        """VehicleTelemetry машины за период (местное время): интервалы и значения параметров."""
+        return await self._call("GET", "/v1/telemetry", chat_id, params={
+            "vehicleId": vehicle_id, "from": f"{start:%Y-%m-%dT%H:%M}", "to": f"{end:%Y-%m-%dT%H:%M}",
+            "utcOffsetMinutes": offset})
 
     async def anomaly(self, chat_id: int, anomaly_id: str, offset: int) -> dict:
         return await self._call("GET", f"/v1/anomalies/{_segment(anomaly_id)}", chat_id,

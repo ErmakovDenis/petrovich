@@ -35,7 +35,9 @@
           "source": false,
           "resolvedBy": true,
           "reviewButton": true,
-          "resolveButtons": false
+          "resolveButtons": false,
+          "dataButton": false,
+          "recheck": true
         },
         "reports": {
           "daily": true,
