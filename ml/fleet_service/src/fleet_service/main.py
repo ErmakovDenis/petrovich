@@ -47,6 +47,7 @@ from .store.repository import AnomalyRepository
 from .store.scan import ScanService
 from .telegram.links import TelegramLinks
 from .telegram.notify import TelegramNotifier
+from .telegram.reports import TelegramReports
 from .telegram.sessions import TelegramSessions
 from .telemetry.service import TelemetryService
 
@@ -140,7 +141,9 @@ def create_app(
         telegram_sessions = TelegramSessions(access, app.state.session_checker, autograph)
         app.state.telegram_links = telegram_links
         app.state.telegram_sessions = telegram_sessions
-        app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store)
+        app.state.telegram_reports = TelegramReports(settings, store)
+        app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store,
+                                                       app.state.telegram_reports)
         app.state.agent = Agent(
             llm or OpenRouterClient(settings, client, breakers["llm"]),
             tools if tools is not None else build_tools(settings, telemetry, checks, store, emails),

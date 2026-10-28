@@ -25,6 +25,9 @@ PAGE = 8
 PREVIOUS_MAX = 2000
 LIMITS = [3, 5, 10, None]
 QUIET = [(22, 7), (23, 7), (None, None)]
+# Время доклада по кругу в /settings (None — выключен) и день и время сводки; точнее — в приложении.
+DAILY_TIMES = ["07:00", "08:00", "09:00", "09:30", "10:00", None]
+WEEKLY = [(1, "09:30"), (5, "17:00"), None]
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,8 @@ class ChatState:
     title: str | None = None
     # Что показывать в карточке (настройки чата на стенде); None — ещё не знаем.
     card: dict | None = None
+    # «Разобрать по порядку» из утреннего доклада: id неразобранных событий доклада.
+    queue: list[str] = field(default_factory=list)
 
 
 def utc_now() -> datetime:
@@ -91,6 +96,29 @@ def next_limit(sub: dict) -> dict:
     current = sub.get("dailyLimit")
     i = LIMITS.index(current) if current in LIMITS else -1
     return {**sub, "dailyLimit": LIMITS[(i + 1) % len(LIMITS)]}
+
+
+def next_daily(sub: dict) -> dict:
+    """Время доклада по кругу; после последнего — выключен."""
+    r = sub.get("reports") or {}
+    current = r.get("dailyTime") if r.get("daily", True) else None
+    i = DAILY_TIMES.index(current) if current in DAILY_TIMES else -1
+    nxt = DAILY_TIMES[(i + 1) % len(DAILY_TIMES)]
+    return {**sub, "reports": {**r, "daily": nxt is not None, **({"dailyTime": nxt} if nxt else {})}}
+
+
+def next_weekly(sub: dict) -> dict:
+    r = sub.get("reports") or {}
+    current = (r.get("weeklyDay"), r.get("weeklyTime")) if r.get("weekly", True) else None
+    i = WEEKLY.index(current) if current in WEEKLY else -1
+    nxt = WEEKLY[(i + 1) % len(WEEKLY)]
+    return {**sub, "reports": {**r, "weekly": nxt is not None,
+                               **({"weeklyDay": nxt[0], "weeklyTime": nxt[1]} if nxt else {})}}
+
+
+def toggle_weekdays(sub: dict) -> dict:
+    r = sub.get("reports") or {}
+    return {**sub, "reports": {**r, "weekdaysOnly": not r.get("weekdaysOnly")}}
 
 
 def next_quiet(sub: dict) -> dict:
@@ -136,6 +164,8 @@ def settings_buttons(sub: dict) -> list[list[Button]]:
         [Button(f"Лимит: {limit} в день" if limit else "Лимит: нет", "s:lim"),
          Button(f"Тихие часы: {quiet:02d}–{sub.get('quietToHour'):02d}" if quiet is not None else "Тихие часы: выкл",
                 "s:q")],
+        [Button(f"Доклад: {T.daily_label(sub)}", "s:rt"), Button(f"Дни: {T.days_label(sub)}", "s:rd")],
+        [Button(f"Сводка: {T.weekly_label(sub, short=True)}", "s:rw")],
         [Button("Отключить бота", "s:off")],
     ]
 
@@ -245,6 +275,28 @@ class Petrovich:
             return await self._failed(chat_id, e)
         return Reply(T.park(me, data["items"], data["total"], data.get("lists")))
 
+    async def report(self, chat_id: int, weekly: bool = False) -> Reply:
+        """/report — доклад за сутки сейчас, /week — сводка за прошлую неделю."""
+        try:
+            offset = await self._offset(chat_id)
+            data = await self._stand.report(chat_id, "weekly" if weekly else "daily")
+        except StandError as e:
+            return await self._failed(chat_id, e)
+        return self._weekly(data) if weekly else self._daily(chat_id, data, offset)
+
+    def _daily(self, chat_id: int, data: dict, offset: int) -> Reply:
+        """Утренний доклад (макет 7); «Разобрать по порядку» — неразобранные события доклада."""
+        queue = [e["id"] for g in data["groups"] for e in g["items"] if not e["resolved"]]
+        self.state(chat_id).queue = queue
+        buttons = [[Button("Разобрать по порядку", "rq:0")]] if queue else []
+        buttons.append([Button("Открыть ленту", "pl")])
+        return Reply(T.daily_report(data, offset, self._clock()), buttons)
+
+    @staticmethod
+    def _weekly(data: dict) -> Reply:
+        """Недельная сводка (макет 8)."""
+        return Reply(T.weekly_report(data), [[Button("Незакрытые события", "pl")]] if data["open"] else None)
+
     async def settings(self, chat_id: int, edit: bool = False) -> Reply:
         try:
             me = await self._me(chat_id)
@@ -296,6 +348,10 @@ class Petrovich:
         action, _, rest = data.partition(":")
         if action == "s":
             return await self._settings_action(chat_id, rest)
+        if action == "pl":
+            return Answer([await self.problems(chat_id)])
+        if action == "rq":
+            return await self._next_in_queue(chat_id, rest)
         key, _, arg = rest.partition(":")
         value = self._refs.value(key)
         if value is None:
@@ -348,6 +404,23 @@ class Petrovich:
         except (ValueError, IndexError):
             pass
         return Answer(toast=T.STALE_BUTTON, alert=True)
+
+    async def _next_in_queue(self, chat_id: int, index: str) -> Answer:
+        """Следующее событие из утреннего доклада — новой карточкой, с кнопкой «Следующее»."""
+        queue = self.state(chat_id).queue
+        i = int(index) if index.isdigit() else -1
+        if not 0 <= i < len(queue):
+            return Answer(toast=T.STALE_BUTTON, alert=True)
+        try:
+            offset = await self._offset(chat_id)
+            a = await self._stand.anomaly(chat_id, queue[i], offset)
+        except StandError as e:
+            return Answer(toast=e.detail[:200], alert=True)
+        card = await self._card(chat_id, a, offset)
+        nav = Button(f"Следующее › ({i + 2} из {len(queue)})", f"rq:{i + 1}") if i + 1 < len(queue) else \
+            Button("Это последнее · открыть ленту", "pl")
+        card.buttons = (card.buttons or []) + [[nav]]
+        return Answer([card])
 
     async def _resolve(self, chat_id: int, anomaly_id: str, resolution: str | None, reason: str | None,
                        new_message: bool) -> Answer:
@@ -412,7 +485,8 @@ class Petrovich:
                 return Answer([self._events_view(sub)])
             changes = {"w": lambda s: {**s, "warnings": not s.get("warnings")},
                        "i": lambda s: {**s, "info": not s.get("info")},
-                       "lim": next_limit, "q": next_quiet}
+                       "lim": next_limit, "q": next_quiet, "rt": next_daily, "rd": toggle_weekdays,
+                       "rw": next_weekly}
             if op in changes:
                 me["subscription"] = (await self._stand.set_subscription(chat_id, changes[op](sub)))["subscription"]
                 return Answer([Reply(T.settings(me), settings_buttons(me["subscription"]), edit=True)])
@@ -472,6 +546,14 @@ class Petrovich:
                                                   repeats=n.get("repeats") or 0)))
         for m in data.get("messages") or []:
             out.append((int(m["chatId"]), Reply(T.h(m["text"]))))
+        for d in data.get("daily") or []:
+            chat_id = int(d["chatId"])
+            try:
+                out.append((chat_id, self._daily(chat_id, d, await self._offset(chat_id))))
+            except StandError as e:
+                log.warning("доклад не отправлен: %s", e.detail)
+        for w in data.get("weekly") or []:
+            out.append((int(w["chatId"]), self._weekly(w)))
         # Подключён из приложения по коду: здороваемся, как после /start по ссылке.
         for c in data.get("linked") or []:
             chat_id = int(c)

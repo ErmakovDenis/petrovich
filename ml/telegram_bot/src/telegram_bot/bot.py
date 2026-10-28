@@ -32,6 +32,8 @@ log = logging.getLogger(__name__)
 COMMANDS = [
     BotCommand(command="problems", description="Проблемы — ждут решения"),
     BotCommand(command="park", description="Парк"),
+    BotCommand(command="report", description="Доклад за сутки"),
+    BotCommand(command="week", description="Сводка за неделю"),
     BotCommand(command="settings", description="Настройки"),
     BotCommand(command="new", description="Новый разговор"),
     BotCommand(command="help", description="Помощь"),
@@ -93,6 +95,14 @@ def build_router(logic: Petrovich) -> Router:
     @router.message(Command("park"))
     async def park(message: Message) -> None:
         await deliver(message, [await logic.park(message.chat.id)])
+
+    @router.message(Command("report"))
+    async def report(message: Message) -> None:
+        await deliver(message, [await logic.report(message.chat.id)])
+
+    @router.message(Command("week"))
+    async def week(message: Message) -> None:
+        await deliver(message, [await logic.report(message.chat.id, weekly=True)])
 
     @router.message(Command("settings"))
     async def settings(message: Message) -> None:

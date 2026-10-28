@@ -23,12 +23,31 @@ def anomaly(**extra) -> dict:
             "description": "Температура охлаждающей жидкости 111,7 °C (норма до 100 °C)", **extra}
 
 
+DAILY = {"chatId": str(CHAT), "since": "2026-09-15T12:00", "vehicles": 10, "total": 3, "critical": 3, "open": 2,
+         "groups": [
+             {"title": "Резкое падение уровня топлива", "count": 2, "items": [
+                 {"id": ANOMALY_ID, "vehicleName": "КАМАЗ 43118", "severity": "CRITICAL",
+                  "eventTime": "2026-09-16T00:55", "resolved": False},
+                 {"id": "drop-2", "vehicleName": "Volvo FH 500", "severity": "CRITICAL",
+                  "eventTime": "2026-09-15T20:05", "resolved": True}]},
+             {"title": "Перегрев двигателя", "count": 7, "items": [
+                 {"id": "rule|overheat|veh-3|T|2026-09-15T10:40Z", "vehicleName": "Scania R450", "severity": "CRITICAL",
+                  "eventTime": "2026-09-15T15:40", "resolved": False}]}]}
+WEEKLY = {"chatId": str(CHAT), "weekFrom": "2026-09-07", "weekTo": "2026-09-13", "total": 36, "previousTotal": 33,
+          "kinds": [{"name": "Перегрев двигателя", "count": 18}, {"name": "Напряжение вне нормы", "count": 11}],
+          "confirmed": 0, "falseAlarms": 0, "open": 36,
+          "topVehicles": [{"name": "Scania R450 К417АУ96", "count": 9, "detail": "Перегрев двигателя"}],
+          "vehicles": 10, "quietVehicles": 3}
+
+
 class FakeStand:
     def __init__(self):
         self.linked = False
         self.codes = {"good-code"}
         self.items = {ANOMALY_ID: anomaly()}
         self.subscription = {"vehicleIds": None, "mutedKinds": [],
+                             "reports": {"daily": True, "dailyTime": "09:30", "weekdaysOnly": False, "weekly": True,
+                                         "weeklyDay": 1, "weeklyTime": "09:30", "whenEmpty": True},
                              "warnings": True, "info": False, "dailyLimit": 3, "quietFromHour": 22, "quietToHour": 7}
         self.chats: list[dict] = []
         self.chat_reply = {"reply": "В 11:40 температура поднялась до 111,7 °C.", "drafts": []}
@@ -73,6 +92,10 @@ class FakeStand:
         self._linked()
         items = [a for a in self.items.values() if not a.get("resolution")]
         return {"total": len(items), "items": items[:limit or 10], "lists": self.lists}
+
+    async def report(self, chat_id, kind="daily"):
+        self._linked()
+        return WEEKLY if kind == "weekly" else DAILY
 
     async def anomaly(self, chat_id, anomaly_id, offset):
         self._linked()
@@ -296,6 +319,59 @@ def test_problems_say_which_filter_is_on(bot, stand):
     assert "Фильтр: только мои машины, от предупреждений, за сутки, сначала критичные." in r.text
     stand.items = {}
     assert run(bot.problems(CHAT)).text.startswith("Всё в порядке")
+
+
+# --- утренний доклад и недельная сводка (макеты 7, 8) ---
+
+
+def test_daily_report_text_and_walk_through(bot, stand):
+    stand.linked = True
+    r = run(bot.report(CHAT))
+    assert r.text.splitlines()[:2] == [
+        "<b>Доклад за сутки</b>",  # 12:00 — уже не «доброе утро»
+        "С 12:00 15 сентября по 10 машинам найдено 3 события — все критичные; ждут решения 2.",
+    ]
+    assert "<b>Резкое падение уровня топлива — 2:</b>\n• КАМАЗ 43118, 00:55\n• Volvo FH 500, 15.09 в 20:05 ✓" in r.text
+    assert "• Scania R450, 15.09 в 15:40\n• и ещё 6" in r.text
+    assert [b.text for row in r.buttons for b in row] == ["Разобрать по порядку", "Открыть ленту"]
+    # По порядку — только неразобранные: КАМАЗ, затем Scania (её карточку стенд отдаёт по id).
+    stand.items["rule|overheat|veh-3|T|2026-09-15T10:40Z"] = anomaly(id="rule|overheat|veh-3|T|2026-09-15T10:40Z")
+    [first] = press(bot, "rq:0").replies
+    assert first.buttons[-1][0].text == "Следующее › (2 из 2)" and not first.edit
+    [last] = press(bot, "rq:1").replies
+    assert last.buttons[-1][0].data == "pl"
+    assert press(bot, "rq:5").alert
+    assert press(bot, "pl").replies[0].text.startswith("<b>Ждут решения")
+
+
+def test_reports_come_with_outbox(bot, stand):
+    stand.linked = True
+    stand.outbox_data = {"notices": [], "messages": [], "daily": [DAILY], "weekly": [WEEKLY]}
+    [(_, daily), (_, weekly)] = run(bot.outbox())
+    assert "Доклад за сутки" in daily.text
+    assert weekly.text.splitlines()[:4] == [
+        "<b>Сводка за неделю 7–13 сентября</b>",
+        "Событий: 36 (на прошлой неделе 33).",
+        "Перегрев двигателя — 18, напряжение вне нормы — 11.",
+        "Решений за неделю не принимали: ждут все 36.",
+    ]
+    assert "1. Scania R450 К417АУ96 — 9, перегрев двигателя." in weekly.text and "Без событий: 3 машины из 10." in weekly.text
+    assert weekly.buttons[0][0].text == "Незакрытые события"
+
+
+def test_report_settings_in_bot(bot, stand):
+    stand.linked = True
+    r = run(bot.settings(CHAT))
+    assert "Доклад: 09:30, каждый день" in r.text and "Недельная сводка: понедельник, 09:30" in r.text
+    press(bot, "s:rt")
+    assert stand.subscription["reports"]["dailyTime"] == "10:00"
+    press(bot, "s:rt")
+    assert stand.subscription["reports"]["daily"] is False
+    press(bot, "s:rd")
+    assert stand.subscription["reports"]["weekdaysOnly"] is True
+    [r] = press(bot, "s:rw").replies
+    assert (stand.subscription["reports"]["weeklyDay"], stand.subscription["reports"]["weeklyTime"]) == (5, "17:00")
+    assert "Доклад: выкл, по будням" in r.text and "Недельная сводка: пятница, 17:00" in r.text
 
 
 # --- списки и настройки (макет 11) ---

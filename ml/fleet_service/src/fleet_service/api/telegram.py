@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
@@ -10,6 +10,7 @@ from ..schemas.contract import Severity
 from ..schemas.telegram import (
     ChatProblems,
     ConnectRequest,
+    DailyReport,
     LinkRequest,
     LinkResponse,
     LinkView,
@@ -20,10 +21,12 @@ from ..schemas.telegram import (
     PairRequest,
     Subscription,
     TelegramChats,
+    WeeklyReport,
 )
 from ..store.repository import AnomalyFilter, AnomalyRepository
 from ..telegram.links import Link, TelegramLinks
 from ..telegram.notify import TelegramNotifier
+from ..telegram.reports import TelegramReports
 from ..telegram.sessions import NoAccess, TelegramSessions
 from ..telemetry.service import TelemetryService
 from .deps import (
@@ -231,6 +234,22 @@ async def problems(
         limit or lists.page_size, offset, critical_first=lists.order == "severity",
     )
     return ChatProblems(total=total, items=[r.to_api(chat.utc_offset_minutes) for r in records], lists=lists)
+
+
+@router.get("/me/report", response_model=DailyReport | WeeklyReport, response_model_by_alias=True)
+async def report(
+    request: Request, chat: Chat, sessions: Annotated[TelegramSessions, Depends(get_telegram_sessions)],
+    telemetry: Telemetry, kind: Annotated[Literal["daily", "weekly"], Query()] = "daily",
+) -> DailyReport | WeeklyReport:
+    """Бот: доклад за сутки (/report) или сводка за прошлую неделю (/week) сейчас, вне расписания."""
+    try:
+        vehicles = await telemetry.vehicles(await sessions.session(chat), chat.schema_id)
+    except NoAccess as e:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(e)) from e
+    reports: TelegramReports = request.app.state.telegram_reports
+    # Часы выдачи уведомлений — в тестах подставные.
+    now = datetime.fromtimestamp(_notifier(request).clock() / 1000, UTC).replace(tzinfo=None)
+    return await (reports.weekly if kind == "weekly" else reports.daily)(chat, vehicles, now)
 
 
 @router.put("/me/subscription", response_model=LinkView, response_model_by_alias=True)

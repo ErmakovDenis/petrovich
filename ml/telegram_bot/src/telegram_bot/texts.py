@@ -31,7 +31,8 @@ HELP = (
     "<b>Что я умею</b>\n"
     "/problems — события, которые ждут решения\n"
     "/park — машины и где есть неразобранное\n"
-    "/settings — что и по каким машинам присылать\n"
+    "/report — доклад за сутки, /week — сводка за прошлую неделю\n"
+    "/settings — что и по каким машинам присылать, когда доклад\n"
     "/new — начать разговор заново\n\n"
     "Можно просто спросить текстом: «Что у меня не так?», «Что с топливом у КАМАЗа за сутки?»"
 )
@@ -254,10 +255,97 @@ def settings(me: dict) -> str:
         f"Не больше {limit} в день, кроме критичных" if limit else "Без лимита в день",
         f"Тихие часы: {_hours(sub)}",
         f"Часовой пояс: {utc_offset(me['utcOffsetMinutes'])} (как в приложении)",
+        f"Доклад: {daily_label(sub)}, {days_label(sub)}",
+        f"Недельная сводка: {weekly_label(sub)}",
         f"Схема: «{h(me['schemaName'])}», {h(me['userName'])}",
         "",
         "Те же настройки — в приложении: Настройки → Telegram. Там же повторы, списки и вид карточки.",
     ]
+    return "\n".join(lines)
+
+
+WEEKDAYS = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+_WEEKDAYS_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def daily_label(sub: dict) -> str:
+    r = sub.get("reports") or {}
+    return r.get("dailyTime", "09:30") if r.get("daily", True) else "выкл"
+
+
+def days_label(sub: dict) -> str:
+    return "по будням" if (sub.get("reports") or {}).get("weekdaysOnly") else "каждый день"
+
+
+def weekly_label(sub: dict, short: bool = False) -> str:
+    r = sub.get("reports") or {}
+    if not r.get("weekly", True):
+        return "выкл"
+    day = (_WEEKDAYS_SHORT if short else WEEKDAYS)[r.get("weeklyDay", 1) - 1]
+    return f"{day}{'' if short else ','} {r.get('weeklyTime', '09:30')}"
+
+
+def _event_time(local_iso: str, today: date) -> str:
+    """«00:55» сегодня, иначе «15.09 в 20:05» — как в макете доклада."""
+    t = datetime.fromisoformat(local_iso)
+    return f"{t:%H:%M}" if t.date() == today else f"{t:%d.%m} в {t:%H:%M}"
+
+
+def daily_report(r: dict, offset: int, now_utc: datetime | None = None) -> str:
+    """Утренний доклад (макет 7): сколько событий за сутки, по типам, по каждому — машина и время."""
+    now = local_now(offset, now_utc)
+    since = datetime.fromisoformat(r["since"])
+    head = "Доброе утро! Доклад за сутки" if now.hour < 12 else "Доклад за сутки"
+    n, total = r["vehicles"], r["total"]
+    where = f"С {since:%H:%M} {day_month(since.date())} по {n} {plural(n, 'машине', 'машинам', 'машинам')}"
+    if total == 0:
+        return f"<b>{head}</b>\n{where} событий не найдено — всё спокойно."
+    found = f"{where} найдено {total} {plural(total, 'событие', 'события', 'событий')}"
+    critical = r["critical"]
+    if critical == total:
+        found += " — все критичные" if total > 1 else " — критичное"
+    elif critical:
+        found += f", из них критичных — {critical}"
+    left = r["open"]
+    state = ("все ждут решения" if total > 1 else "ждёт решения") if left == total else \
+        f"ждут решения {left}" if left else "все разобраны"
+    lines = [f"<b>{head}</b>", f"{found}; {state}."]
+    for g in r["groups"]:
+        lines += ["", f"<b>{h(g['title'])} — {g['count']}:</b>"]
+        for e in g["items"]:
+            mark = " ✓" if e["resolved"] else ""
+            lines.append(f"• {h(e['vehicleName'])}, {_event_time(e['eventTime'], now.date())}{mark}")
+        if g["count"] > len(g["items"]):
+            lines.append(f"• и ещё {g['count'] - len(g['items'])}")
+    return "\n".join(lines)
+
+
+def _week(r: dict) -> str:
+    a, b = date.fromisoformat(r["weekFrom"]), date.fromisoformat(r["weekTo"])
+    return f"{a.day}–{day_month(b)}" if a.month == b.month else f"{day_month(a)} – {day_month(b)}"
+
+
+def weekly_report(r: dict) -> str:
+    """Недельная сводка (макет 8): события против прошлой недели, частые типы, решения, машины."""
+    total = r["total"]
+    lines = [f"<b>Сводка за неделю {_week(r)}</b>",
+             f"Событий: {total} (на прошлой неделе {r['previousTotal']})."]
+    if total == 0:
+        lines.append("Неделя прошла спокойно.")
+        return "\n".join(lines)
+    lines.append(", ".join(f"{h(k['name'])} — {k['count']}" for k in r["kinds"]).capitalize() + ".")
+    decided = r["confirmed"] + r["falseAlarms"]
+    if decided == 0:
+        lines.append(f"Решений за неделю не принимали: ждут все {total}." if total > 1 else
+                     "Решений за неделю не принимали.")
+    else:
+        lines.append(f"Подтверждено {r['confirmed']}, ложных тревог {r['falseAlarms']}, ждут решения {r['open']}.")
+    if r["topVehicles"]:
+        lines += ["", "Чаще всего:"]
+        lines += [f"{i}. {h(v['name'])} — {v['count']}, {h((v.get('detail') or '').lower())}."
+                  for i, v in enumerate(r["topVehicles"], 1)]
+    q, n = r["quietVehicles"], r["vehicles"]
+    lines += ["", f"Без событий: {q} {plural(q, 'машина', 'машины', 'машин')} из {n}."]
     return "\n".join(lines)
 
 

@@ -216,6 +216,9 @@ telegram_links = Table(
     Column("access_warned_at", BigInteger),
     # Как чат называется в Telegram (@имя или имя пользователя) — чтобы узнать его в приложении.
     Column("title", String(200)),
+    # Местная дата (ISO), за которую ушли утренний доклад и недельная сводка: не чаще раза в день.
+    Column("daily_sent_on", String(10)),
+    Column("weekly_sent_on", String(10)),
     Index("ix_telegram_links_schema", "schema_id"),
 )
 

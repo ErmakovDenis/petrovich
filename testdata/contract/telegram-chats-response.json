@@ -36,6 +36,15 @@
           "resolvedBy": true,
           "reviewButton": true,
           "resolveButtons": false
+        },
+        "reports": {
+          "daily": true,
+          "dailyTime": "08:00",
+          "weekdaysOnly": true,
+          "whenEmpty": false,
+          "weekly": true,
+          "weeklyDay": 5,
+          "weeklyTime": "17:00"
         }
       },
       "linkedAt": 1789541700000,

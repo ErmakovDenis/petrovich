@@ -11,6 +11,7 @@
   Пропущенное по подписке потом не досылается (как уведомления приложения);
 - не больше FS_TELEGRAM_NOTIFY_MAX_PER_CHAT карточек за выдачу, остальные — одной строкой «ещё N».
 Нет доступа к AutoGRAPH — чат получает предупреждение не чаще раза в FS_TELEGRAM_ACCESS_WARNING_HOURS.
+Утренний доклад и недельная сводка уходят с той же выдачей, когда пришло их время (telegram/reports.py).
 """
 
 import asyncio
@@ -26,6 +27,7 @@ from ..schemas.telegram import ChatMessage, Notice, Outbox
 from ..store.repository import AnomalyFilter, AnomalyRepository, Record, to_local
 from ..telemetry.service import TelemetryService
 from .links import Link, TelegramLinks, Topic, now_ms
+from .reports import TelegramReports
 from .sessions import NoAccess, TelegramSessions
 
 log = logging.getLogger(__name__)
@@ -55,13 +57,15 @@ def _events(n: int) -> str:
 
 class TelegramNotifier:
     def __init__(self, settings: Settings, links: TelegramLinks, sessions: TelegramSessions,
-                 telemetry: TelemetryService, store: AnomalyRepository, clock: Callable[[], int] = now_ms):
+                 telemetry: TelemetryService, store: AnomalyRepository, reports: TelegramReports,
+                 clock: Callable[[], int] = now_ms):
         """[clock] — текущее время, epoch millis (в тестах — подставное)."""
         self._settings = settings
         self._links = links
         self._sessions = sessions
         self._telemetry = telemetry
         self._store = store
+        self._reports = reports
         self.clock = clock
         self._lock = asyncio.Lock()
         # Сообщения из запросов приложения (подключение по коду, отключение) — до следующей выдачи. Теряются при
@@ -105,9 +109,25 @@ class TelegramNotifier:
                 if link.access_warned_at is not None:
                     await self._links.set_access_warned(link.chat_id, None)
                 await self._chat(link, vehicles, now, out)
-            if out.notices or out.messages or out.linked:
-                log.info("telegram: к отправке карточек %d, сообщений %d", len(out.notices), len(out.messages))
+                await self._report(link, vehicles, now, out)
+            if out.notices or out.messages or out.linked or out.daily or out.weekly:
+                log.info("telegram: к отправке карточек %d, сообщений %d, докладов %d, сводок %d", len(out.notices),
+                         len(out.messages), len(out.daily), len(out.weekly))
             return out
+
+    async def _report(self, link: Link, vehicles: list[Vehicle], now: int, out: Outbox) -> None:
+        """Доклад и сводка, если пришло их время; день отмечается, даже если пустой доклад не нужен."""
+        now_utc = _utc(now)
+        daily, weekly = self._reports.due(link, now_utc)
+        today = self._reports.local_date(link, now_utc)
+        if daily:
+            report = await self._reports.daily(link, vehicles, now_utc)
+            if report.total or link.subscription.reports.when_empty:
+                out.daily.append(report)
+            await self._links.set_report_sent(link.chat_id, weekly=False, on=today)
+        if weekly:
+            out.weekly.append(await self._reports.weekly(link, vehicles, now_utc))
+            await self._links.set_report_sent(link.chat_id, weekly=True, on=today)
 
     async def _warn(self, link: Link, text: str, now: int, out: Outbox) -> None:
         every = self._settings.telegram_access_warning_hours * HOUR_MS

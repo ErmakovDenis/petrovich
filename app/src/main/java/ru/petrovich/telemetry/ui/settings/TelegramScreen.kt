@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +24,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -54,6 +57,7 @@ import ru.petrovich.telemetry.data.TELEGRAM_CATEGORIES
 import ru.petrovich.telemetry.data.TELEGRAM_KINDS
 import ru.petrovich.telemetry.data.TelegramCardSettings
 import ru.petrovich.telemetry.data.TelegramListSettings
+import ru.petrovich.telemetry.data.TelegramReportSettings
 import ru.petrovich.telemetry.data.TelegramChat
 import ru.petrovich.telemetry.data.TelegramChats
 import ru.petrovich.telemetry.data.TelegramSubscription
@@ -262,6 +266,7 @@ private fun ChatCard(chat: TelegramChat, vehicles: List<TelegramVehicle>, onChan
             Section("Машины", vehiclesSummary(sub, vehicles)) { VehiclesSettings(sub, vehicles, onChange) }
             Section("События", eventsSummary(sub)) { EventsSettings(sub, onChange) }
             Section("Когда присылать", whenSummary(sub)) { WhenSettings(sub, onChange) }
+            Section("Доклад и сводка", reportsSummary(sub.reports)) { ReportsSettings(sub, onChange) }
             Section("Списки «Проблемы» и «Парк»", listsSummary(sub.lists)) { ListsSettings(sub, onChange) }
             Section("Карточка события", cardSummary(sub.card)) { CardSettingsEditor(sub, onChange) }
             TextButton(onClick = onUnlink) { Text("Отключить этот чат") }
@@ -305,6 +310,43 @@ private fun quietLabel(sub: TelegramSubscription): String? {
     val to = sub.quietToHour ?: return null
     return if (from == to) null else "%02d–%02d".format(from, to)
 }
+
+private fun reportsSummary(r: TelegramReportSettings): String = listOf(
+    if (r.daily) "доклад в ${r.dailyTime}${if (r.weekdaysOnly) " по будням" else ""}" else "без доклада",
+    if (r.weekly) "сводка: ${WEEKDAYS[(r.weeklyDay - 1).coerceIn(0, 6)].second.lowercase()}, ${r.weeklyTime}" else "без сводки",
+).joinToString(" · ")
+
+@Composable
+private fun ReportsSettings(sub: TelegramSubscription, onChange: (TelegramSubscription) -> Unit) {
+    val r = sub.reports
+    fun set(next: TelegramReportSettings) = onChange(sub.copy(reports = next))
+    ToggleRow("Утренний доклад", "События за сутки по вашим машинам и событиям", r.daily) { set(r.copy(daily = it)) }
+    if (r.daily) {
+        TimeChips(r.dailyTime, DAILY_TIMES) { set(r.copy(dailyTime = it)) }
+        Choice("Дни", listOf(false to "Каждый день", true to "По будням"), r.weekdaysOnly) { set(r.copy(weekdaysOnly = it)) }
+        ToggleRow("Если событий не было", "Прислать короткое «всё спокойно»", r.whenEmpty) { set(r.copy(whenEmpty = it)) }
+    }
+    ToggleRow("Недельная сводка", "Итоги прошлой недели: события, решения, машины", r.weekly) { set(r.copy(weekly = it)) }
+    if (r.weekly) {
+        Choice("День", WEEKDAYS, r.weeklyDay) { set(r.copy(weeklyDay = it)) }
+        TimeChips(r.weeklyTime, DAILY_TIMES) { set(r.copy(weeklyTime = it)) }
+    }
+    Note("Время — по часовому поясу телефона. Доклад и сводку можно запросить и сразу: /report и /week в боте")
+}
+
+/** Время из готовых вариантов; если в боте выбрано другое — оно тоже в списке. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TimeChips(selected: String, options: List<String>, onSelect: (String) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        (options + selected).distinct().sorted().forEach { t ->
+            FilterChip(selected = t == selected, onClick = { onSelect(t) }, label = { Text(t) })
+        }
+    }
+}
+
+private val DAILY_TIMES = listOf("07:00", "08:00", "09:00", "09:30", "10:00", "12:00", "17:00", "18:00")
+private val WEEKDAYS = listOf(1 to "Пн", 2 to "Вт", 3 to "Ср", 4 to "Чт", 5 to "Пт", 6 to "Сб", 7 to "Вс")
 
 private fun listsSummary(lists: TelegramListSettings): String = listOfNotNull(
     if (lists.subscribedOnly) "только мои машины" else "все машины",

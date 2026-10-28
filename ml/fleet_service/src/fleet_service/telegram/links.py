@@ -59,6 +59,8 @@ class Link:
     linked_at: int
     access_warned_at: int | None
     title: str | None = None
+    daily_sent_on: str | None = None
+    weekly_sent_on: str | None = None
 
     @property
     def user_key(self) -> str:
@@ -71,6 +73,7 @@ class Link:
             utc_offset_minutes=row.utc_offset_minutes,
             subscription=Subscription.model_validate(json.loads(row.settings)),
             linked_at=row.linked_at, access_warned_at=row.access_warned_at, title=row.title,
+            daily_sent_on=row.daily_sent_on, weekly_sent_on=row.weekly_sent_on,
         )
 
     def view(self) -> LinkView:
@@ -193,6 +196,12 @@ class TelegramLinks:
     async def set_access_warned(self, chat_id: str, at: int | None) -> None:
         await self._run(lambda conn: conn.execute(
             update(L).where(L.c.chat_id == chat_id).values(access_warned_at=at)), write=True)
+
+    async def set_report_sent(self, chat_id: str, weekly: bool, on: str) -> None:
+        """Доклад (или сводка) за местную дату [on] ушёл в чат."""
+        column = "weekly_sent_on" if weekly else "daily_sent_on"
+        await self._run(lambda conn: conn.execute(
+            update(L).where(L.c.chat_id == chat_id).values({column: on})), write=True)
 
     # --- уведомления ---
 

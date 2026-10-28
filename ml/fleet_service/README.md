@@ -209,6 +209,7 @@ docker compose exec -e FS_EVAL_API_KEY=<ключ> fleet_service python -m fleet_
 | GET / DELETE | `/v1/telegram/me` | бот: подключение чата, подписка и машины / отключить чат |
 | PUT | `/v1/telegram/me/subscription` | бот: что и по каким машинам присылать в чат |
 | GET | `/v1/telegram/me/problems?limit&offset` | бот: ждущие решения по настройкам списков чата |
+| GET | `/v1/telegram/me/report?kind=daily\|weekly` | бот: доклад за сутки или сводка за прошлую неделю сейчас |
 
 Все `/v1/*` требуют заголовков `Authorization: Bearer <токен сессии AutoGRAPH>` и `X-Schema-Id`. Приложение
 передаёт ещё `X-User-Name` — логин AutoGRAPH (UTF-8 в URL-кодировке, без пароля): стенд записывает его как автора
@@ -426,9 +427,15 @@ vehicleName, kind, parameterName, title, eventTime, resolution?, reason?}]}`, н
     отдаёт ждущие решения уже отфильтрованными (без выключенных событий; только выбранные машины, не ниже важности,
     за период, сначала новые или критичные);
   - `card` `{description, memory, parameter, source, resolvedBy, reviewButton, resolveButtons}` — что бот показывает в
-    карточке; уходит с каждой карточкой выдачи (`Notice.card`).
+    карточке; уходит с каждой карточкой выдачи (`Notice.card`);
+  - `reports` `{daily, dailyTime, weekdaysOnly, whenEmpty, weekly, weeklyDay, weeklyTime}` — утренний доклад и недельная
+    сводка (`telegram/reports.py`) по местному времени чата. Когда пришло время, они уходят с выдачей (`daily`,
+    `weekly` в outbox), не чаще раза в день (`telegram_links.daily_sent_on` / `weekly_sent_on`). Если выдача опоздала
+    больше чем на 3 часа, за этот день не присылаются. Состав — как у уведомлений: выбранные машины, не выключенные
+    события, важность по подписке. Доклад — события, начавшиеся за сутки, по типам. Сводка — прошлая неделя пн–вс
+    против позапрошлой: частые типы, решения, машины.
 - **Уведомления** (`telegram/notify.py`). `POST /v1/telegram/bot/outbox` → `{notices: [{chatId, anomaly, previous,
-  utcOffsetMinutes}], messages: [{chatId, text}], linked: [chatId]}`. Это открытые события машин, видимых пользователю и выбранных в
+  utcOffsetMinutes, repeats, card}], messages: [{chatId, text}], linked: [chatId], daily: [...], weekly: [...]}`. Это открытые события машин, видимых пользователю и выбранных в
   подписке, найденные после подключения и не раньше `FS_TELEGRAM_NOTIFY_MAX_AGE_HOURS`. «Критично» приходит всегда,
   остальное — если включено, вне тихих часов и в пределах лимита на местные сутки. Решение «отправить или пропустить»
   записывается в `telegram_notifications`: событие уходит в чат один раз, пропущенное не досылается. Больше

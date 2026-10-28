@@ -51,6 +51,21 @@ data class TelegramCardSettings(
     val resolveButtons: Boolean = true,
 )
 
+/** Утренний доклад и недельная сводка в боте — по местному времени. */
+@Serializable
+data class TelegramReportSettings(
+    val daily: Boolean = true,
+    /** «ЧЧ:ММ». */
+    val dailyTime: String = "09:30",
+    val weekdaysOnly: Boolean = false,
+    /** Присылать доклад, даже если за сутки событий не было. */
+    val whenEmpty: Boolean = true,
+    val weekly: Boolean = true,
+    /** 1 — понедельник … 7 — воскресенье. */
+    val weeklyDay: Int = 1,
+    val weeklyTime: String = "09:30",
+)
+
 /**
  * Настройки чата: что и по каким машинам присылать, как показывать списки и карточки. «Критично» по выбранным машинам
  * приходит всегда, кроме выключенных событий ([mutedKinds]).
@@ -72,6 +87,7 @@ data class TelegramSubscription(
     val repeatHours: Int? = null,
     val lists: TelegramListSettings = TelegramListSettings(),
     val card: TelegramCardSettings = TelegramCardSettings(),
+    val reports: TelegramReportSettings = TelegramReportSettings(),
 )
 
 /** Группы событий на экране — как MetricCategory стенда. */

@@ -80,6 +80,8 @@ class StandTelegramTest {
         assertEquals(true, sub.lists.subscribedOnly)
         assertEquals("severity", sub.lists.order)
         assertEquals(false, sub.card.resolveButtons)
+        assertEquals("08:00", sub.reports.dailyTime)
+        assertEquals(5, sub.reports.weeklyDay)
         assertEquals(listOf("КАМАЗ 43118", "Scania R450"), chats.vehicles.map { it.name })
     }
 
@@ -96,7 +98,9 @@ class StandTelegramTest {
                     """"dailyLimit":null,"quietFromHour":null,"quietToHour":null,"mutedKinds":[],"repeatHours":null,""" +
                     """"lists":{"subscribedOnly":false,"minSeverity":"INFO","periodHours":null,"pageSize":10,"order":"newest"},""" +
                     """"card":{"description":true,"memory":true,"parameter":false,"source":false,"resolvedBy":true,""" +
-                    """"reviewButton":true,"resolveButtons":true}}""",
+                    """"reviewButton":true,"resolveButtons":true},""" +
+                    """"reports":{"daily":true,"dailyTime":"09:30","weekdaysOnly":false,"whenEmpty":true,"weekly":true,""" +
+                    """"weeklyDay":1,"weeklyTime":"09:30"}}""",
             ),
             Json.parseToJsonElement(request.body.readUtf8()),
         )

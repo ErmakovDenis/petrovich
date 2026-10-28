@@ -76,6 +76,10 @@ class Stand:
         return await self._call("GET", "/v1/telegram/me/problems", chat_id,
                                 params={"limit": limit} if limit is not None else None)
 
+    async def report(self, chat_id: int, kind: str = "daily") -> dict:
+        """Доклад за сутки (daily) или сводка за прошлую неделю (weekly) сейчас."""
+        return await self._call("GET", "/v1/telegram/me/report", chat_id, params={"kind": kind})
+
     async def anomaly(self, chat_id: int, anomaly_id: str, offset: int) -> dict:
         return await self._call("GET", f"/v1/anomalies/{_segment(anomaly_id)}", chat_id,
                                 params={"utcOffsetMinutes": offset})

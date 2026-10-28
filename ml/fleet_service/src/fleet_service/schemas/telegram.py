@@ -1,7 +1,7 @@
 """Telegram-бот: подключение и настройки из приложения (`/v1/telegram/link`, `/pair`, `/chats`) и запросы бота
 (`/v1/telegram/bot/*`, `/v1/telegram/me`). Приложение: data/StandTelegram.kt; бот: ml/telegram_bot."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
@@ -67,6 +67,25 @@ class CardSettings(CamelModel):
     resolve_buttons: bool = True
 
 
+# Время суток «ЧЧ:ММ».
+HHMM = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
+
+
+class ReportSettings(CamelModel):
+    """Утренний доклад и недельная сводка (макеты 7, 8) — по местному времени пользователя чата."""
+
+    daily: bool = True
+    daily_time: HHMM = "09:30"
+    # Только по будням (пн–пт).
+    weekdays_only: bool = False
+    # Присылать доклад, даже если за сутки событий не было («всё спокойно»).
+    when_empty: bool = True
+    weekly: bool = True
+    # День недели сводки: 1 — понедельник … 7 — воскресенье.
+    weekly_day: int = Field(1, ge=1, le=7)
+    weekly_time: HHMM = "09:30"
+
+
 class Subscription(CamelModel):
     """Настройки чата: что и по каким машинам присылать, как показывать списки и карточки. «Критично» по выбранным
     машинам приходит всегда, кроме выключенных событий (muted_kinds). Одни и те же настройки — в боте (/settings) и в
@@ -87,6 +106,7 @@ class Subscription(CamelModel):
     repeat_hours: int | None = Field(None, ge=1, le=48)
     lists: ListSettings = Field(default_factory=ListSettings)
     card: CardSettings = Field(default_factory=CardSettings)
+    reports: ReportSettings = Field(default_factory=ReportSettings)
 
     @field_validator("vehicle_ids")
     @classmethod
@@ -201,8 +221,66 @@ class ChatMessage(CamelModel):
     text: str
 
 
+class ReportEvent(CamelModel):
+    id: str
+    vehicle_name: str
+    severity: Severity
+    # Начало события, местное время ISO.
+    event_time: str
+    resolved: bool
+
+
+class ReportGroup(CamelModel):
+    """События одного типа в докладе: сначала новые."""
+
+    title: str
+    count: int
+    items: list[ReportEvent]
+
+
+class DailyReport(CamelModel):
+    """Утренний доклад (макет 7): события по подписке чата за сутки до момента доклада."""
+
+    chat_id: str
+    # Начало периода, местное время ISO.
+    since: str
+    vehicles: int
+    total: int
+    critical: int
+    open: int
+    # По типу события, сначала самые частые; в группе — не больше нескольких событий.
+    groups: list[ReportGroup] = Field(default_factory=list)
+
+
+class NamedCount(CamelModel):
+    name: str
+    count: int
+    # Машина: самое частое событие на ней.
+    detail: str | None = None
+
+
+class WeeklyReport(CamelModel):
+    """Недельная сводка (макет 8) за прошлую неделю пн–вс по подписке чата."""
+
+    chat_id: str
+    # Понедельник и воскресенье недели, местные даты ISO.
+    week_from: str
+    week_to: str
+    total: int
+    previous_total: int
+    kinds: list[NamedCount] = Field(default_factory=list)
+    confirmed: int
+    false_alarms: int
+    open: int
+    top_vehicles: list[NamedCount] = Field(default_factory=list)
+    vehicles: int
+    quiet_vehicles: int
+
+
 class Outbox(CamelModel):
     notices: list[Notice] = Field(default_factory=list)
     messages: list[ChatMessage] = Field(default_factory=list)
+    daily: list[DailyReport] = Field(default_factory=list)
+    weekly: list[WeeklyReport] = Field(default_factory=list)
     # Чаты, подключённые из приложения по коду: бот здоровается в них (как после /start по ссылке).
     linked: list[str] = Field(default_factory=list)

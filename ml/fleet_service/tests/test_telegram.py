@@ -312,7 +312,7 @@ def test_chats_when_bot_is_off(make_client):
 def test_new_events_go_to_chat_once(client):
     grant(client)
     connect(client)
-    assert outbox(client) == {"notices": [], "messages": [], "linked": []}
+    assert (outbox(client)["notices"], outbox(client)["messages"]) == ([], [])
     scan(client)
     out = outbox(client)
     notices = out["notices"]
@@ -382,7 +382,7 @@ def test_too_many_events_are_summed_up(make_client):
         out = outbox(client)
         assert len(out["notices"]) == 1
         assert out["messages"] == [{"chatId": CHAT, "text": "И ещё 2 события ждут решения — /problems"}]
-        assert outbox(client) == {"notices": [], "messages": [], "linked": []}
+        assert (outbox(client)["notices"], outbox(client)["messages"]) == ([], [])
 
 
 def test_lost_access_is_reported_once(client, fakes):
@@ -464,4 +464,98 @@ def test_problems_follow_list_settings(client):
     # Выключенное событие не показывается и без «только выбранные машины».
     subscribe(client, vehicleIds=None, mutedKinds=["overheat"])
     assert problems(subscribedOnly=False)["total"] == 0
+
+
+# --- утренний доклад и недельная сводка (макеты 7, 8) ---
+
+
+def at_utc(dt: datetime) -> int:
+    return int(dt.replace(tzinfo=UTC).timestamp() * 1000)
+
+
+def pull_at(client, dt_utc: datetime) -> dict:
+    client.app.state.telegram_notifier.clock = lambda: at_utc(dt_utc)
+    r = client.post("/v1/telegram/bot/outbox", headers=BOT)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+# 16.09.2026 — среда; 10:00 по местному времени (UTC+5).
+WEDNESDAY_10 = datetime(2026, 9, 16, 5, 0)
+
+
+def test_daily_report_comes_once_at_its_time(client):
+    grant(client)
+    connect(client)
+    scan(client)
+    # 09:00 — рано.
+    assert pull_at(client, WEDNESDAY_10 - timedelta(hours=1))["daily"] == []
+    [report] = pull_at(client, WEDNESDAY_10)["daily"]
+    assert report["chatId"] == CHAT and report["since"] == "2026-09-15T10:00" and report["vehicles"] == 2
+    assert report["total"] == 3 and report["open"] == 3
+    [group] = report["groups"]
+    assert group["title"] == "Перегрев двигателя" and group["count"] == 3
+    assert [e["eventTime"] for e in group["items"]] == ["2026-09-16T08:30", "2026-09-16T07:30", "2026-09-16T06:30"]
+    # Сегодня уже был; завтра — снова.
+    assert pull_at(client, WEDNESDAY_10 + timedelta(minutes=30))["daily"] == []
+    assert len(pull_at(client, WEDNESDAY_10 + timedelta(days=1))["daily"]) == 1
+
+
+def test_late_and_switched_off_reports_are_not_sent(client):
+    grant(client)
+    connect(client)
+    # Больше трёх часов после срока — за этот день не присылаем.
+    assert pull_at(client, WEDNESDAY_10 + timedelta(hours=3))["daily"] == []
+    current = client.get("/v1/telegram/me", headers=chat()).json()["subscription"]
+    subscribe(client, reports={**current["reports"], "daily": False})
+    assert pull_at(client, WEDNESDAY_10 + timedelta(days=1))["daily"] == []
+    # Только будни: суббота 19.09 — без доклада.
+    subscribe(client, reports={**current["reports"], "weekdaysOnly": True, "dailyTime": "09:00"})
+    assert pull_at(client, datetime(2026, 9, 19, 4, 30))["daily"] == []
+    assert len(pull_at(client, datetime(2026, 9, 21, 4, 30))["daily"]) == 1
+    assert client.put("/v1/telegram/me/subscription", json={**current, "reports": {"dailyTime": "25:00"}},
+                      headers=chat()).status_code == 422
+
+
+def test_empty_report_only_if_wanted(client):
+    grant(client)
+    connect(client)
+    [report] = pull_at(client, WEDNESDAY_10)["daily"]
+    assert report["total"] == 0 and report["groups"] == []
+    current = client.get("/v1/telegram/me", headers=chat()).json()["subscription"]
+    subscribe(client, reports={**current["reports"], "whenEmpty": False})
+    assert pull_at(client, WEDNESDAY_10 + timedelta(days=1))["daily"] == []
+
+
+def test_weekly_summary_on_monday(client):
+    grant(client)
+    connect(client)
+    scan(client)
+    client.post(f"/v1/anomalies/{quote(scan_ids(client)[0], safe='')}/resolve", headers=chat(),
+                json={"resolution": "FALSE_ALARM", "reason": "Ошибка датчика", "utcOffsetMinutes": OFFSET})
+    monday = datetime(2026, 9, 21, 4, 40)  # 09:40 по местному времени
+    assert pull_at(client, monday - timedelta(days=1))["weekly"] == []
+    [week] = pull_at(client, monday)["weekly"]
+    assert (week["weekFrom"], week["weekTo"]) == ("2026-09-14", "2026-09-20")
+    assert (week["total"], week["previousTotal"], week["falseAlarms"], week["open"]) == (3, 0, 1, 2)
+    assert week["kinds"] == [{"name": "Перегрев двигателя", "count": 3, "detail": None}]
+    assert week["topVehicles"][0]["detail"] == "Перегрев двигателя"
+    assert (week["vehicles"], week["quietVehicles"]) == (2, 1)
+    assert pull_at(client, monday + timedelta(minutes=5))["weekly"] == []
+
+
+def test_report_on_demand(client):
+    grant(client)
+    connect(client)
+    scan(client)
+    client.app.state.telegram_notifier.clock = lambda: at_utc(WEDNESDAY_10)
+    r = client.get("/v1/telegram/me/report", headers=chat())
+    assert r.status_code == 200 and r.json()["total"] == 3
+    r = client.get("/v1/telegram/me/report?kind=weekly", headers=chat())
+    assert r.status_code == 200 and r.json()["weekFrom"] == "2026-09-07"
+    assert client.get("/v1/telegram/me/report", headers=chat("9999")).status_code == 401
+
+
+def scan_ids(client) -> list[str]:
+    return [a["id"] for a in client.get("/v1/anomalies?utcOffsetMinutes=300", headers=chat()).json()["items"]]
 
