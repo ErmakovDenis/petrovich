@@ -26,7 +26,7 @@ from .deps import (
     get_store,
     get_telemetry_service,
     require_session,
-    user_name,
+    acting_user_name,
 )
 from .errors import UNPROCESSABLE
 
@@ -36,7 +36,7 @@ User = Annotated[UserSession, Depends(require_session)]
 Store = Annotated[AnomalyRepository, Depends(get_store)]
 Telemetry = Annotated[TelemetryService, Depends(get_telemetry_service)]
 Scans = Annotated[ScanService, Depends(get_scan_service)]
-UserName = Annotated[str | None, Depends(user_name)]
+UserName = Annotated[str | None, Depends(acting_user_name)]
 Offset = Annotated[int, Query(alias="utcOffsetMinutes", ge=-14 * 60, le=14 * 60)]
 
 
@@ -131,3 +131,14 @@ async def resolve(
     if outcome is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Аномалия не найдена или недоступна этому пользователю")
     return outcome[0].to_api(request.utc_offset_minutes)
+
+
+@router.get("/{anomaly_id:path}", response_model=StoredAnomaly, response_model_by_alias=True)
+async def get_anomaly(anomaly_id: str, user: User, store: Store, telemetry: Telemetry, utc_offset_minutes: Offset) \
+        -> StoredAnomaly:
+    """Одна сохранённая аномалия с решением (карточка в Telegram-боте). id — одним сегментом в URL-кодировке."""
+    visible = {v.id for v in await telemetry.vehicles(user.session, user.schema_id)}
+    record = await store.get(user.schema_id, anomaly_id, visible)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Аномалия не найдена или недоступна этому пользователю")
+    return record.to_api(utc_offset_minutes)

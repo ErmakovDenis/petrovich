@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     DateTime,
     Engine,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     event,
+    false,
 )
 from sqlalchemy.engine import make_url
 
@@ -183,4 +185,63 @@ email_log = Table(
     Column("outcome", String(16), nullable=False),
     Column("error", Text),
     Index("ix_email_log_at", "at"),
+)
+
+# Telegram-бот: одноразовый код подключения, который приложение выдаёт для ссылки t.me/<бот>?start=<код>.
+# Хранится только хэш кода: код знают приложение пользователя и Telegram.
+telegram_link_codes = Table(
+    "telegram_link_codes",
+    metadata,
+    Column("code_hash", String(64), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    Column("schema_name", Text, nullable=False),
+    # Логин AutoGRAPH: бот работает по доступу фоновой проверки этого пользователя в этой схеме.
+    Column("user_name", String(200), nullable=False),
+    Column("utc_offset_minutes", Integer, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+)
+
+# Подключённые чаты Telegram: один чат — одна схема и один пользователь AutoGRAPH; подписки — JSON (telegram/links.py).
+telegram_links = Table(
+    "telegram_links",
+    metadata,
+    Column("chat_id", String(32), primary_key=True),
+    Column("schema_id", String(64), nullable=False),
+    Column("schema_name", Text, nullable=False),
+    Column("user_name", String(200), nullable=False),
+    Column("utc_offset_minutes", Integer, nullable=False),
+    Column("settings", Text, nullable=False),
+    Column("linked_at", BigInteger, nullable=False),
+    # Когда бот последний раз предупредил, что доступа к AutoGRAPH нет; NULL — доступ есть.
+    Column("access_warned_at", BigInteger),
+    # Как чат называется в Telegram (@имя или имя пользователя) — чтобы узнать его в приложении.
+    Column("title", String(200)),
+    Index("ix_telegram_links_schema", "schema_id"),
+)
+
+# Код подключения, который бот показывает в чате: пользователь вводит его в приложении (Telegram на другом устройстве).
+# Хранится только хэш кода.
+telegram_pair_codes = Table(
+    "telegram_pair_codes",
+    metadata,
+    Column("code_hash", String(64), primary_key=True),
+    Column("chat_id", String(32), nullable=False),
+    Column("title", String(200)),
+    Column("expires_at", BigInteger, nullable=False),
+    Index("ix_telegram_pair_codes_chat", "chat_id"),
+)
+
+# Какие аномалии уже ушли в чат (delivered) или пропущены по подписке (тихие часы, лимит в день, повтор): одно событие —
+# одно решение «отправить или нет» на чат.
+telegram_notifications = Table(
+    "telegram_notifications",
+    metadata,
+    Column("chat_id", String(32), primary_key=True),
+    Column("anomaly_id", String(512), primary_key=True),
+    Column("severity", String(16), nullable=False),
+    Column("delivered", Boolean, nullable=False),
+    # Пропущено как повтор того же события на машине (антиспам подписки) — для строки «повторялось ещё N раз».
+    Column("repeat", Boolean, nullable=False, server_default=false()),
+    Column("at", BigInteger, nullable=False),
+    Index("ix_telegram_notifications_at", "at"),
 )

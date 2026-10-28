@@ -59,7 +59,7 @@ import java.time.ZoneId
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
+fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTelegram: () -> Unit = {}) {
     val repo = ServiceLocator.settings
     val settings by repo.settings.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
@@ -347,6 +347,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit) {
                     onChecked = { v -> save(reload = false) { it.copy(standPasswordConsent = v) } },
                 )
                 BackgroundStatusText(backgroundState)
+                // Подключение и подписка — на отдельном экране (и из «Настроек»).
+                OutlinedButton(onClick = onOpenTelegram) { Text("Telegram-бот: подключить и настроить") }
             }
             if (BuildConfig.DEBUG) {
                 SwitchRow(

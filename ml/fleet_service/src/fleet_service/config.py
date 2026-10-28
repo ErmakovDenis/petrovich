@@ -210,6 +210,20 @@ class Settings(BaseSettings):
     email_max_body_chars: int = Field(5000, ge=1)
     email_max_drafts_per_reply: int = Field(3, ge=1)
 
+    # Telegram-бот (ml/telegram_bot): имя бота без @ — для ссылки подключения t.me/<имя>?start=<код>; ключ, с которым
+    # бот обращается к стенду (Authorization: Bearer, тот же, что TB_STAND_TOKEN бота). Без любого из них —
+    # подключение и запросы бота выключены (503). Бот работает по доступу фоновой проверки пользователя.
+    telegram_bot_username: str = ""
+    telegram_service_token: SecretStr | None = None
+    # Сколько живёт код подключения из приложения, мин.
+    telegram_link_ttl_minutes: int = Field(15, ge=1)
+    # Уведомления в чат: о событиях, найденных не раньше стольких часов назад и не раньше подключения; не больше
+    # стольких карточек за одну выдачу на чат — остальные одной строкой «ещё N».
+    telegram_notify_max_age_hours: int = Field(24, ge=1)
+    telegram_notify_max_per_chat: int = Field(5, ge=1)
+    # Предупреждение «нет доступа к AutoGRAPH» — не чаще раза в столько часов на чат.
+    telegram_access_warning_hours: int = Field(12, ge=1)
+
     @model_validator(mode="after")
     def _background_window_fits(self) -> "Settings":
         if self.background_window_hours > self.telemetry_max_period_hours:
@@ -241,6 +255,12 @@ class Settings(BaseSettings):
         """Фоновая проверка включена и задан ключ шифрования доступа."""
         key = self.access_encryption_key.get_secret_value() if self.access_encryption_key else ""
         return self.background_enabled and bool(key)
+
+    @property
+    def telegram_configured(self) -> bool:
+        """Бот включён: заданы имя бота и ключ бота; без фоновой проверки боту не по чему работать."""
+        token = self.telegram_service_token.get_secret_value() if self.telegram_service_token else ""
+        return bool(self.telegram_bot_username.strip() and token) and self.background_configured
 
 
 @lru_cache

@@ -8,12 +8,13 @@ from ..background.access import AccessRepository, Grant, PasswordAction, user_ke
 from ..config import Settings, get_settings
 from ..schemas.background import AccessRequest, AccessStatus, ClaimRequest, ClaimResponse, DeviceRequest
 from ..store.repository import AnomalyRepository
-from .deps import UserSession, get_access, get_autograph_client, get_store, require_session, user_name
+from .deps import UserSession, get_access, get_autograph_client, get_store, require_app, user_name
 from .errors import UNPROCESSABLE
 
 router = APIRouter(prefix="/v1", tags=["background"])
 
-User = Annotated[UserSession, Depends(require_session)]
+# Доступ фоновой проверки выдаёт и отзывает только приложение, не Telegram-бот.
+User = Annotated[UserSession, Depends(require_app)]
 UserName = Annotated[str | None, Depends(user_name)]
 Access = Annotated[AccessRepository, Depends(get_access)]
 Config = Annotated[Settings, Depends(get_settings)]

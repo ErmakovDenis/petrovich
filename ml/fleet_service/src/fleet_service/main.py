@@ -25,6 +25,7 @@ from .api import anomalies as anomalies_api
 from .api import background as background_api
 from .api import chat, emails as emails_api, health
 from .api import status as status_api
+from .api import telegram as telegram_api
 from .api import telemetry as telemetry_api
 from .api.errors import install_error_handlers
 from .autograph.client import AutoGraphClient
@@ -44,6 +45,9 @@ from .store.db import create_db_engine
 from .store.migrate import upgrade
 from .store.repository import AnomalyRepository
 from .store.scan import ScanService
+from .telegram.links import TelegramLinks
+from .telegram.notify import TelegramNotifier
+from .telegram.sessions import TelegramSessions
 from .telemetry.service import TelemetryService
 
 log = logging.getLogger(__name__)
@@ -131,6 +135,12 @@ def create_app(
         app.state.scan_service = scans
         app.state.access = access
         app.state.background = background
+        # Telegram-бот (ml/telegram_bot): подключения чатов и уведомления по доступу фоновой проверки пользователя.
+        telegram_links = TelegramLinks(store)
+        telegram_sessions = TelegramSessions(access, app.state.session_checker, autograph)
+        app.state.telegram_links = telegram_links
+        app.state.telegram_sessions = telegram_sessions
+        app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store)
         app.state.agent = Agent(
             llm or OpenRouterClient(settings, client, breakers["llm"]),
             tools if tools is not None else build_tools(settings, telemetry, checks, store, emails),
@@ -163,4 +173,5 @@ def create_app(
     app.include_router(background_api.router)
     app.include_router(emails_api.router)
     app.include_router(status_api.router)
+    app.include_router(telegram_api.router)
     return app

@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, TypeVar
 
-from sqlalchemy import Connection, Engine, and_, delete, exists, func, insert, select, update
+from sqlalchemy import Connection, Engine, and_, case, delete, exists, func, insert, select, update
 
 from ..rules.baseline import java_time
 from ..schemas.contract import Anomaly
@@ -138,6 +138,10 @@ class AnomalyFilter:
     vehicle_id: str | None = None
     severities: Collection[str] = ()
     status: str | None = None
+    # Найдено впервые не раньше этого момента, epoch millis (уведомления в Telegram).
+    detected_from_ms: int | None = None
+    # Подписка чата Telegram: без этих типов событий.
+    exclude_kinds: Collection[str] = ()
 
 
 def now_ms() -> int:
@@ -276,6 +280,10 @@ class AnomalyRepository:
             conditions.append(A.c.start_utc <= f.to_utc)
         if f.severities:
             conditions.append(A.c.severity.in_(list(f.severities)))
+        if f.detected_from_ms is not None:
+            conditions.append(A.c.first_detected_at >= f.detected_from_ms)
+        if f.exclude_kinds:
+            conditions.append(A.c.kind.not_in(list(f.exclude_kinds)))
         if f.status == "open":
             conditions.append(A.c.resolution.is_(None))
         elif f.status == "resolved":
@@ -286,15 +294,17 @@ class AnomalyRepository:
             conditions.append(A.c.resolution == Resolution.FALSE_ALARM.value)
         return and_(*conditions)
 
-    async def query(self, schema_id: str, f: AnomalyFilter, limit: int, offset: int = 0) -> tuple[int, list[Record]]:
-        """Сначала новые (по началу события)."""
+    async def query(self, schema_id: str, f: AnomalyFilter, limit: int, offset: int = 0,
+                    critical_first: bool = False) -> tuple[int, list[Record]]:
+        """Сначала новые (по началу события); [critical_first] — сначала по важности, внутри — новые."""
         where = self._where(schema_id, f)
+        order = [A.c.start_utc.desc(), A.c.id]
+        if critical_first:
+            order.insert(0, case({"CRITICAL": 0, "WARNING": 1}, value=A.c.severity, else_=2))
 
         def work(conn: Connection) -> tuple[int, list[Record]]:
             total = conn.execute(select(func.count()).select_from(A).where(where)).scalar_one()
-            rows = conn.execute(
-                select(A).where(where).order_by(A.c.start_utc.desc(), A.c.id).limit(limit).offset(offset)
-            ).all()
+            rows = conn.execute(select(A).where(where).order_by(*order).limit(limit).offset(offset)).all()
             return total, [Record.of(r) for r in rows]
 
         return await self.run(work)
@@ -304,6 +314,19 @@ class AnomalyRepository:
         def work(conn: Connection) -> Record | None:
             row = conn.execute(select(A).where(A.c.schema_id == schema_id, A.c.id == anomaly_id)).first()
             return Record.of(row) if row is not None and row.vehicle_id in vehicle_ids else None
+
+        return await self.run(work)
+
+    async def earlier(self, record: Record, limit: int) -> list[datetime]:
+        """Начала (UTC) прежних таких же событий на той же машине — тип, параметр и источник те же; сначала поздние."""
+        def work(conn: Connection) -> list[datetime]:
+            return list(conn.execute(
+                select(A.c.start_utc).where(
+                    A.c.schema_id == record.schema_id, A.c.vehicle_id == record.vehicle_id, A.c.kind == record.kind,
+                    A.c.parameter_name == record.parameter_name, A.c.source == record.source,
+                    A.c.start_utc < record.start_utc,
+                ).order_by(A.c.start_utc.desc()).limit(limit)
+            ).scalars())
 
         return await self.run(work)
 

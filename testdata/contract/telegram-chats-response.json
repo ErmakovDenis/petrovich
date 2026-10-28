@@ -1,0 +1,58 @@
+{
+  "configured": true,
+  "botUrl": "https://t.me/petrovich_bot",
+  "chats": [
+    {
+      "chatId": "1001",
+      "schemaId": "schema-1",
+      "schemaName": "Колонна №1",
+      "userName": "Петров",
+      "utcOffsetMinutes": 300,
+      "subscription": {
+        "vehicleIds": [
+          "veh-2"
+        ],
+        "warnings": true,
+        "info": false,
+        "dailyLimit": null,
+        "quietFromHour": 22,
+        "quietToHour": 7,
+        "mutedKinds": [
+          "power"
+        ],
+        "repeatHours": 3,
+        "lists": {
+          "subscribedOnly": true,
+          "minSeverity": "WARNING",
+          "periodHours": 168,
+          "pageSize": 10,
+          "order": "severity"
+        },
+        "card": {
+          "description": true,
+          "memory": true,
+          "parameter": true,
+          "source": false,
+          "resolvedBy": true,
+          "reviewButton": true,
+          "resolveButtons": false
+        }
+      },
+      "linkedAt": 1789541700000,
+      "title": "@petrov"
+    }
+  ],
+  "vehicles": [
+    {
+      "id": "veh-1",
+      "name": "КАМАЗ 43118",
+      "group": null
+    },
+    {
+      "id": "veh-2",
+      "name": "Scania R450",
+      "group": "Север"
+    }
+  ],
+  "vehiclesError": null
+}

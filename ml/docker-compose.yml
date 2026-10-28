@@ -109,6 +109,25 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Telegram-бот (ml/telegram_bot) — обычный `docker compose up` его НЕ запускает: docker compose --profile telegram up -d.
+  # Настройки — ml/telegram_bot/.env (TB_*), на стенде — FS_TELEGRAM_BOT_USERNAME и FS_TELEGRAM_SERVICE_TOKEN (= TB_STAND_TOKEN).
+  # Long polling: портов наружу не нужно, бот сам ходит в Telegram и в fleet_service.
+  telegram_bot:
+    build: ./telegram_bot
+    profiles: ["telegram"]
+    env_file:
+      - path: ./telegram_bot/.env
+        required: false
+    environment:
+      TB_STAND_URL: ${TB_STAND_URL-http://fleet_service:8000}
+    # Короткие ключи кнопок: кнопки старых уведомлений работают после перезапуска бота.
+    volumes:
+      - telegram_data:/srv/data
+    depends_on:
+      fleet_service:
+        condition: service_healthy
+    restart: unless-stopped
+
   predictive_antifraud:
     build: ./predictive_antifraud
     env_file:
@@ -127,5 +146,6 @@ services:
 
 volumes:
   fleet_data:
+  telegram_data:
   llm_config:
   reserve_llm_cache:

@@ -198,10 +198,22 @@ docker compose exec -e FS_EVAL_API_KEY=<ключ> fleet_service python -m fleet_
 | POST | `/v1/notifications/claim` | какие аномалии пользователь ещё не получал уведомлением (и отметить их) |
 | POST | `/v1/emails/{draftId}/confirm` | отправить черновик письма — только по нажатию «Отправить» в приложении |
 | POST | `/v1/emails/{draftId}/cancel` | отменить черновик письма |
+| GET | `/v1/anomalies/{id}?utcOffsetMinutes` | одна сохранённая аномалия с решением (карточка в Telegram) |
+| POST | `/v1/telegram/link` | ссылка подключения Telegram-бота для приложения (одноразовый код) |
+| POST | `/v1/telegram/pair` | приложение: подключить чат по коду, который показал бот |
+| GET | `/v1/telegram/chats` | приложение: настроен ли бот, чаты пользователя с подписками, его машины |
+| POST | `/v1/telegram/chats/{chatId}/subscription`, `/unlink` | приложение: подписка чата / отключить чат |
+| POST | `/v1/telegram/bot/connect` | бот: подключить чат по коду из `/start` |
+| POST | `/v1/telegram/bot/pair-code` | бот: код для чата, который пользователь введёт в приложении |
+| POST | `/v1/telegram/bot/outbox` | бот: какие события и сообщения отправить в чаты сейчас |
+| GET / DELETE | `/v1/telegram/me` | бот: подключение чата, подписка и машины / отключить чат |
+| PUT | `/v1/telegram/me/subscription` | бот: что и по каким машинам присылать в чат |
+| GET | `/v1/telegram/me/problems?limit&offset` | бот: ждущие решения по настройкам списков чата |
 
 Все `/v1/*` требуют заголовков `Authorization: Bearer <токен сессии AutoGRAPH>` и `X-Schema-Id`. Приложение
 передаёт ещё `X-User-Name` — логин AutoGRAPH (UTF-8 в URL-кодировке, без пароля): стенд записывает его как автора
-решения и не проверяет, доступ даёт только токен.
+решения и не проверяет, доступ даёт только токен. Telegram-бот вместо токена и схемы передаёт свой ключ и
+`X-Telegram-Chat-Id` (раздел «Telegram-бот»).
 
 ### `POST /v1/anomalies/check`
 
@@ -377,6 +389,51 @@ vehicleName, kind, parameterName, title, eventTime, resolution?, reason?}]}`, н
 
 Письмо — простой текст от `FS_SMTP_FROM` с припиской «Подготовлено ассистентом «Петрович» по запросу пользователя
 <логин>». SMTP — `FS_SMTP_HOST`, `FS_SMTP_PORT`, `FS_SMTP_SECURITY` (`starttls` / `ssl` / `none`), логин и пароль.
+
+### Telegram-бот
+
+Бот (`ml/telegram_bot`) — отдельный сервис, клиент стенда. Своего доступа к AutoGRAPH у него нет: он работает от имени
+пользователя по доступу фоновой проверки, который приложение этого пользователя уже выдало стенду. Выключен, пока не
+заданы `FS_TELEGRAM_BOT_USERNAME`, `FS_TELEGRAM_SERVICE_TOKEN` и фоновая проверка (`/health` → `telegramConfigured`).
+
+- **Подключение** (`telegram/links.py`). `POST /v1/telegram/link` `{deviceId, schemaName, utcOffsetMinutes}` — от
+  приложения: нужен доступ фоновой проверки этого устройства в этой схеме под этим логином, иначе 409. Ответ —
+  `{url: "https://t.me/<бот>?start=<код>", expiresAt}`; код одноразовый, живёт `FS_TELEGRAM_LINK_TTL_MINUTES`, в базе — только
+  SHA-256. Бот передаёт код в `POST /v1/telegram/bot/connect` `{chatId, code}`: чат привязывается к схеме, логину и поясу
+  пользователя (`telegram_links`). Повторное подключение тем же пользователем сохраняет подписку.
+  Второй путь — когда Telegram не на телефоне с приложением: неподключённому чату бот показывает код `XXXX-XXXX`
+  (`POST /v1/telegram/bot/pair-code` `{chatId, title}`, прежний код чата гасится, в базе — только SHA-256), пользователь
+  вводит его в приложении — `POST /v1/telegram/pair` `{deviceId, schemaName, utcOffsetMinutes, code}` (те же условия, что у
+  ссылки; регистр, пробелы и дефис не важны). Бот здоровается в чате со следующей выдачей (`linked` в outbox).
+- **Настройки из приложения** — `GET /v1/telegram/chats` → `{configured, botUrl, chats, vehicles, vehiclesError}` (чаты
+  этого логина в схеме), `POST /v1/telegram/chats/{chatId}/subscription` (тело — как у `PUT /v1/telegram/me/subscription`),
+  `POST /v1/telegram/chats/{chatId}/unlink` (бот сообщит в чат). Чужой чат — 404.
+- **Запросы бота.** `Authorization: Bearer <FS_TELEGRAM_SERVICE_TOKEN>` и `X-Telegram-Chat-Id` к обычным `/v1/*`:
+  `require_session` берёт схему из подключения, а токен — из самого свежего доступа пользователя
+  (`telegram/sessions.py`: живой токен; истёк — вход по паролю, если пользователь разрешил, как в фоновой проверке).
+  Доступа нет — 401 с объяснением, что открыть приложение. Автор решения и владелец черновика письма — логин из
+  подключения (`acting_user_name`), `X-User-Name` бота не действует. `/v1/background/*` и `/v1/telegram/link` боту
+  недоступны (403). Лимит чата — общий с приложением пользователя (тот же токен).
+- **Подписка** — `GET /v1/telegram/me` (подключение, подписка, машины пользователя), `PUT /v1/telegram/me/subscription`
+  `{vehicleIds (null — все), warnings, info, dailyLimit (null — без лимита), quietFromHour, quietToHour, mutedKinds,
+  repeatHours, lists, card}`, `DELETE /v1/telegram/me` — отключить чат. Машины, события, важность, лимит и тихие часы
+  меняются и в боте, и в приложении; остальное — в приложении:
+  - `mutedKinds` — выключенные события базовых правил (`KINDS`: drain, drop, overheat, oil, brake, volt, power). Они не
+    приходят совсем, даже критичные, и не показываются в списках бота;
+  - `repeatHours` — антиспам: повтор того же события (машина, тип, параметр) чаще раза в N часов пропускается
+    (`telegram_notifications.repeat`), а следующая карточка о нём несёт `repeats` — сколько повторов пропущено;
+  - `lists` `{subscribedOnly, minSeverity, periodHours, pageSize, order}` — списки бота: `GET /v1/telegram/me/problems`
+    отдаёт ждущие решения уже отфильтрованными (без выключенных событий; только выбранные машины, не ниже важности,
+    за период, сначала новые или критичные);
+  - `card` `{description, memory, parameter, source, resolvedBy, reviewButton, resolveButtons}` — что бот показывает в
+    карточке; уходит с каждой карточкой выдачи (`Notice.card`).
+- **Уведомления** (`telegram/notify.py`). `POST /v1/telegram/bot/outbox` → `{notices: [{chatId, anomaly, previous,
+  utcOffsetMinutes}], messages: [{chatId, text}], linked: [chatId]}`. Это открытые события машин, видимых пользователю и выбранных в
+  подписке, найденные после подключения и не раньше `FS_TELEGRAM_NOTIFY_MAX_AGE_HOURS`. «Критично» приходит всегда,
+  остальное — если включено, вне тихих часов и в пределах лимита на местные сутки. Решение «отправить или пропустить»
+  записывается в `telegram_notifications`: событие уходит в чат один раз, пропущенное не досылается. Больше
+  `FS_TELEGRAM_NOTIFY_MAX_PER_CHAT` за раз — строкой «И ещё N событий». `previous` — когда раньше было такое же событие на
+  этой машине («Петрович помнит»). Нет доступа к AutoGRAPH — сообщение в чат не чаще `FS_TELEGRAM_ACCESS_WARNING_HOURS`.
 
 ### `GET /v1/telemetry`
 

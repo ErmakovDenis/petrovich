@@ -81,7 +81,7 @@ private val WeekdayOrder = listOf(
  * [onRestartOnboarding] — «Пройти знакомство заново»; сам сброс делает вызывающая сторона.
  */
 @Composable
-fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit = {}) {
+fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit = {}, onOpenTelegram: () -> Unit = {}) {
     val repo = ServiceLocator.settings
     val settings by repo.settings.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
@@ -156,6 +156,15 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             }
 
             SectionLabel("Ещё")
+            SurfaceCard(Modifier.fillMaxWidth(), onClick = onOpenTelegram, shape = RoundedCornerShape(18.dp)) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Telegram", style = MaterialTheme.typography.titleSmall)
+                        Text("Подключить бота и выбрать, что присылать", style = MaterialTheme.typography.bodySmall, color = c.muted)
+                    }
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.muted)
+                }
+            }
             SurfaceCard(Modifier.fillMaxWidth(), onClick = onOpenConnection, shape = RoundedCornerShape(18.dp)) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

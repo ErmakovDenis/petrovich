@@ -352,6 +352,11 @@ sudo certbot renew --dry-run                                              # пр
 4. «Фоновая проверка на стенде» — под переключателем «Доступ стенда: сессия AutoGRAPH»; не позже чем через
    15 минут в логе `docker compose logs fleet_service | grep 'фоновая проверка: схема'`.
 5. «Письма из чата» — письмо на свой адрес из `recipients.toml` приходит только после «Отправить».
+6. Telegram-бот (если нужен): бот у @BotFather; на стенде `FS_TELEGRAM_BOT_USERNAME` и
+   `FS_TELEGRAM_SERVICE_TOKEN`, у бота `ml/telegram_bot/.env` (`TB_BOT_TOKEN`, `TB_STAND_TOKEN` — тот же ключ);
+   `docker compose --profile telegram up -d --build`. Отправьте боту /start и введите код в приложении (Настройки → Telegram).
+   Должен прийти ответ «Вы подключены к схеме…», а новые события — карточками не позже чем через 15 минут после
+   фоновой проверки. Подробности — [telegram_bot/README.md](telegram_bot/README.md).
 
 ## 8. Сопровождение
 
