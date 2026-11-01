@@ -24,7 +24,7 @@ from .deps import (
     get_system_prompt,
     get_telemetry_service,
     require_session,
-    user_name,
+    acting_user_name,
 )
 from .errors import UNPROCESSABLE
 
@@ -45,7 +45,7 @@ async def chat(
     system_prompt: Annotated[str, Depends(get_system_prompt)],
     store: Annotated[AnomalyRepository, Depends(get_store)],
     telemetry: Annotated[TelemetryService, Depends(get_telemetry_service)],
-    name: Annotated[str | None, Depends(user_name)],
+    name: Annotated[str | None, Depends(acting_user_name)],
     limits: Annotated[Limits, Depends(get_limits)],
 ) -> ChatResponse:
     """Ответ ассистента на последнее сообщение пользователя с учётом истории и контекста аномалии."""

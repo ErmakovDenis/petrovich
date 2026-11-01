@@ -64,6 +64,8 @@ def _fixture(name: str):
     ("claim-response.json", "background", "ClaimResponse"),
     ("chat-response-draft.json", "chat", "ChatResponse"),
     ("email-result.json", "emails", "EmailResult"),
+    ("telegram-link-response.json", "telegram", "LinkResponse"),
+    ("telegram-chats-response.json", "telegram", "TelegramChats"),
 ])
 def test_store_responses_are_exactly_what_stand_returns(name, module, model):
     """Ответы хранилища, фоновой проверки и писем: те же поля, что отдаёт стенд; их разбирают StandAnomaliesTest,
@@ -81,6 +83,22 @@ def test_background_requests_from_app_fixtures():
     assert access.save_password is True and access.password is None and access.utc_offset_minutes == 300
     claim = ClaimRequest.model_validate(_fixture("claim-request.json"))
     assert claim.device_id == access.device_id and len(claim.ids) == 2
+
+
+def test_telegram_link_request_from_app_fixture():
+    """Запрос ссылки на бота — ровно то, что сериализует StandTelegram приложения (StandTelegramTest сверяет то же)."""
+    from fleet_service.schemas.telegram import LinkRequest
+
+    request = LinkRequest.model_validate(_fixture("telegram-link-request.json"))
+    assert request.model_dump(by_alias=True) == _fixture("telegram-link-request.json")
+
+
+def test_telegram_pair_request_from_app_fixture():
+    """Подключение по коду из бота — ровно то, что сериализует StandTelegram приложения."""
+    from fleet_service.schemas.telegram import PairRequest
+
+    request = PairRequest.model_validate(_fixture("telegram-pair-request.json"))
+    assert request.model_dump(by_alias=True) == _fixture("telegram-pair-request.json")
 
 
 def test_store_requests_from_app_fixtures():

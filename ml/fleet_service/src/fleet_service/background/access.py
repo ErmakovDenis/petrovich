@@ -162,6 +162,16 @@ class AccessRepository:
 
         return await self._run(work, write=True)
 
+    async def of_user(self, schema_id: str, key: str) -> list[Grant]:
+        """Доступы пользователя [key] в схеме, с которыми можно войти, — самый свежий первым (Telegram-бот)."""
+        def work(conn: Connection) -> list[Grant]:
+            rows = conn.execute(select(B).where(B.c.schema_id == schema_id)
+                                .order_by(B.c.refreshed_at.desc())).all()
+            grants = (self._grant(conn, r) for r in rows if user_key(r.user_name, r.device_id) == key)
+            return [g for g in grants if g.token or g.password]
+
+        return await self._run(work, write=True)
+
     async def set_token(self, device_id: str, token: str, at: int | None = None) -> None:
         """Токен от входа стенда по паролю."""
         at = at or now_ms()

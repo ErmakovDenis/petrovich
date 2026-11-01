@@ -66,6 +66,7 @@ import ru.petrovich.telemetry.ui.problems.ProblemsTab
 import ru.petrovich.telemetry.ui.report.ReportScreen
 import ru.petrovich.telemetry.ui.resolution.ResolutionScreen
 import ru.petrovich.telemetry.ui.settings.ConnectionSettingsScreen
+import ru.petrovich.telemetry.ui.settings.TelegramScreen
 import ru.petrovich.telemetry.ui.settings.SettingsScreen
 import ru.petrovich.telemetry.ui.tables.TablesScreen
 import ru.petrovich.telemetry.ui.theme.Petrovich
@@ -86,6 +87,7 @@ private const val PARK = "park"
 private const val VEHICLE = "vehicle/{id}"
 private const val VEHICLE_MAP = "vehicle/{id}/map"
 private const val CONNECTION = "connection"
+private const val TELEGRAM = "telegram"
 private const val TABLES = "tables"
 private const val CHARTS = "charts"
 
@@ -284,11 +286,16 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
                 SettingsScreen(
                     onOpenConnection = openConnection,
                     onRestartOnboarding = { scope.launch { ServiceLocator.settings.update { it.copy(onboarded = false) } } },
+                    onOpenTelegram = { push(TELEGRAM) },
                 )
             }
             composable(CONNECTION) {
-                ConnectionSettingsScreen(onBack = { nav.popBackStack() }, onChanged = { telemetryVm.reloadVehicles() })
+                ConnectionSettingsScreen(
+                    onBack = { nav.popBackStack() }, onChanged = { telemetryVm.reloadVehicles() },
+                    onOpenTelegram = { push(TELEGRAM) },
+                )
             }
+            composable(TELEGRAM) { TelegramScreen(onBack = { nav.popBackStack() }, onOpenConnection = openConnection) }
         }
     }
 }

@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..mail.service import Draft, EmailRefused, EmailService
 from ..schemas.emails import EmailResult
-from .deps import UserSession, require_session, user_name
+from .deps import UserSession, acting_user_name, require_session
 
 router = APIRouter(prefix="/v1/emails", tags=["emails"])
 
 User = Annotated[UserSession, Depends(require_session)]
-UserName = Annotated[str | None, Depends(user_name)]
+UserName = Annotated[str | None, Depends(acting_user_name)]
 
 
 def get_emails(request: Request) -> EmailService:

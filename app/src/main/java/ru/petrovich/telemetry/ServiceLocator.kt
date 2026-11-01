@@ -32,6 +32,7 @@ import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.ServerTelemetryRepository
 import ru.petrovich.telemetry.data.StandClient
+import ru.petrovich.telemetry.data.StandTelegram
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
 import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.api.ApiFactory
@@ -131,6 +132,9 @@ object ServiceLocator {
 
     /** «Отправить» и «Отменить» у черновика письма со стенда в чате. */
     val emails: EmailActions by lazy { StandEmails(stand) }
+
+    /** Ссылка подключения Telegram-бота (раздел «Стенд» в настройках). */
+    val telegram by lazy { StandTelegram(stand) }
 
     // Переключатель «Ассистент через стенд»: выключен — локальный движок по правилам и данным парка.
     val chatAgent: ChatAgent by lazy {
