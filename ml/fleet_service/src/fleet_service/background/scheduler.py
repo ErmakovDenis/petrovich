@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time as datetime_time, timedelta
 
 from ..autograph.client import AutoGraphClient
 from ..autograph.errors import AutoGraphUnavailable, LoginRejected, SessionInvalid
@@ -29,6 +29,7 @@ from ..schemas.contract import Vehicle
 from ..store.repository import AnomalyRepository, to_local
 from ..store.scan import ScanService, error_text
 from ..telemetry.service import TelemetryService
+from ..telemetry.widgets import aggregate
 from .access import AccessRepository, Grant, now_ms
 
 log = logging.getLogger(__name__)
@@ -195,11 +196,44 @@ class BackgroundScanner:
             try:
                 f, t = self._scans.canonical_period(from_, to, offset)
                 result = await self._scans.scan_vehicle(owner.session, schema_id, vehicle_id, f, t, offset)
+                await self._update_widget_stats(schema_id, vehicle_id, owner, to)
                 return len(result.new_ids)
             except SessionInvalid:
                 return f"машина {vehicle_id}: сессия AutoGRAPH истекла во время проверки"
             except Exception as e:  # noqa: BLE001 — сбой одной машины не прерывает проверку остальных
                 return f"машина {vehicle_id}: {error_text(e)}"
+
+    async def _update_widget_stats(self, schema_id: str, vehicle_id: str, owner: _Owner, now_local: datetime) -> None:
+        today = now_local.date()
+        history_days = 60
+        first = today - timedelta(days=history_days - 1)
+        existing = await self._store.widget_stats(schema_id, first.isoformat(), today.isoformat())
+        known = {item.day for item in existing if item.vehicle.id == vehicle_id}
+        # История заполняется одним проходом при первом появлении машины. В обычном режиме запрашивается только
+        # сегодняшний открытый день: закрытые строки уже не меняются.
+        if len(known) < history_days:
+            days = []
+            start_day = first
+            while start_day <= today:
+                end = min(start_day + timedelta(days=7), today + timedelta(days=1))
+                loaded = await self._telemetry.telemetry(
+                    owner.session, schema_id, vehicle_id, datetime.combine(start_day, datetime_time()),
+                    datetime.combine(end, datetime_time()), owner.grant.utc_offset_minutes,
+                )
+                days.extend(
+                    aggregate(loaded.telemetry, datetime.combine(start_day + timedelta(days=i), datetime_time()),
+                              datetime.combine(start_day + timedelta(days=i + 1), datetime_time()))
+                    for i in range((end - start_day).days)
+                )
+                start_day = end
+        else:
+            loaded = await self._telemetry.telemetry(
+                owner.session, schema_id, vehicle_id, datetime.combine(today, datetime_time()),
+                now_local, owner.grant.utc_offset_minutes,
+            )
+            days = [aggregate(loaded.telemetry, datetime.combine(today, datetime_time()),
+                              datetime.combine(today + timedelta(days=1), datetime_time()))]
+        await self._store.save_widget_stats(schema_id, days)
 
 
 def _short(device_id: str) -> str:

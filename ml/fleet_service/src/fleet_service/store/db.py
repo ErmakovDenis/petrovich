@@ -127,6 +127,22 @@ notification_claims = Table(
     Index("ix_notification_claims_at", "claimed_at"),
 )
 
+widget_daily_stats = Table(
+    "widget_daily_stats",
+    metadata,
+    Column("schema_id", String(64), primary_key=True),
+    Column("vehicle_id", String(128), primary_key=True),
+    Column("day", String(10), primary_key=True),
+    Column("vehicle_name", Text, nullable=False),
+    Column("vehicle_group", Text),
+    Column("fuel", Float, nullable=False),
+    Column("idle", Float, nullable=False),
+    Column("mileage", Float, nullable=False),
+    Column("refuels", Integer, nullable=False),
+    Column("last_seen", String(19)),
+    Index("ix_widget_daily_stats_schema_day", "schema_id", "day"),
+)
+
 
 def create_db_engine(url: str) -> Engine:
     """Движок SQLAlchemy; для SQLite-файла создаётся каталог, включается WAL и ожидание блокировки."""

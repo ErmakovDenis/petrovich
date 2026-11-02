@@ -32,6 +32,8 @@ from ..schemas.store import Decision, Resolution, StoredAnomaly
 from .db import anomalies as A
 from .db import decisions as D
 from .db import scan_marks as M
+from .db import widget_daily_stats as W
+from ..schemas.widgets import DailyVehicleStats
 
 T = TypeVar("T")
 
@@ -266,6 +268,33 @@ class AnomalyRepository:
         return await self.run(
             lambda conn: conn.execute(select(M.c.last_scan_at).where(M.c.schema_id == schema_id)).scalar()
         )
+
+    async def save_widget_stats(self, schema_id: str, stats: list[DailyVehicleStats]) -> None:
+        """Сохраняет готовые дни. Закрытые дни пересчитываются только при первом заполнении."""
+        def work(conn: Connection) -> None:
+            for item in stats:
+                values = {
+                    "schema_id": schema_id, "vehicle_id": item.vehicle.id, "day": item.day.isoformat(),
+                    "vehicle_name": item.vehicle.name, "vehicle_group": item.vehicle.group,
+                    "fuel": item.fuel, "idle": item.idle, "mileage": item.mileage,
+                    "refuels": item.refuels, "last_seen": item.last_seen,
+                }
+                conn.execute(delete(W).where(W.c.schema_id == schema_id, W.c.vehicle_id == item.vehicle.id,
+                                             W.c.day == item.day.isoformat()))
+                conn.execute(insert(W).values(**values))
+        await self.run(work, write=True)
+
+    async def widget_stats(self, schema_id: str, from_day: str, to_day: str) -> list[DailyVehicleStats]:
+        def work(conn: Connection) -> list[DailyVehicleStats]:
+            rows = conn.execute(select(W).where(
+                W.c.schema_id == schema_id, W.c.day >= from_day, W.c.day <= to_day,
+            ).order_by(W.c.day, W.c.vehicle_id)).all()
+            return [DailyVehicleStats(
+                vehicle={"id": r.vehicle_id, "name": r.vehicle_name, "group": r.vehicle_group},
+                day=r.day, fuel=r.fuel, idle=r.idle, mileage=r.mileage, refuels=r.refuels,
+                last_seen=r.last_seen,
+            ) for r in rows]
+        return await self.run(work)
 
     # --- чтение ---
 

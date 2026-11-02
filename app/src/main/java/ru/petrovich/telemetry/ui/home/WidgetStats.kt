@@ -183,6 +183,14 @@ private fun buildSummary(
 
 /** Независимая загрузка для «Подробной сводки» (3.15): свой запрос под выбранный период. */
 suspend fun loadWidgetSummary(type: WidgetType, period: WidgetPeriod): WidgetSummary = coroutineScope {
+    val settings = ServiceLocator.settings.current()
+    if (settings.telemetryOnServer && period != WidgetPeriod.DAY) {
+        val now = LocalDateTime.now()
+        val bucketCount = if (period == WidgetPeriod.WEEK) 7 else 30
+        val from = now.toLocalDate().minusDays((bucketCount * 2 - 1).toLong())
+        val response = ServiceLocator.widgetStats.load(from.toString(), now.toLocalDate().toString())
+        return@coroutineScope buildDailySummary(type, period, response.items, from, bucketCount)
+    }
     val repo = ServiceLocator.telemetry
     val vehicles = repo.vehicles().let { if (type == WidgetType.FUEL_TRUCKS) it.filter(Vehicle::isTruck) else it }
     val unit = if (period == WidgetPeriod.DAY) ChronoUnit.HOURS else ChronoUnit.DAYS
@@ -198,10 +206,54 @@ suspend fun loadWidgetSummary(type: WidgetType, period: WidgetPeriod): WidgetSum
     buildSummary(type, data, bucketStart, unit, bucketCount) { i -> bucketLabel(period, bucketStart, unit, i) }
 }
 
+private fun buildDailySummary(
+    type: WidgetType,
+    period: WidgetPeriod,
+    items: List<ru.petrovich.telemetry.data.DailyVehicleStats>,
+    from: java.time.LocalDate,
+    bucketCount: Int,
+): WidgetSummary {
+    fun value(item: ru.petrovich.telemetry.data.DailyVehicleStats): Double = when (type) {
+        WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> item.fuel
+        WidgetType.IDLE -> item.idle
+        WidgetType.MILEAGE -> item.mileage
+        WidgetType.REFUELS -> item.refuels.toDouble()
+        WidgetType.OFFLINE -> 0.0
+    }
+    val filtered = if (type == WidgetType.FUEL_TRUCKS) items.filter { truckHint.containsMatchIn(it.vehicle.name) } else items
+    val currentFrom = from.plusDays(bucketCount.toLong())
+    val current = filtered.filter { java.time.LocalDate.parse(it.day) >= currentFrom }
+    val previous = filtered.filter { java.time.LocalDate.parse(it.day) < currentFrom }
+    val total = current.sumOf(::value)
+    val previousTotal = previous.sumOf(::value)
+    val points = (0 until bucketCount).map { index ->
+        val day = currentFrom.plusDays(index.toLong())
+        WidgetPoint(
+            day.format(DateTimeFormatter.ofPattern(if (period == WidgetPeriod.WEEK) "EEE" else "d.MM", RuLocale)),
+            current.filter { java.time.LocalDate.parse(it.day) == day }.sumOf(::value),
+        )
+    }
+    val leaders = current.groupBy { it.vehicle.id }.map { (id, rows) ->
+        WidgetLeader(id, rows.first().vehicle.name, rows.sumOf(::value))
+    }.filter { it.value > 0 }.sortedByDescending { it.value }.take(3)
+    return WidgetSummary(type, total, unitFor(type), if (previousTotal > 0.5) (total - previousTotal) / previousTotal * 100 else null,
+        points, leaders)
+}
+
 /** Общие для «Главной» 14 суток телеметрии по всему парку — одна загрузка на все виджеты сразу (без повторных запросов на каждую карточку). */
-data class FleetWeek(val data: List<Pair<Vehicle, VehicleTelemetry?>>, val from: LocalDateTime, val to: LocalDateTime)
+data class FleetWeek(
+    val data: List<Pair<Vehicle, VehicleTelemetry?>>, val from: LocalDateTime, val to: LocalDateTime,
+    val serverItems: List<ru.petrovich.telemetry.data.DailyVehicleStats> = emptyList(),
+)
 
 suspend fun loadFleetWeek(): FleetWeek = coroutineScope {
+    val settings = ServiceLocator.settings.current()
+    if (settings.telemetryOnServer) {
+        val to = LocalDateTime.now()
+        val fromDay = to.toLocalDate().minusDays(13)
+        val response = ServiceLocator.widgetStats.load(fromDay.toString(), to.toLocalDate().toString())
+        return@coroutineScope FleetWeek(emptyList(), fromDay.atStartOfDay(), to, response.items)
+    }
     val repo = ServiceLocator.telemetry
     val vehicles = repo.vehicles()
     val to = LocalDateTime.now()
@@ -213,6 +265,28 @@ suspend fun loadFleetWeek(): FleetWeek = coroutineScope {
 
 /** Сводка виджета за неделю из уже загруженных [FleetWeek] — без обращений к серверу. */
 fun FleetWeek.summary(type: WidgetType): WidgetSummary {
+    if (serverItems.isNotEmpty()) {
+        val days = serverItems.groupBy { it.day }.toSortedMap()
+        val orderedDays = days.keys.toList()
+        val currentDays = orderedDays.takeLast(7).toSet()
+        val previousDays = orderedDays.dropLast(7).takeLast(7).toSet()
+        fun value(item: ru.petrovich.telemetry.data.DailyVehicleStats): Double = when (type) {
+            WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> item.fuel
+            WidgetType.IDLE -> item.idle
+            WidgetType.MILEAGE -> item.mileage
+            WidgetType.REFUELS -> item.refuels.toDouble()
+            WidgetType.OFFLINE -> 0.0
+        }
+        val filtered = if (type == WidgetType.FUEL_TRUCKS) serverItems.filter { it.vehicle.name.contains(truckHint) } else serverItems
+        val points = currentDays.map { day -> WidgetPoint(day.takeLast(2), filtered.filter { it.day == day }.sumOf(::value)) }
+        val current = filtered.filter { it.day in currentDays }.groupBy { it.vehicle.id }
+        val leaders = current.entries.map { (id, items) -> WidgetLeader(id, items.first().vehicle.name, items.sumOf(::value)) }
+            .filter { it.value > 0 }.sortedByDescending { it.value }.take(3)
+        val total = filtered.filter { it.day in currentDays }.sumOf(::value)
+        val previous = filtered.filter { it.day in previousDays }.sumOf(::value)
+        return WidgetSummary(type, total, unitFor(type), if (previous > 0.5) (total - previous) / previous * 100 else null,
+            points, leaders)
+    }
     val filtered = if (type == WidgetType.FUEL_TRUCKS) data.filter { it.first.isTruck() } else data
     return buildSummary(type, filtered, from, ChronoUnit.DAYS, 7) { i ->
         from.plusDays((7 + i).toLong()).dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
@@ -221,6 +295,13 @@ fun FleetWeek.summary(type: WidgetType): WidgetSummary {
 
 /** «Без связи»: честно смотрим, когда от машины в последний раз была хоть одна точка данных в загруженном окне. */
 fun FleetWeek.offline(now: LocalDateTime = LocalDateTime.now()): OfflineSummary {
+    if (serverItems.isNotEmpty()) {
+        val latest = serverItems.groupBy { it.vehicle.id }.map { (_, items) -> items.maxByOrNull { it.day }!! }
+        val silent = latest.filter { item ->
+            item.lastSeen == null || runCatching { Duration.between(LocalDateTime.parse(item.lastSeen), now) }.getOrNull()?.let { it > FRESHNESS } != false
+        }.sortedBy { it.lastSeen ?: "" }
+        return OfflineSummary(silent.size, silent.take(3).map { OfflineEntry(it.vehicle.id, it.vehicle.name, if (it.lastSeen == null) "нет данных за 2 недели" else "нет свежих данных") })
+    }
     val silent = data.mapNotNull { (v, t) ->
         val lastSeen = t?.tables?.values?.flatMap { table ->
             table.timestamps.filterIndexed { i, _ -> table.columns.any { c -> c.values.getOrNull(i) != null } }
