@@ -1,5 +1,7 @@
 package ru.petrovich.telemetry.data.settings
 
+import ru.petrovich.telemetry.BuildConfig
+
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -186,13 +188,14 @@ class SettingsRepository(private val context: Context) {
         fleetIdle = this[Keys.fleetIdle] ?: 0,
         fleetOffline = this[Keys.fleetOffline] ?: 0,
         fleetUpdatedAt = this[Keys.fleetUpdatedAt] ?: 0,
-        serverUrl = this[Keys.serverUrl].orEmpty(),
+        serverUrl = this[Keys.serverUrl].takeUnless { it.isNullOrBlank() }
+            ?: if (BuildConfig.DEBUG) "http://10.0.2.2:8080" else "",
         assistantViaServer = this[Keys.assistantViaServer] ?: false,
-        telemetryViaServer = this[Keys.telemetryViaServer] ?: false,
-        anomaliesViaServer = this[Keys.anomaliesViaServer] ?: false,
+        telemetryViaServer = if (BuildConfig.DEBUG) true else this[Keys.telemetryViaServer] ?: false,
+        anomaliesViaServer = if (BuildConfig.DEBUG) true else this[Keys.anomaliesViaServer] ?: false,
         anomalyCompare = this[Keys.anomalyCompare] ?: false,
-        anomalyStoreViaServer = this[Keys.anomalyStoreViaServer] ?: false,
-        backgroundViaServer = this[Keys.backgroundViaServer] ?: false,
+        anomalyStoreViaServer = if (BuildConfig.DEBUG) true else this[Keys.anomalyStoreViaServer] ?: false,
+        backgroundViaServer = if (BuildConfig.DEBUG) true else this[Keys.backgroundViaServer] ?: false,
         standPasswordConsent = this[Keys.standPasswordConsent] ?: false,
         deviceId = this[Keys.deviceId].orEmpty(),
         standAccessGranted = this[Keys.standAccessGranted] ?: false,

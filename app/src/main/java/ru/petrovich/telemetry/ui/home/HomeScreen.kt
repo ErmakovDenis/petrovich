@@ -126,9 +126,15 @@ fun HomeScreen(
     // Первая проверка запускается сама: пока её нет, сводке нечего сказать.
     LaunchedEffect(scanned) { if (!scanned) scan() }
 
-    // Данные «Сводки» (топливо/холостой ход/пробег/...) — одна загрузка на все виджеты главной сразу.
+    // Данные «Сводки» — один компактный запрос; пока стенд заполняет историю, экран показывает новые строки частями.
     var fleetWeek by remember { mutableStateOf<FleetWeek?>(null) }
-    LaunchedEffect(Unit) { fleetWeek = runCatchingCancellable { loadFleetWeek() }.getOrNull() }
+    LaunchedEffect(s.telemetryOnServer) {
+        do {
+            fleetWeek = runCatchingCancellable { loadFleetWeek() }.getOrNull()
+            if (!s.telemetryOnServer) break
+            delay(15_000)
+        } while (true)
+    }
 
     // Хранилище на стенде: свежая лента для сводки; без сети — последняя загруженная (ошибку покажет лента).
     LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.anomalySync.refresh() } }

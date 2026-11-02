@@ -2,6 +2,7 @@ package ru.petrovich.telemetry.data
 
 import java.time.LocalDate
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
@@ -66,6 +67,24 @@ data class VehicleTelemetry(
 )
 
 data class Schema(val id: String, val name: String)
+
+@Serializable
+data class DailyVehicleStats(
+    val vehicle: Vehicle,
+    val day: String,
+    val fuel: Double = 0.0,
+    val idle: Double = 0.0,
+    val mileage: Double = 0.0,
+    val refuels: Int = 0,
+    val lastSeen: String? = null,
+)
+
+@Serializable
+data class WidgetStatsResponse(
+    @SerialName("from") val fromDay: String,
+    val to: String,
+    val items: List<DailyVehicleStats> = emptyList(),
+)
 
 // ---------- Карта машины (3.14) ----------
 //

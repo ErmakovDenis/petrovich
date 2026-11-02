@@ -31,6 +31,7 @@ import ru.petrovich.telemetry.chat.SwitchingChatAgent
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.ServerTelemetryRepository
+import ru.petrovich.telemetry.data.ServerWidgetStatsRepository
 import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandTelegram
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
@@ -58,6 +59,8 @@ object ServiceLocator {
             session = { rejectedToken -> autoGraph.standSession(rejectedToken) },
         )
     }
+
+    val widgetStats by lazy { ServerWidgetStatsRepository(stand) }
 
     // Переключатель «Данные через стенд»: выключен — AutoGRAPH напрямую, как раньше.
     val telemetry: TelemetryRepository by lazy {

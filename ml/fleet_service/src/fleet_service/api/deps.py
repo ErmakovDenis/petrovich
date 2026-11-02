@@ -12,11 +12,11 @@ from ..background.access import AccessRepository
 from ..config import Settings, get_settings
 from ..limits import Limits
 from ..rules.check import AnomalyCheckService
-from ..store.repository import AnomalyRepository
 from ..store.scan import ScanService
 from ..telegram.links import Link, TelegramLinks
 from ..telegram.sessions import NoAccess, TelegramSessions
 from ..telemetry.service import TelemetryService
+from ..store.repository import AnomalyRepository
 
 
 @dataclass(frozen=True)
