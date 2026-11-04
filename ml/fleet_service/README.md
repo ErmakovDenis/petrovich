@@ -181,6 +181,38 @@ docker compose exec -e FS_EVAL_API_KEY=<ключ> fleet_service python -m fleet_
 работает для явных прошлых периодов (вопросы в чате, канонические окна проверок с сохранением), на графики
 приложения почти не влияет.
 
+## Метрики и несколько реплик
+
+`GET /metrics` (`FS_METRICS_ENABLED`, по умолчанию выключен) — формат Prometheus, без авторизации и без данных
+пользователей: метки только из короткого набора (система, код, причина), ни id машин, ни схем, ни логинов. Включается
+вместе с запретом пути в nginx, Prometheus и Grafana — профиль `monitoring` в compose (`ml/DEPLOY.md`, п. 8.7).
+
+| Метрика | Что показывает |
+|---|---|
+| `fleet_upstream_requests_total{upstream,outcome}` | запросы к `llm`, `autograph`, `predictive`: HTTP-код, `error`, `timeout`; `error_in_body` — ошибка модели в ответе 200; `stream_error` — обрыв при чтении `GetTripTables` |
+| `fleet_upstream_duration_seconds{upstream}` | длительность запросов, у потокового `GetTripTables` — с чтением тела (p50/p95 на дашборде) |
+| `fleet_llm_responses_total{route}` | ответы модели: `primary`, `fallback`, `reserve` |
+| `fleet_llm_credits_exhausted_total` | ответы 402 OpenRouter; при заданном резерве не растёт — прокси уходит к резерву, см. `route="reserve"` |
+| `fleet_rejections_total{reason}` | отказы 429/503 по причине: лимит и очередь чата, модель не настроена или недоступна, кредиты, breaker'ы, нет места или недоступен AutoGRAPH, нет места в аналитике |
+| `fleet_cache_requests_total{cache,result}` | попадания в кэши |
+| `fleet_breaker_state{upstream}` | 0 — закрыт, 1 — пробный, 2 — открыт |
+| `fleet_breaker_seconds_since_failure{upstream}` | секунд с последнего сбоя: отличает идущий сбой от half-open, который ждёт первого запроса |
+| `fleet_queue_depth{limiter}`, `fleet_inflight{limiter}` | ждут места и заняты места в пределах |
+| `http_requests_total`, `http_request_duration_seconds`, `fleet_http_503_total` | HTTP-метрики самого стенда по шаблону пути; неизвестные пути не учитываются |
+
+Алерты — `ml/monitoring/alerts.yml`, их тесты — `alerts_test.yml` (`promtool test rules`). Alertmanager не подключён:
+сработавшие алерты видны только в Prometheus и Grafana.
+
+**Решение о репликах.** Сейчас работает один процесс uvicorn, и этого достаточно. Реплики делаются, только когда
+метрики покажут, что одного процесса не хватает (очереди и отказы при свободных внешних системах). Тогда:
+- rate limit чата и лимит писем — в Redis, иначе лимит «10 в минуту» на трёх репликах станет 30;
+- кэш — остаётся локальным (хуже hit rate, но корректно) или в Redis;
+- фоновая проверка — только на одной реплике: блокировка в Redis или в базе;
+- SQLite заменяется на PostgreSQL;
+- перед репликами — nginx/Traefik со стратегией least connections: ответы чата длятся от секунд до минуты,
+  round-robin даёт неравномерную нагрузку;
+- breaker'ы и общие пределы внешних вызовов остаются на процесс: их значения делятся на число реплик.
+
 ## Эндпоинты
 
 | Метод | Путь | Описание |
@@ -532,8 +564,8 @@ AutoGRAPH и аналитике), модель, температура, лими
 срок хранения, предел записей в ленте, допуск и запас окна переноса, предел записей переноса; фоновая проверка —
 ключ шифрования доступа, выключатель, интервал и окно, параллельность, срок неподтверждённого доступа, предел id
 в `/v1/notifications/claim`; письма — SMTP (адрес, порт, шифрование, логин, пароль, отправитель, таймаут), файл
-получателей, срок черновика, лимит и его период, пределы получателей, темы, текста и черновиков за ответ. Пустое
-значение в `.env` — значение по умолчанию.
+получателей, срок черновика, лимит и его период, пределы получателей, темы, текста и черновиков за ответ; выключатель
+метрик. Пустое значение в `.env` — значение по умолчанию.
 
 Системный промпт — `src/fleet_service/prompts/system.md` (или файл из `FS_SYSTEM_PROMPT_PATH`). В нём
 зафиксировано: числа и факты только из tools или переданной аномалии; нет данных — так и сказать; «нет данных» и
@@ -586,6 +618,7 @@ src/fleet_service/
   cache.py             кэш со сроком жизни и одной загрузкой на ключ
   limits.py            rate limit, очередь чата, общие пределы запросов к AutoGRAPH и аналитике
   breaker.py           circuit breaker на модель, AutoGRAPH и аналитику
+  metrics.py           метрики Prometheus (GET /metrics)
   log_masking.py       маскирование секретов в логах
   api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, /v1/anomalies (check, scan, лента,
                        resolve, import), /v1/background и /v1/notifications (background.py), /v1/emails

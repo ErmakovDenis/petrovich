@@ -301,8 +301,9 @@ server {
     # Перенос истории с устройства (до 1000 записей) и история чата (до 40 сообщений по 4000 символов).
     client_max_body_size 5m;
 
-    # Наружу — только API стенда и /health; /docs и /openapi.json — справка для разработки.
-    location ~ ^/(docs|redoc|openapi\.json) { return 404; }
+    # Наружу — только API стенда и /health; /docs и /openapi.json — справка для разработки, /metrics — для Prometheus,
+    # который ходит к контейнеру напрямую, минуя nginx (п. 8.7).
+    location ~ ^/(docs|redoc|openapi\.json|metrics) { return 404; }
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -454,6 +455,39 @@ docker compose down -v              # удалить и базу — анома�
 Стенд запускается **одним** процессом: фоновая проверка идёт внутри него. Не масштабировать
 (`docker compose up --scale fleet_service=2`) и не добавлять `--workers` в команду uvicorn — проверки и
 уведомления задвоятся.
+
+### 8.7. Мониторинг (необязательно)
+
+Prometheus и Grafana — профиль `monitoring` в `docker-compose.yml`, без него не запускаются:
+
+**Сначала — запрет `/metrics` в nginx.** Эндпоинт без авторизации. В конфиге из п. 6 запрет уже есть; в конфиге,
+созданном раньше, строку нужно поправить: `location ~ ^/(docs|redoc|openapi\.json|metrics) { return 404; }`, затем
+`sudo nginx -t && sudo systemctl reload nginx`. Потом:
+
+```bash
+# fleet_service/.env: FS_METRICS_ENABLED=true (по умолчанию выключено).
+# ml/.env: пароль Grafana, без него контейнер не запустится. Порты по умолчанию 9090 и 3000 — PROMETHEUS_PORT, GRAFANA_PORT.
+echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
+docker compose --profile monitoring up -d --wait
+```
+
+Пароль Grafana применяется только при первом запуске. Сменить позже:
+`docker compose --profile monitoring exec grafana grafana cli admin reset-admin-password <новый пароль>`.
+
+Оба порта опубликованы только на `127.0.0.1`; с рабочей машины — через туннель
+`ssh -L 3000:127.0.0.1:3000 -L 9090:127.0.0.1:9090 <сервер>`. Дашборд «Петрович: стенд» в Grafana создаётся сам, алерты — в
+Prometheus на вкладке Alerts. **Alertmanager не настроен: алерты видны только там, уведомления никуда не уходят.**
+
+| Алерт | Что значит | Что делать |
+|---|---|---|
+| `OpenRouterCreditsExhausted` | OpenRouter ответил 402, резерв не задан | Пополнить кредиты или поднять лимит ключа |
+| `LLMReserveAnswering` | Ассистент отвечает через резервную модель. При заданном резерве это и есть сигнал о 402: прокси уходит к резерву, до стенда 402 не доходит | Проверить кредиты и лимит ключа (`docker compose logs llm_proxy | grep 402`), OpenRouter, сеть стенда |
+| `CircuitBreakerOpen` | Breaker не закрыт дольше 5 минут, и пробные запросы не проходят | Смотреть `GET /v1/status` и логи: какая внешняя система недоступна |
+| `HighShareOf503` | Больше 5 % ответов стенда — 503 | Смотреть отказы по причине на дашборде: предел, breaker или модель не настроена |
+
+`GET /metrics` отдаёт сам `fleet_service`. Данных пользователей там нет (метки — только система, код, причина), но
+видны объём запросов и состояние внешних систем. На стенде без nginx (п. 10) метрики при `FS_METRICS_ENABLED=true`
+доступны всем, кто видит порт.
 
 ## 9. Модели антифрода и предиктивной аналитики
 

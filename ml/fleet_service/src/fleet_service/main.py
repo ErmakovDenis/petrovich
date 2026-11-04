@@ -11,6 +11,7 @@ from datetime import timedelta
 
 import httpx
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from . import __version__
 from .agent.fleet_tools import build_fleet_tools
@@ -37,6 +38,7 @@ from .breaker import CircuitBreaker
 from .config import Settings, get_settings
 from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
+from .metrics import Metrics
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
 from .mail.service import EmailService
@@ -99,6 +101,8 @@ def create_app(
     box = SecretBox(key) if key else None
     # Файл получателей писем читается при старте: ошибка в нём видна сразу.
     recipients = Recipients.load(settings.email_recipients_path) if settings.email_configured else None
+    # Метрики (metrics.py): свой реестр на приложение; /metrics — при FS_METRICS_ENABLED.
+    metrics = Metrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -118,10 +122,12 @@ def create_app(
                                          settings.breaker_open_seconds)
                     for name in ("llm", "autograph", "predictive")}
         app.state.breakers = breakers
-        app.state.session_checker = AutoGraphSessionChecker(settings, client, autograph_limit, breakers["autograph"])
-        autograph = AutoGraphClient(settings, client, autograph_limit, breakers["autograph"])
-        telemetry = TelemetryService(settings, autograph)
-        analytics = AnalyticsClient(settings, client, predictive_limit, breakers["predictive"])
+        metrics.watch(breakers, app.state.limits)
+        app.state.session_checker = AutoGraphSessionChecker(settings, client, autograph_limit, breakers["autograph"],
+                                                            metrics)
+        autograph = AutoGraphClient(settings, client, autograph_limit, breakers["autograph"], metrics)
+        telemetry = TelemetryService(settings, autograph, metrics=metrics)
+        analytics = AnalyticsClient(settings, client, predictive_limit, breakers["predictive"], metrics)
         checks = AnomalyCheckService(settings, telemetry, analytics)
         store = build_store(settings)
         access = AccessRepository(store, box)
@@ -146,7 +152,7 @@ def create_app(
         app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store,
                                                        app.state.telegram_reports)
         app.state.agent = Agent(
-            llm or OpenRouterClient(settings, client, breakers["llm"]),
+            llm or OpenRouterClient(settings, client, breakers["llm"], metrics),
             tools if tools is not None else build_tools(settings, telemetry, checks, store, emails),
             settings.agent_max_iterations,
         )
@@ -178,4 +184,11 @@ def create_app(
     app.include_router(emails_api.router)
     app.include_router(status_api.router)
     app.include_router(telegram_api.router)
+    app.state.metrics = metrics
+    if settings.metrics_enabled:
+        # HTTP-метрики стенда: неизвестные пути — без рядов (их адрес и метод выбирает клиент, в том числе без токена).
+        Instrumentator(
+            should_group_status_codes=False, should_ignore_untemplated=True,
+            excluded_handlers=["/metrics", "/health"], registry=metrics.registry,
+        ).add(metrics.http_response).instrument(app).expose(app, include_in_schema=False)
     return app

@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..agent.llm import llm_scope
 from ..agent.loop import Agent
@@ -39,6 +39,7 @@ RESERVE_NOTICE = ("Ассистент сейчас работает в упро�
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
+    http: Request,
     user: Annotated[UserSession, Depends(require_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     agent: Annotated[Agent, Depends(get_agent)],
@@ -50,6 +51,7 @@ async def chat(
 ) -> ChatResponse:
     """Ответ ассистента на последнее сообщение пользователя с учётом истории и контекста аномалии."""
     if not settings.llm_configured:
+        http.app.state.metrics.rejections.labels("model_not_configured").inc()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Ассистент на стенде не настроен: не заданы ключ OpenRouter или модель",

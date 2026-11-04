@@ -1,0 +1,48 @@
+# Алерты стенда (ml/docs/load-and-resilience.md, шаг 6). Проверка синтаксиса:
+#   docker run --rm --entrypoint promtool -v "$PWD/ml/monitoring:/m:ro" prom/prometheus:v3.15.0 check rules /m/alerts.yml
+groups:
+  - name: fleet_service
+    rules:
+      - alert: OpenRouterCreditsExhausted
+        # 402: кончились кредиты OpenRouter или лимит ключа — ассистент отвечает «временно недоступен». При заданном
+        # резерве 402 до стенда не доходит (прокси уходит к резерву): тогда срабатывает LLMReserveAnswering.
+        expr: increase(fleet_llm_credits_exhausted_total[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "OpenRouter ответил 402: кончились кредиты или лимит ключа"
+          description: "Пополните баланс или поднимите лимит ключа OpenRouter (FS_OPENROUTER_API_KEY)."
+
+      - alert: LLMReserveAnswering
+        # Ответы через резервную модель: OpenRouter недоступен или кончились кредиты (402 — в логе llm_proxy).
+        expr: increase(fleet_llm_responses_total{route="reserve"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ассистент отвечает через резервную модель"
+          description: "Основная и запасные модели OpenRouter не отвечают — проверьте кредиты и лимит ключа (402 в логе llm_proxy), OpenRouter и сеть стенда."
+
+      - alert: CircuitBreakerOpen
+        # Breaker не закрыт дольше 5 минут, и сбои продолжаются (пробные запросы не проходят). Half-open без запросов
+        # сбоем не считается: короткий сбой ночью не держит алерт до первого запроса утром. Порог 4 мин меньше for —
+        # поэтому нужны повторные сбои; FS_BREAKER_OPEN_SECONDS должен быть меньше 4 мин.
+        expr: fleet_breaker_state >= 1 and fleet_breaker_seconds_since_failure < 240
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker {{ $labels.upstream }} открыт дольше 5 минут"
+          description: "Стенд сразу отказывает в обращениях к {{ $labels.upstream }}: система недоступна. /v1/status — подробности."
+
+      - alert: HighShareOf503
+        # Доля ответов 503 стенда больше 5 % за 10 минут: перегрузка (очередь чата), AutoGRAPH или модель недоступны.
+        expr: |
+          sum(rate(fleet_http_503_total{job="fleet_service"}[10m]))
+            / sum(rate(http_requests_total{job="fleet_service"}[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Больше 5 % ответов стенда — 503"
+          description: "Смотрите fleet_rejections_total по причинам и fleet_upstream_requests_total по системам на дашборде."

@@ -305,6 +305,15 @@ echo "$reply" | json_check '"средний уровень топлива 250.0 
     || fail "ответ при неверном адресе OpenRouter: $reply"
 
 logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
+step "GET /metrics: метрики для алертов на месте, без токенов и схем"
+metrics=$(curl -fsS "$BASE/metrics")
+for series in fleet_llm_responses_total fleet_llm_credits_exhausted_total fleet_upstream_requests_total \
+    fleet_rejections_total fleet_cache_requests_total fleet_breaker_state fleet_queue_depth 'http_requests_total{'; do
+    grep -qF "$series" <<<"$metrics" || fail "в /metrics нет $series"
+done
+grep -q 'status="200"' <<<"$metrics" || fail "http_requests_total без точного кода ответа"
+if grep -qE 'valid-token|schema-1|veh-1' <<<"$metrics"; then fail "в /metrics попали данные пользователей"; fi
+
 step "вызовы tools видны в логе стенда"
 grep -q 'модель вызывает tool get_vehicle_summary' <<<"$logs" || fail "в логе нет вызова get_vehicle_summary"
 grep -q 'модель вызывает tool check_vehicle' <<<"$logs" || fail "в логе нет вызова check_vehicle"

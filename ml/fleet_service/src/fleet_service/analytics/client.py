@@ -19,6 +19,7 @@ from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..cache import TtlCache
 from ..config import Settings
 from ..limits import UpstreamLimiter
+from ..metrics import Metrics
 from ..schemas.contract import Anomaly, CamelModel, DetectionResponse, VehicleTelemetry
 
 log = logging.getLogger(__name__)
@@ -50,13 +51,15 @@ class AnalyticsStatus(CamelModel):
 
 
 class AnalyticsClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker,
+                 metrics: Metrics | None = None):
         """[limiter] — общий на процесс предел одновременных запросов к аналитике (FS_PREDICTIVE_CONCURRENCY),
         [breaker] — её circuit breaker."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
         self._breaker = breaker
+        self._metrics = metrics or Metrics()
         # Успешные результаты по (вид, версия модели, схема, машина, период) и версии моделей из GET /ready.
         self._results: TtlCache[AnalyticsStatus] = TtlCache(settings.telemetry_cache_ttl_seconds,
                                                             settings.analytics_cache_max_entries)
@@ -69,7 +72,13 @@ class AnalyticsClient:
 
         async def load() -> dict[str, str]:
             try:
-                resp = await self._http.get(s.predictive_url.rstrip("/") + "/ready", timeout=timeout)
+                with self._metrics.upstream("predictive") as call:
+                    try:
+                        resp = await self._http.get(s.predictive_url.rstrip("/") + "/ready", timeout=timeout)
+                    except httpx.TimeoutException:
+                        call.outcome = "timeout"
+                        raise
+                    call.status(resp.status_code)
                 resp.raise_for_status()
                 models = resp.json().get("models", [])
                 return {m["name"]: m["version"] for m in models if m.get("ready") and m.get("version")}
@@ -90,6 +99,7 @@ class AnalyticsClient:
         version = await self.model_version(kind, min(READY_TIMEOUT_SECONDS, s.predictive_timeout_seconds))
         budget = max(0.1, s.predictive_timeout_seconds - (time.monotonic() - started))
         if version is None:
+            self._metrics.cache("analytics", False)  # версия неизвестна — кэш не используется
             return await self._run(kind, payload, budget)
 
         async def load() -> AnalyticsStatus:
@@ -98,8 +108,10 @@ class AnalyticsClient:
                 raise _NotCached(status)  # TtlCache не хранит ошибки — неуспешный статус не кэшируется
             return status
 
+        key = (kind, version, cache[0])
+        self._metrics.cache("analytics", self._results.peek(key) is not None)
         try:
-            return await self._results.get((kind, version, cache[0]), load, cache[1])
+            return await self._results.get(key, load, cache[1])
         except _NotCached as e:
             return e.status
 
@@ -129,14 +141,22 @@ class AnalyticsClient:
                 except TimeoutError:
                     outcome.skip()  # до сервиса не дошли — ни успех, ни сбой
                     log.warning("аналитика %s: нет места за %.1f с (FS_PREDICTIVE_CONCURRENCY)", kind, budget)
+                    self._metrics.rejections.labels("predictive_no_slot").inc()
                     return overloaded
                 left = max(0.1, budget - (time.monotonic() - started))
                 # Сколько стенд ещё ждёт: аналитика не держит запрос в своей очереди дольше (иначе считала бы впустую).
                 headers["X-Client-Timeout"] = f"{left:.1f}"
                 try:
-                    resp = await self._http.post(
-                        s.predictive_url.rstrip("/") + _PATHS[kind], json=payload, headers=headers, timeout=left,
-                    )
+                    with self._metrics.upstream("predictive") as call:
+                        try:
+                            resp = await self._http.post(
+                                s.predictive_url.rstrip("/") + _PATHS[kind], json=payload, headers=headers,
+                                timeout=left,
+                            )
+                        except httpx.TimeoutException:
+                            call.outcome = "timeout"
+                            raise
+                        call.status(resp.status_code)
                 except httpx.TimeoutException:
                     # Таймаут, укороченный ожиданием места на стенде, — не признак недоступности сервиса.
                     if left >= s.predictive_timeout_seconds * 0.9:
@@ -153,6 +173,7 @@ class AnalyticsClient:
                 if resp.status_code != 503 and counts_as_failure(resp.status_code):
                     outcome.fail()
         except BreakerOpen:
+            self._metrics.rejections.labels("breaker_predictive").inc()
             return AnalyticsStatus(status="unavailable", detail=f"{name}: сервис аналитики временно отключён после сбоев")
         except httpx.HTTPError as e:
             log.warning("аналитика %s: сервис не ответил: %s", kind, type(e).__name__)

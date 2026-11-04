@@ -59,6 +59,7 @@ class CircuitBreaker:
         self._recent: deque[float] = deque()
         self._opened_at: float | None = None
         self._probing = False
+        self._last_failure: float | None = None
         self.opened_total = 0
 
     @property
@@ -68,6 +69,12 @@ class CircuitBreaker:
         if self._probing or self._clock() - self._opened_at >= self._open_seconds:
             return "half_open"
         return "open"
+
+    @property
+    def seconds_since_failure(self) -> float | None:
+        """Секунд с последнего сбоя (None — сбоев не было). Отличает идущий сбой от half-open, который просто ждёт
+        первого запроса: без запросов к системе пробовать некому, и состояние само не меняется."""
+        return None if self._last_failure is None else self._clock() - self._last_failure
 
     def status(self) -> dict:
         state = self.state
@@ -124,6 +131,7 @@ class CircuitBreaker:
 
     def _failure(self, probe: bool) -> None:
         now = self._clock()
+        self._last_failure = now
         if probe:
             # Пробный запрос не прошёл — снова открыт на полный срок.
             self._probing = False

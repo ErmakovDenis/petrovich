@@ -1,0 +1,15 @@
+# Prometheus стенда (профиль monitoring в ml/docker-compose.yml): собирает /metrics fleet_service по внутренней сети
+# compose и проверяет правила алертов alerts.yml. Alertmanager не подключён: сработавшие алерты видны в UI Prometheus
+# (Alerts) и на дашборде Grafana; рассылку (почта, Telegram) настраивают отдельно.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: fleet_service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["fleet_service:8000"]

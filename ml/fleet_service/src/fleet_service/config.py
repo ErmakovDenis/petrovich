@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     breaker_open_seconds: float = Field(60, gt=0)
     # Ключ администратора для GET /v1/status (Authorization: Bearer); пусто — эндпоинт выключен (404).
     admin_token: SecretStr | None = None
+    # GET /metrics для Prometheus (профиль monitoring в compose). Без авторизации: включается вместе с запретом пути
+    # в nginx (DEPLOY.md, п. 8.7), поэтому по умолчанию выключен — обновление стенда его не откроет.
+    metrics_enabled: bool = False
 
     # Модель и генерация. Пустая модель — ассистент не настроен (/v1/chat отвечает 503).
     llm_model: str = ""

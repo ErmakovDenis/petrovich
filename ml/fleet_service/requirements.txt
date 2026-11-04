@@ -20,5 +20,9 @@ alembic>=1.13
 # Шифрование доступа стенда к AutoGRAPH для фоновой проверки (AES-GCM)
 cryptography>=44
 
+# Метрики Prometheus (/metrics)
+prometheus-client>=0.26
+prometheus-fastapi-instrumentator>=8.1
+
 # Тесты
 pytest>=8

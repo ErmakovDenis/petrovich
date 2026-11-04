@@ -139,7 +139,8 @@ async def require_session(
             session = await request.app.state.telegram_sessions.session(link)
         except NoAccess as e:
             raise _unauthorized(str(e)) from None
-        except AutoGraphUnavailable:
+        except AutoGraphUnavailable as e:
+            request.app.state.metrics.rejections.labels(e.reason).inc()
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE, "AutoGRAPH недоступен: не удалось проверить сессию"
             ) from None
@@ -156,7 +157,8 @@ async def require_session(
         raise _unauthorized("Сессия AutoGRAPH недействительна или истекла") from None
     except SchemaForbidden:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Схема AutoGRAPH недоступна этому пользователю") from None
-    except AutoGraphUnavailable:
+    except AutoGraphUnavailable as e:
+        request.app.state.metrics.rejections.labels(e.reason).inc()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "AutoGRAPH недоступен: не удалось проверить сессию"
         ) from None
