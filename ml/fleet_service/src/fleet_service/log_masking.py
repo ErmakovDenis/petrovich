@@ -1,7 +1,8 @@
 """Маскирование секретов в логах стенда.
 
 AutoGRAPH принимает логин, пароль и токен сессии в query-строке (`UserName=`, `Password=`, `session=`), а httpx
-пишет адрес запроса в лог. Ключ модели и токен пользователя ходят в заголовке `Authorization: Bearer`.
+пишет адрес запроса в лог. Ключ модели и токен пользователя ходят в заголовке `Authorization: Bearer`, ключ
+авторизации GigaChat — в `Authorization: Basic`, его токен приходит в поле `access_token`.
 Маскирование встроено в фабрику записей logging, поэтому действует для всех логгеров и обработчиков
 (uvicorn, httpx, свои), включая текст исключений — как `SECRET_QUERY_PARAMS` в ApiFactory приложения.
 """
@@ -12,6 +13,10 @@ import re
 _PATTERNS = [
     (re.compile(r"(?i)\b(session|username|password)=[^&\s\"']*"), r"\1=***"),
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9\-._~+/=]+"), r"\1***"),
+    # От 16 символов: иначе пострадает обычный текст («basic check»), а ключ GigaChat гораздо длиннее.
+    (re.compile(r"(?i)\b(basic\s+)[A-Za-z0-9\-._~+/=]{16,}"), r"\1***"),
+    # Без \b слева: gigachat_access_token. \\? — JSON внутри строки JSON.
+    (re.compile(r"(?i)(access_token\\?[\"']?\s*[:=]\s*\\?[\"']?)[^\"'\\&\s,}]+"), r"\1***"),
     (re.compile(r"sk-or-[A-Za-z0-9\-_]+"), "sk-or-***"),
 ]
 

@@ -12,6 +12,13 @@ def test_mask_secrets():
     assert mask_secrets("EnumSchemas?session=abc-123 HTTP/1.1") == "EnumSchemas?session=*** HTTP/1.1"
     assert mask_secrets("Authorization: Bearer abc.def-123") == "Authorization: Bearer ***"
     assert mask_secrets("key sk-or-v1-0123456789abcdef") == "key sk-or-***"
+    assert mask_secrets("Authorization: Basic dGVzdDp0ZXN0dGVzdDp0ZXN0==") == "Authorization: Basic ***"
+    # Обычный текст не страдает: эта же функция готовит текст ошибок для пользователя.
+    assert mask_secrets("Basic auth failed; basic check of fuel") == "Basic auth failed; basic check of fuel"
+    assert mask_secrets('{"body": "{\\"access_token\\": \\"secret\\"}"}') == '{"body": "{\\"access_token\\": \\"***\\"}"}'
+    assert mask_secrets("gigachat_access_token=secret") == "gigachat_access_token=***"
+    assert mask_secrets('{"access_token": "abc.def-1", "expires_at": 1}') == '{"access_token": "***", "expires_at": 1}'
+    assert mask_secrets("access_token=abc&x=1") == "access_token=***&x=1"
 
 
 def test_log_records_and_exceptions_are_masked(caplog):

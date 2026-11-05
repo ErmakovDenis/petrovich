@@ -19,6 +19,7 @@ LLM_ROUTES = ("primary", "fallback", "reserve")
 REJECTION_REASONS = (
     "chat_rate_limit", "chat_queue_full", "model_not_configured", "llm_credits", "llm_unavailable", "breaker_llm",
     "breaker_autograph", "autograph_no_slot", "autograph_unavailable", "predictive_no_slot", "breaker_predictive",
+    "gigachat_no_slot",
 )
 # Метод запроса приходит от клиента: всё необычное — одной меткой, иначе любой без токена плодит ряды без предела.
 HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
@@ -41,6 +42,8 @@ class Metrics:
             ["route"], registry=r)
         self.llm_credits_exhausted = Counter(
             "fleet_llm_credits_exhausted", "Ответы 402 модели: кончились кредиты, токены или лимит ключа", registry=r)
+        self.gigachat_blacklist = Counter(
+            "fleet_gigachat_blacklist", "Ответы GigaChat с тематическим ограничением (finish_reason=blacklist)", registry=r)
         self.rejections = Counter(
             "fleet_rejections", "Отказы стенда без обработки по причине (лимиты, очереди, breaker'ы)", ["reason"],
             registry=r)

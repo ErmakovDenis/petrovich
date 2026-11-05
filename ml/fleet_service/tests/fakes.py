@@ -1,4 +1,4 @@
-"""Подставные OpenRouter и AutoGRAPH: одно ASGI-приложение для pytest (через httpx.ASGITransport) и для
+"""Подставные OpenRouter, GigaChat и AutoGRAPH: одно ASGI-приложение для pytest (через httpx.ASGITransport) и для
 smoke.sh (отдельный контейнер `fakes`, `uvicorn fakes:app`). Реальные ключи и учётные данные не нужны.
 
 OpenRouter `POST /openrouter/api/v1/chat/completions` принимает только ключ `test-key`. Тела запросов копятся в
@@ -7,6 +7,13 @@ OpenRouter `POST /openrouter/api/v1/chat/completions` принимает тол�
 Резервная модель вне OpenRouter — `POST /reserve/v1/chat/completions` (ключ `reserve-key`, тот же сценарий), журнал —
 `GET /reserve/_requests`. Модель без tools честно отвечает, что данных нет; с tools ведёт себя по сценарию:
 list_vehicles → get_vehicle_summary первой машины → ответ с числом из сводки (средний уровень топлива).
+
+GigaChat — строгий, по правилам спецификации и справки. `POST /gigachat/oauth`: ключ `test-gigachat-key` в Basic, RqUID
+(uuid4), scope; срок токена — `expires_at` в миллисекундах или секундах. `POST /gigachat/v1/chat/completions` (тело — поля
+спецификации, лишние — 422): нет User-Agent — 403; токен неизвестен или истёк — 401; потоков больше предела — 429;
+system не первым или не один — 422; результат функции не объект — 422; вызов функции с чужим functions_state_id
+или без результата — 422; temperature не больше 0 — 422. Сценарий модели — тот же, один вызов функции за ответ. Управление —
+`POST /gigachat/_config`, журнал — `GET /gigachat/_requests`, счётчики — `GET /gigachat/_stats`.
 
 AutoGRAPH `/autograph/ServiceJSON/`:
 - `Login?UserName=&Password=&UTCOffset=` — `Пётр` / `fake-password` → новый токен `login-token-<n>` с правами
@@ -31,6 +38,7 @@ predictive_antifraud `POST /predictive/v1/predictive/analyze` и `/predictive/v1
 `app.state.trip_requests`; машины из `app.state.trip_tables_down` получают на GetTripTables 500.
 """
 
+import asyncio
 import base64
 import email
 import email.policy
@@ -39,6 +47,7 @@ import os
 import re
 import socketserver
 import threading
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -49,6 +58,7 @@ from fastapi.responses import JSONResponse, Response
 
 FAKE_LLM_KEY = "test-key"
 FAKE_RESERVE_KEY = "reserve-key"
+FAKE_GIGACHAT_KEY = "test-gigachat-key"
 VALID_TOKEN = "valid-token"
 OTHER_TOKEN = "other-token"
 FOREIGN_TOKEN = "foreign-token"
@@ -324,8 +334,174 @@ def _call(call_id: str, name: str, arguments: dict) -> dict:
     ]}
 
 
+def _gigachat_error(status: int, message: str) -> JSONResponse:
+    return JSONResponse({"status": status, "message": message}, status_code=status)
+
+
+GIGACHAT_FIELDS = {"model", "messages", "function_call", "functions", "temperature", "top_p", "stream", "max_tokens",
+                   "repetition_penalty", "update_interval", "response_format"}
+
+
+def _gigachat_problem(body: dict, issued: set[str], arguments_format: str) -> str | None:
+    """Текст ошибки 422 по правилам спецификации GigaChat; None — запрос верный."""
+    unknown = set(body) - GIGACHAT_FIELDS
+    if unknown:
+        return f"Invalid params: unknown fields {sorted(unknown)}"
+    if not body.get("model") or not body.get("messages"):
+        return "Invalid params: model and messages are required"
+    if "temperature" in body and body["temperature"] <= 0:
+        return "Invalid params: temperature must be in range (0, +inf)"
+    messages = body["messages"]
+    for i, m in enumerate(messages):
+        role = m.get("role")
+        if role not in ("system", "user", "assistant", "function"):
+            return f"Invalid params: unknown role {role}"
+        if not isinstance(m.get("content"), str):
+            return "Invalid params: content must be a string"
+        if role == "system" and i != 0:
+            return "Invalid params: system message must be the first message"
+        if role == "function":
+            if set(m) != {"role", "content"}:
+                return "Invalid params: function message has only content"
+            try:
+                result = json.loads(m["content"])
+            except ValueError:
+                result = None
+            if not isinstance(result, dict):
+                return "Invalid params: function result must be a JSON object"
+        call = m.get("function_call")
+        if call is not None:
+            # Обязательность поля спецификация не заявляет, но чужое значение подозрительно: цикл шлюза его не выдумывает.
+            if "functions_state_id" in m and m["functions_state_id"] not in issued:
+                return "Invalid params: unknown functions_state_id"
+            if i + 1 == len(messages) or messages[i + 1].get("role") != "function":
+                return "Invalid params: every assistant function call must have a result in history"
+            expected = str if arguments_format == "string" else dict
+            if not isinstance(call.get("arguments"), expected):
+                return "Invalid params: function_call.arguments has a wrong type"
+    return None
+
+
+def _gigachat_completion(body: dict, issued: set[str], arguments_format: str) -> dict:
+    """Сценарий _scripted_reply в формате GigaChat: один вызов функции за ответ."""
+    if body.get("functions"):
+        history = [{"role": "tool", "content": m["content"]} if m["role"] == "function" else m for m in body["messages"]]
+        scripted = _scripted_reply(history)
+    else:
+        scripted = {"role": "assistant", "content": NO_DATA_REPLY}
+    message: dict = {"role": "assistant", "content": scripted.get("content") or ""}
+    finish = "stop"
+    if scripted.get("tool_calls"):
+        fn = scripted["tool_calls"][0]["function"]
+        arguments = fn["arguments"] if arguments_format == "string" else json.loads(fn["arguments"])
+        state = str(uuid.uuid4())
+        issued.add(state)
+        message |= {"function_call": {"name": fn["name"], "arguments": arguments}, "functions_state_id": state}
+        finish = "function_call"
+    return {"choices": [{"message": message, "index": 0, "finish_reason": finish}], "created": 1788000000,
+            "model": f"{body['model']}:2.0.28.2", "object": "chat.completion",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "precached_prompt_tokens": 0, "total_tokens": 15}}
+
+
+def _install_gigachat(app: FastAPI) -> None:
+    state = app.state
+    state.gigachat_requests = []
+    state.gigachat_failures = []
+    state.gigachat_issued = set()
+    state.gigachat_tokens = set()
+    state.gigachat_oauth = []
+    state.gigachat_user_agents = []
+    state.gigachat_active = 0
+    state.gigachat_peak = 0
+    state.gigachat_rejected = 0
+    # Предел потоков (PERS — 1), задержка ответа, с, срок токена, с, единицы expires_at и вид arguments.
+    state.gigachat_max_streams = 1
+    state.gigachat_delay = 0.0
+    state.gigachat_token_lifetime = 1800
+    state.gigachat_expires_unit = "ms"
+    state.gigachat_arguments = "object"
+
+    @app.post("/gigachat/oauth")
+    async def gigachat_oauth(request: Request) -> JSONResponse:
+        form = (await request.body()).decode()
+        state.gigachat_oauth.append({"scope": form, "rquid": request.headers.get("rquid")})
+        if request.headers.get("authorization") != f"Basic {FAKE_GIGACHAT_KEY}":
+            return JSONResponse({"code": 6, "message": "credentials doesn't match db data"}, status_code=401)
+        try:
+            uuid.UUID(request.headers.get("rquid", ""), version=4)
+        except ValueError:
+            return _gigachat_error(400, "Bad request: RqUID")
+        if not form.startswith("scope=GIGACHAT_API_"):
+            return _gigachat_error(400, "Bad request: scope")
+        token = f"giga-token-{len(state.gigachat_oauth)}"
+        state.gigachat_tokens.add(token)
+        expires = datetime.now().timestamp() + state.gigachat_token_lifetime
+        value = int(expires * 1000) if state.gigachat_expires_unit == "ms" else int(expires)
+        return JSONResponse({"access_token": token, "expires_at": value})
+
+    @app.post("/gigachat/v1/chat/completions")
+    async def gigachat_completions(request: Request) -> JSONResponse:
+        agent = request.headers.get("user-agent")
+        state.gigachat_user_agents.append(agent)
+        if not agent:
+            return _gigachat_error(403, "Forbidden")
+        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if token not in state.gigachat_tokens:
+            return _gigachat_error(401, "Token has expired")
+        if state.gigachat_active >= state.gigachat_max_streams:
+            state.gigachat_rejected += 1
+            return _gigachat_error(429, "Too many requests")
+        state.gigachat_active += 1
+        state.gigachat_peak = max(state.gigachat_peak, state.gigachat_active)
+        try:
+            body = await request.json()
+            state.gigachat_requests.append(body)
+            if state.gigachat_delay:
+                await asyncio.sleep(state.gigachat_delay)
+            if state.gigachat_failures:
+                failure = state.gigachat_failures.pop(0)
+                if "status" in failure:
+                    headers = {"Retry-After": str(failure["retryAfter"])} if "retryAfter" in failure else None
+                    return JSONResponse({"status": failure["status"], "message": failure.get("message", "Error")},
+                                        status_code=failure["status"], headers=headers)
+                return JSONResponse({"choices": [{"message": {"role": "assistant", "content": failure.get("content", "")},
+                                                  "index": 0, "finish_reason": failure["finishReason"]}],
+                                     "created": 1788000000, "model": body.get("model"), "object": "chat.completion",
+                                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+            problem = _gigachat_problem(body, state.gigachat_issued, state.gigachat_arguments)
+            if problem:
+                return _gigachat_error(422, problem)
+            return JSONResponse(_gigachat_completion(body, state.gigachat_issued, state.gigachat_arguments))
+        finally:
+            state.gigachat_active -= 1
+
+    @app.post("/gigachat/_config")
+    async def gigachat_config(request: Request) -> dict[str, str]:
+        """Настройки подставного GigaChat и очередь ответов: failures — ошибки {"status": 402} и ответы
+        {"finishReason": "blacklist", "content": "…"}. Журналы очищаются."""
+        data = await request.json()
+        state.gigachat_failures = list(data.get("failures", []))
+        state.gigachat_delay = data.get("delay", 0.0)
+        state.gigachat_max_streams = data.get("maxStreams", 1)
+        state.gigachat_requests.clear()
+        state.gigachat_user_agents.clear()
+        state.gigachat_peak = 0
+        state.gigachat_rejected = 0
+        return {"status": "ok"}
+
+    @app.get("/gigachat/_requests")
+    async def gigachat_requests() -> list[dict]:
+        return state.gigachat_requests
+
+    @app.get("/gigachat/_stats")
+    async def gigachat_stats() -> dict[str, int]:
+        return {"requests": len(state.gigachat_requests), "oauth": len(state.gigachat_oauth),
+                "peak": state.gigachat_peak, "rejected": state.gigachat_rejected}
+
+
 def create_fakes() -> FastAPI:
-    app = FastAPI(title="Подставные OpenRouter и AutoGRAPH")
+    app = FastAPI(title="Подставные OpenRouter, GigaChat и AutoGRAPH")
+    _install_gigachat(app)
     # AutoGRAPH отдаёт GetTripTables в gzip — клиент стенда должен это принимать.
     app.add_middleware(GZipMiddleware, minimum_size=500)
     app.state.llm_requests = []
