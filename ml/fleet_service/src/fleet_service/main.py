@@ -103,6 +103,7 @@ def create_app(
     recipients = Recipients.load(settings.email_recipients_path) if settings.email_configured else None
     # Метрики (metrics.py): свой реестр на приложение; /metrics — при FS_METRICS_ENABLED.
     metrics = Metrics()
+    metrics.llm_provider_info.labels(settings.llm_provider).set(1)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

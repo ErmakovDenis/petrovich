@@ -22,8 +22,8 @@ services:
     # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
     # останавливать чат и проверку по правилам.
     # Ассистент обращается к модели через прокси LiteLLM (повторы, запасные модели). Обойти прокси (он не стартует,
-    # а чат нужен): в ml/.env строка `FS_LLM_PROXY_URL=` (пусто) и docker compose up -d — стенд пойдёт в OpenRouter
-    # напрямую, без повторов.
+    # а чат нужен): в ml/.env строка `FS_LLM_PROXY_URL=` (пусто) и docker compose up -d — стенд пойдёт напрямую к модели
+    # активного режима (OpenRouter или шлюз GigaChat), без повторов.
     environment:
       FS_LLM_PROXY_URL: ${FS_LLM_PROXY_URL-http://llm_proxy:4000}
     depends_on:
@@ -44,8 +44,8 @@ services:
       retries: 12
     restart: unless-stopped
 
-  # Конфигурация прокси LiteLLM из FS_* в ml/fleet_service/.env (модель, запасные модели, повторы): пишется в том
-  # llm_config при каждом запуске compose — поправили .env, перезапустите: docker compose up -d.
+  # Конфигурация прокси LiteLLM из FS_* в ml/fleet_service/.env (режим, модель, запасные модели, повторы): пишется в том
+  # llm_config при каждом запуске compose — поправили .env, перезапустите: docker compose up -d --wait.
   llm_proxy_config:
     build: ./fleet_service
     env_file:
@@ -56,9 +56,9 @@ services:
       - llm_config:/config
     restart: "no"
 
-  # Прокси LiteLLM: повторы с паузой и Retry-After, запасные модели OpenRouter. Порт наружу не открыт — к нему
+  # Прокси LiteLLM: повторы с паузой и Retry-After, запасные модели. Порт наружу не открыт — к нему
   # обращается только fleet_service. Весь .env стенда стороннему образу не передаётся: окружение прокси (паузы
-  # повторов и ключ OpenRouter) — в litellm.env (права 600) из тома llm_config, модели — в litellm.yaml.
+  # повторов и ключ OpenRouter в его режиме) — в litellm.env (права 600) из тома llm_config, модели — в litellm.yaml.
   llm_proxy:
     image: ghcr.io/berriai/litellm:main-v1.83.14-stable
     entrypoint: ["sh", "-c", "set -a && . /config/litellm.env && set +a && exec litellm --config /config/litellm.yaml --port 4000"]
@@ -67,7 +67,8 @@ services:
     depends_on:
       llm_proxy_config:
         condition: service_completed_successfully
-        # Конфигурацию прокси читает только при старте: без перезапуска он остался бы на прежнем провайдере.
+        # Конфигурацию прокси читает только при старте: без перезапуска он остался бы на прежнем провайдере. Шаг получает
+        # весь .env, поэтому прокси перезапускается при любой его правке; без правок — нет.
         restart: true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]

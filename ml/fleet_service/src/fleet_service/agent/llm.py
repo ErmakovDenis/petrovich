@@ -272,7 +272,7 @@ class ChatCompletionsClient:
             else:
                 log.error("модель: кончились кредиты или лимит ключа %s (402) — нужен владелец стенда: %s",
                           self._settings.llm_provider_name, text)
-                self._metrics.llm_credits_exhausted.inc()
+                self._metrics.llm_credits_exhausted.labels(self._settings.llm_provider).inc()
             return LLMCreditsExhausted(text)
         if code in RETRYABLE_STATUSES or http_code in RETRYABLE_STATUSES:
             return LLMRetryable(text, retry_after)

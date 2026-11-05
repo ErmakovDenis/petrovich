@@ -8,7 +8,7 @@ uvicorn[standard]>=0.30
 pydantic>=2.12
 pydantic-settings>=2.4
 
-# HTTP-клиент: OpenRouter, AutoGRAPH
+# HTTP-клиент: модель, AutoGRAPH
 httpx>=0.27
 # Потоковый разбор GetTripTables (C-бэкенд yajl2_c из колеса)
 ijson>=3.3

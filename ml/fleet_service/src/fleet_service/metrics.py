@@ -9,13 +9,17 @@
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import get_args
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 
+from .config import LLMProvider
+
 # Метки известны заранее: ряды создаются сразу с нулём, иначе первое событие после старта не видно increase()/rate().
 LLM_ROUTES = ("primary", "fallback", "reserve")
+LLM_PROVIDERS = get_args(LLMProvider)
 REJECTION_REASONS = (
     "chat_rate_limit", "chat_queue_full", "model_not_configured", "llm_credits", "llm_unavailable", "breaker_llm",
     "breaker_autograph", "autograph_no_slot", "autograph_unavailable", "predictive_no_slot", "breaker_predictive",
@@ -41,7 +45,10 @@ class Metrics:
             "fleet_llm_responses", "Ответы модели по маршруту: primary, fallback (запасная модель), reserve",
             ["route"], registry=r)
         self.llm_credits_exhausted = Counter(
-            "fleet_llm_credits_exhausted", "Ответы 402 модели: кончились кредиты, токены или лимит ключа", registry=r)
+            "fleet_llm_credits_exhausted", "Ответы 402 модели: кончились кредиты, токены или лимит ключа", ["provider"],
+            registry=r)
+        self.llm_provider_info = Gauge(
+            "fleet_llm_provider_info", "Активный провайдер модели (FS_LLM_PROVIDER): значение 1", ["provider"], registry=r)
         self.gigachat_blacklist = Counter(
             "fleet_gigachat_blacklist", "Ответы GigaChat с тематическим ограничением (finish_reason=blacklist)", registry=r)
         self.rejections = Counter(
@@ -49,6 +56,8 @@ class Metrics:
             registry=r)
         for route in LLM_ROUTES:
             self.llm_responses.labels(route)
+        for provider in LLM_PROVIDERS:
+            self.llm_credits_exhausted.labels(provider)
         for reason in REJECTION_REASONS:
             self.rejections.labels(reason)
         self.http_requests = Counter(

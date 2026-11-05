@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .rules.thresholds import RuleThresholds
 
+LLMProvider = Literal["openrouter", "gigachat"]
+
 
 class Settings(BaseSettings):
     """Настройки стенда из переменных окружения с префиксом FS_ (или файла .env). Описание — в .env.example."""
@@ -23,7 +25,7 @@ class Settings(BaseSettings):
     # Какой провайдер отвечает за модель ассистента: openrouter или gigachat (через шлюз gigachat_gateway). Переключение —
     # эта настройка и перезапуск compose. Режимы не подменяют друг друга автоматически: иначе данные могли бы незаметно
     # уйти другому провайдеру. По умолчанию openrouter: обновление работающего стенда не ломает чат.
-    llm_provider: Literal["openrouter", "gigachat"] = "openrouter"
+    llm_provider: LLMProvider = "openrouter"
 
     # OpenRouter (формат OpenAI chat completions).
     openrouter_api_key: SecretStr | None = None

@@ -32,10 +32,10 @@
       "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
     },
     {
-      "id": 3, "type": "stat", "title": "402 OpenRouter (1 ч)",
+      "id": 3, "type": "stat", "title": "402 модели (1 ч)",
       "gridPos": {"x": 14, "y": 0, "w": 5, "h": 4},
       "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "targets": [{"refId": "A", "expr": "sum(increase(fleet_llm_credits_exhausted_total[1h]))"}],
+      "targets": [{"refId": "A", "expr": "sum(max by (provider) (increase(fleet_llm_credits_exhausted_total[1h])))"}],
       "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
         "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d03b3b", "value": 1}]}}},
       "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
@@ -57,7 +57,7 @@
       "fieldConfig": {"defaults": {"unit": "none", "custom": {"lineWidth": 2, "fillOpacity": 0}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "primary"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#3987e5"}}, {"id": "displayName", "value": "основная"}]},
-          {"matcher": {"id": "byName", "options": "fallback"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#d95926"}}, {"id": "displayName", "value": "запасная OpenRouter"}]},
+          {"matcher": {"id": "byName", "options": "fallback"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#d95926"}}, {"id": "displayName", "value": "запасная"}]},
           {"matcher": {"id": "byName", "options": "reserve"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#9085e9"}}, {"id": "displayName", "value": "резерв"}]}]},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
     },
@@ -114,6 +114,32 @@
       "targets": [{"refId": "A", "expr": "sum by (cache) (rate(fleet_cache_requests_total{result=\"hit\"}[15m])) / clamp_min(sum by (cache) (rate(fleet_cache_requests_total[15m])), 1e-9)", "legendFormat": "{{cache}}"}],
       "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"lineWidth": 2, "fillOpacity": 0}}},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 12, "type": "stat", "title": "Провайдер модели",
+      "gridPos": {"x": 0, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "fleet_llm_provider_info{job=\"fleet_service\"}", "legendFormat": "{{provider}}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "none", "thresholds": {"mode": "absolute", "steps": [{"color": "#3987e5", "value": null}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "name"}
+    },
+    {
+      "id": 13, "type": "stat", "title": "GigaChat: тематические отказы (1 ч)",
+      "gridPos": {"x": 8, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(increase(fleet_gigachat_blacklist_total{job=\"gigachat_gateway\"}[1h]))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d95926", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 14, "type": "stat", "title": "GigaChat: нет места в шлюзе (1 ч)",
+      "gridPos": {"x": 16, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(increase(fleet_rejections_total{job=\"gigachat_gateway\", reason=\"gigachat_no_slot\"}[1h]))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d95926", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
     }
   ]
 }

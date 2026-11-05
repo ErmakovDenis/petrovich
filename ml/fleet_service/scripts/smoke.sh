@@ -315,8 +315,9 @@ echo "$reply" | json_check '"средний уровень топлива 250.0 
 logs=$("${COMPOSE[@]}" logs --no-color fleet_service)
 step "GET /metrics: метрики для алертов на месте, без токенов и схем"
 metrics=$(curl -fsS "$BASE/metrics")
-for series in fleet_llm_responses_total fleet_llm_credits_exhausted_total fleet_upstream_requests_total \
-    fleet_rejections_total fleet_cache_requests_total fleet_breaker_state fleet_queue_depth 'http_requests_total{'; do
+for series in fleet_llm_responses_total 'fleet_llm_credits_exhausted_total{provider=' fleet_upstream_requests_total \
+    fleet_rejections_total fleet_cache_requests_total fleet_breaker_state fleet_queue_depth 'http_requests_total{' \
+    'fleet_llm_provider_info{provider="openrouter"} 1.0'; do
     grep -qF "$series" <<<"$metrics" || fail "в /metrics нет $series"
 done
 grep -q 'status="200"' <<<"$metrics" || fail "http_requests_total без точного кода ответа"
@@ -441,6 +442,34 @@ echo "$reply" | json_check '"'"$NOTICE"'" in d["reply"]' || fail "ответ р�
 fakes_api /reserve/_requests | json_check 'len(d) == 1' || fail "резерв при 402 GigaChat"
 fakes_api /openrouter/_requests | json_check 'd == []' || fail "при 402 GigaChat данные ушли в OpenRouter"
 gigachat_api /gigachat/_config '{}' >/dev/null
+
+step "метрики режима gigachat: провайдер, запросы шлюза к GigaChat, 402 по провайдеру"
+metrics=$(curl -fsS "$BASE/metrics")
+grep -qF 'fleet_llm_provider_info{provider="gigachat"} 1.0' <<<"$metrics" || fail "в /metrics нет активного провайдера"
+grep -qF 'fleet_llm_credits_exhausted_total{provider="gigachat"}' <<<"$metrics" || fail "в /metrics нет ряда 402 GigaChat"
+gateway=$(gateway_metrics)
+grep -qF 'upstream="gigachat"' <<<"$gateway" || fail "шлюз не считает запросы к GigaChat"
+grep -qF 'upstream="gigachat_oauth"' <<<"$gateway" || fail "шлюз не считает получение токена"
+
+step "режим gigachat без резерва: 402 → 503 без повторов и счётчик; 422 → 502 без повторов; данные никуда больше не уходят"
+export SMOKE_RESERVE_URL=
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 >/dev/null 2>&1
+curl -fsS "$BASE/health" | json_check 'd["reserveConfigured"] is False and d["llmProvider"] == "gigachat"' || fail "/health без резерва"
+gigachat_api /gigachat/_config '{"failures":[{"status":402,"message":"Payment required"}]}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+code=$(curl -s -o "$RESULT_DIR/402.json" -w '%{http_code}' -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+[ "$code" = 503 ] || fail "402 GigaChat без резерва: ожидался 503, получен $code: $(cat "$RESULT_DIR/402.json")"
+gigachat_api /gigachat/_stats | json_check 'd["requests"] == 1' || fail "402 GigaChat повторялся: $(gigachat_api /gigachat/_stats)"
+grep -qF 'fleet_llm_credits_exhausted_total{provider="gigachat"} 1.0' <<<"$(curl -fsS "$BASE/metrics")" \
+    || fail "402 GigaChat не посчитан с провайдером"
+gigachat_api /gigachat/_config '{"failures":[{"status":422,"message":"Invalid params"}]}' >/dev/null
+code=$(curl -s -o "$RESULT_DIR/422.json" -w '%{http_code}' -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+[ "$code" = 502 ] || fail "422 GigaChat без резерва: ожидался 502, получен $code: $(cat "$RESULT_DIR/422.json")"
+gigachat_api /gigachat/_stats | json_check 'd["requests"] == 1' || fail "422 GigaChat повторялся: $(gigachat_api /gigachat/_stats)"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "без резерва данные ушли в OpenRouter"
+fakes_api /reserve/_requests | json_check 'd == []' || fail "без резерва данные ушли на адрес резерва"
+gigachat_api /gigachat/_config '{}' >/dev/null
+unset SMOKE_RESERVE_URL
 
 step "обратно: FS_LLM_PROVIDER=openrouter, docker compose up -d --wait → чат через OpenRouter, ноль запросов к GigaChat"
 export SMOKE_LLM_PROVIDER=openrouter

@@ -1,5 +1,5 @@
-# Prometheus стенда (профиль monitoring в ml/docker-compose.yml): собирает /metrics fleet_service по внутренней сети
-# compose и проверяет правила алертов alerts.yml. Alertmanager не подключён: сработавшие алерты видны в UI Prometheus
+# Prometheus стенда (профиль monitoring в ml/docker-compose.yml): собирает /metrics fleet_service и шлюза GigaChat по
+# внутренней сети compose и проверяет правила алертов alerts.yml. Alertmanager не подключён: сработавшие алерты видны в UI Prometheus
 # (Alerts) и на дашборде Grafana; рассылку (почта, Telegram) настраивают отдельно.
 global:
   scrape_interval: 15s
@@ -13,3 +13,8 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["fleet_service:8000"]
+  # Запросы к GigaChat, ожидание потока и тематические отказы считает шлюз. Порт шлюза наружу не открыт.
+  - job_name: gigachat_gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["gigachat_gateway:8000"]

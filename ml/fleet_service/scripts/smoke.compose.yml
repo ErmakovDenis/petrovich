@@ -43,7 +43,8 @@ services:
       FS_OPENROUTER_PROVIDER_SORT: ""
       FS_OPENROUTER_ALLOW_FALLBACKS: "true"
       # Резерв вне OpenRouter — подставной; breaker стенда — короткий, чтобы проверить и пробный запрос.
-      FS_LLM_RESERVE_BASE_URL: http://fakes:9000/reserve/v1
+      # SMOKE_RESERVE_URL= (пусто) — шаг «режим gigachat без резерва».
+      FS_LLM_RESERVE_BASE_URL: ${SMOKE_RESERVE_URL-http://fakes:9000/reserve/v1}
       FS_LLM_RESERVE_MODEL: fake/reserve
       FS_LLM_RESERVE_API_KEY: reserve-key
       FS_LLM_RESERVE_DEGRADED: "true"

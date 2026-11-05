@@ -353,6 +353,13 @@ def test_status_mapping_has_error_code(fakes, upstream, expected):
     assert len(fakes.state.gigachat_requests) == 1
 
 
+def test_402_is_counted_by_gateway_because_stand_may_never_see_it(fakes):
+    fakes.state.gigachat_failures = [{"status": 402, "message": "Payment required"}]
+    gateway = gateway_for(fakes)
+    assert post(gateway).status_code == 402
+    assert gateway.state.metrics.llm_credits_exhausted.labels("gigachat")._value.get() == 1
+
+
 def test_blacklist_returns_model_text_with_warning_and_counter(fakes, caplog):
     fakes.state.gigachat_failures = [{"finishReason": "blacklist", "content": "Не могу обсуждать эту тему."}]
     gateway = gateway_for(fakes)

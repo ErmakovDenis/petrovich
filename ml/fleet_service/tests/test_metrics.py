@@ -71,7 +71,8 @@ def test_credits_exhausted_and_routes_are_counted():
     import asyncio
 
     asyncio.run(run())
-    assert metrics.llm_credits_exhausted._value.get() == 1
+    assert metrics.llm_credits_exhausted.labels("openrouter")._value.get() == 1
+    assert metrics.llm_credits_exhausted.labels("gigachat")._value.get() == 0
     assert metrics.llm_responses.labels("reserve")._value.get() == 1
     assert metrics.upstream_requests.labels("llm", "402")._value.get() == 1
 
@@ -146,8 +147,8 @@ def test_llm_error_in_200_body_and_reserve_402_are_told_apart():
 
     asyncio.run(run())
     assert metrics.upstream_requests.labels("llm", "error_in_body")._value.get() == 1
-    # 402 резерва — не про OpenRouter: критичный алерт «пополните OpenRouter» не срабатывает.
-    assert metrics.llm_credits_exhausted._value.get() == 0
+    # 402 резерва — не про основного провайдера: критичный алерт «пополните баланс» не срабатывает.
+    assert metrics.llm_credits_exhausted.labels("openrouter")._value.get() == 0
 
 
 def test_broken_stream_is_a_separate_outcome():
@@ -180,3 +181,40 @@ def test_broken_stream_is_a_separate_outcome():
     assert metrics.upstream_duration.labels("autograph")._sum.get() >= 0
     assert [s.value for m in metrics.registry.collect() if m.name == "fleet_upstream_duration_seconds"
             for s in m.samples if s.name.endswith("_count")] == [1]
+
+
+def test_provider_info_and_credits_label_follow_active_provider(make_client):
+    with make_client(test_settings(metrics_enabled=True)) as client:
+        body = client.get("/metrics").text
+    assert _value(body, "fleet_llm_provider_info", provider="openrouter") == 1
+    assert 'fleet_llm_provider_info{provider="gigachat"}' not in body
+    # Ряд с нулём есть сразу: первое событие видно алерту.
+    assert _value(body, "fleet_llm_credits_exhausted_total", provider="gigachat") == 0
+    settings = test_settings(metrics_enabled=True, llm_provider="gigachat", gigachat_credentials="fake-key")
+    with make_client(settings) as client:
+        assert _value(client.get("/metrics").text, "fleet_llm_provider_info", provider="gigachat") == 1
+
+
+def test_gigachat_402_is_counted_with_provider():
+    import asyncio
+
+    import httpx
+    import pytest
+
+    from fleet_service.agent.llm import ChatCompletionsClient, LLMCreditsExhausted
+    from fleet_service.metrics import Metrics
+
+    def no_tokens(_):
+        return httpx.Response(402, json={"error": {"message": "Payment required", "code": 402}})
+
+    metrics = Metrics()
+    client = ChatCompletionsClient(test_settings(llm_provider="gigachat", gigachat_credentials="fake-key"),
+                                   httpx.AsyncClient(transport=httpx.MockTransport(no_tokens)), metrics=metrics)
+
+    async def run() -> None:
+        with pytest.raises(LLMCreditsExhausted):
+            await client.complete([], [])
+
+    asyncio.run(run())
+    assert metrics.llm_credits_exhausted.labels("gigachat")._value.get() == 1
+    assert metrics.llm_credits_exhausted.labels("openrouter")._value.get() == 0

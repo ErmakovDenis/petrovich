@@ -27,8 +27,10 @@ def test_every_setting_is_documented_in_env_example():
 
 
 def test_env_example_as_is_gives_defaults():
-    """Скопированный без правок .env.example (пустые значения) не ломает старт и не меняет умолчаний."""
-    assert Settings(_env_file=ENV_EXAMPLE) == Settings(_env_file=None)
+    """Скопированный без правок .env.example (пустые значения) не ломает старт и не меняет умолчаний. Кроме провайдера:
+    у нового стенда это gigachat, а в коде — openrouter, чтобы обновление работающего стенда не ломало чат."""
+    assert Settings(_env_file=ENV_EXAMPLE) == Settings(_env_file=None, llm_provider="gigachat")
+    assert Settings(_env_file=None).llm_provider == "openrouter"
 
 
 def test_gateway_timeout_must_be_below_proxy_attempt_in_gigachat_mode():

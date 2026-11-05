@@ -93,17 +93,17 @@ scripts/run.sh      # собрать, запустить эмулятор, ус�
 из AutoGRAPH и сворачивает их тем же алгоритмом, что `TripTablesMapper` приложения, применяет те же правила, что
 `BaselineAnomalyDetector` (совпадение держат эталоны `testdata/golden/`), вызывает `ml/predictive_antifraud` и хранит
 аномалии и решения владельцев (SQLite в томе compose), по расписанию сам проверяет машины без телефона и отправляет
-письма, подготовленные ассистентом, после подтверждения пользователем. Ассистент отвечает моделью через OpenRouter, получая числа
+письма, подготовленные ассистентом, после подтверждения пользователем. Ассистент отвечает моделью GigaChat или OpenRouter (`FS_LLM_PROVIDER`), получая числа
 из tools `list_vehicles`, `get_vehicle_summary`, `check_vehicle`, `list_anomalies` и `get_anomaly`.
-Ключи OpenRouter живут только на стенде (`ml/fleet_service/.env`), в APK их нет.
+Ключи моделей живут только на стенде (`ml/fleet_service/.env`), в APK их нет.
 
 ```bash
-cd ml && cp fleet_service/.env.example fleet_service/.env   # заполнить FS_OPENROUTER_API_KEY и FS_LLM_MODEL;
+cd ml && cp fleet_service/.env.example fleet_service/.env   # выбрать FS_LLM_PROVIDER и заполнить настройки режима (ml/DEPLOY.md, п. 4.2);
                                                             # для фоновой проверки — FS_ACCESS_ENCRYPTION_KEY;
                                                             # для писем — FS_SMTP_* и FS_EMAIL_RECIPIENTS_PATH
 cp fleet_service/config/recipients.example.toml fleet_service/config/recipients.toml   # получатели писем
 docker compose up -d --build                                # fleet_service :8080, predictive_antifraud :8001
-ml/fleet_service/scripts/smoke.sh                           # сквозная проверка с подставными OpenRouter и AutoGRAPH
+ml/fleet_service/scripts/smoke.sh                           # сквозная проверка с подставными OpenRouter, GigaChat и AutoGRAPH
 ```
 
 Развёртывание стенда на сервере (настройки, HTTPS, обновление, резервные копии) — [ml/DEPLOY.md](ml/DEPLOY.md).

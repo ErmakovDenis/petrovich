@@ -150,6 +150,8 @@ class Gateway:
         code = resp.status_code
         text = f"GigaChat ответил {code}: {gigachat_message(resp)}"
         if code == 402:
+            # Считает шлюз: если ответит запасная модель или резерв, до стенда 402 не дойдёт, и иначе сигнала не будет.
+            self._metrics.llm_credits_exhausted.labels("gigachat").inc()
             log.error("GigaChat: кончились токены модели (402) — нужен владелец стенда: %s", text)
         elif code == 422:
             log.warning("GigaChat отверг запрос (422): %s", text)

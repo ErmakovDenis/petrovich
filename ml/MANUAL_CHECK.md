@@ -10,7 +10,7 @@
 .claude/skills/fleet-check/check.sh     # gradle testDebugUnitTest + assembleDebug, оба pytest, smoke.sh
 ```
 
-`smoke.sh` гоняет стенд через compose с подставными OpenRouter и AutoGRAPH. Пока здесь есть красное — на устройство
+`smoke.sh` гоняет стенд через compose с подставными OpenRouter, GigaChat и AutoGRAPH. Пока здесь есть красное — на устройство
 не идти.
 
 ## 1. Настройки стенда (`.env`)
@@ -21,7 +21,8 @@ cp fleet_service/.env.example fleet_service/.env
 cp predictive_antifraud/.env.example predictive_antifraud/.env
 ```
 
-- `fleet_service/.env`: `FS_OPENROUTER_API_KEY`, `FS_LLM_MODEL`, `FS_PREDICTIVE_API_KEY`; для фоновой проверки —
+- `fleet_service/.env`: `FS_LLM_PROVIDER` и настройки этого режима (`DEPLOY.md`, п. 4.2): `FS_GIGACHAT_CREDENTIALS`,
+  `FS_GIGACHAT_CA_BUNDLE` или `FS_OPENROUTER_API_KEY`, `FS_LLM_MODEL`; `FS_PREDICTIVE_API_KEY`; для фоновой проверки —
   `FS_ACCESS_ENCRYPTION_KEY` (`python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"`).
 - письма — в `fleet_service/.env` `FS_SMTP_HOST`, `FS_SMTP_PORT`, `FS_SMTP_SECURITY`, `FS_SMTP_USERNAME`,
   `FS_SMTP_PASSWORD`, `FS_SMTP_FROM` и `FS_EMAIL_RECIPIENTS_PATH=/srv/config/recipients.toml`; получатели —
@@ -45,12 +46,12 @@ openssl rand -hex 32     # или: python3 -c "import secrets; print(secrets.tok
 
 ```bash
 docker compose up -d --build                                             # fleet_service :8080, predictive_antifraud :8001
-curl -s localhost:8080/health          # {"status":"ok","llmConfigured":true,"backgroundConfigured":true,"emailConfigured":true}
+curl -s localhost:8080/health          # {"status":"ok","llmProvider":"gigachat","llmConfigured":true,"backgroundConfigured":true,"emailConfigured":true,...}
 curl -s localhost:8001/health
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/v1/vehicles      # 401 — без токена стенд не отвечает
 ```
 
-`llmConfigured: false` — не заданы `FS_OPENROUTER_API_KEY` или `FS_LLM_MODEL`; `backgroundConfigured: false` —
+`llmConfigured: false` — не заданы ключ или модель активного режима; `backgroundConfigured: false` —
 не задан `FS_ACCESS_ENCRYPTION_KEY`; `emailConfigured: false` — не заданы SMTP, отправитель или файл получателей.
 
 ## 3. Сборка и установка debug-APK
@@ -122,7 +123,7 @@ N — нижняя оценка срока жизни токена (от пос�
 ## 7. Логи стенда без секретов
 
 ```bash
-docker compose logs fleet_service | grep -iE 'session=|bearer|password=|sk-or'
+docker compose logs fleet_service gigachat_gateway | grep -iE 'session=|bearer|basic |access_token|password=|sk-or'
 docker compose logs fleet_service | grep -c '<адрес получателя>'     # 0: адреса и текст письма в лог не пишутся
 ```
 
@@ -131,6 +132,69 @@ docker compose logs fleet_service | grep -c '<адрес получателя>' 
 ```bash
 docker compose exec fleet_service sh -c 'cat /srv/data/fleet.db*' | grep -ac '<свой пароль>'   # 0
 ```
+
+## 8. Режим GigaChat на настоящем API (шаг 5 плана `docs/gigachat-plan.md`)
+
+Выполняет человек, запросы тратят токены. Автоматические проверки этого не покрывают: `eval_cases.jsonl` смотрит только
+первый вызов tool, а подставной GigaChat не показывает качество ответов.
+
+**Подготовка.** Ключ и сертификат в `.env` (`DEPLOY.md`, п. 4.2), режим пока `openrouter`. Шлюз поднялся:
+`docker compose ps gigachat_gateway` — healthy.
+
+**8.1. Набор проверки на tools, сравнение с текущей моделью.**
+
+```bash
+docker compose exec -e FS_EVAL_API_KEY=test fleet_service python -m fleet_service.agent.eval_tools \
+    --base-url http://gigachat_gateway:8000/v1 --model GigaChat-2-Pro --model GigaChat-2-Max --repeat 3
+```
+
+Текущую модель — той же командой с адресом OpenRouter и его ключом. Требование плана: доля «tool и аргументы» не ниже
+текущей модели минус 5 п. п.
+
+**8.2. Сверка с настоящим API.** Записать результат каждого пункта:
+
+- вид `arguments`: второе обращение цепочки не получает 422. Если получает — `FS_GIGACHAT_ARGUMENTS_FORMAT=string`;
+- адрес `FS_GIGACHAT_BASE_URL` работает;
+- модели-кандидаты доступны на тарифе `PERS` и умеют функции (иначе 422 в логе шлюза);
+- срок токена в логе шлюза `получен токен доступа, осталось N с` — около 1800, а не тысячи лет;
+- запрос без `functions_state_id` в истории принимается (нужно для шага с резервом посреди ответа и для набора 8.1).
+
+**8.3. Ручной сценарий.** Переключить: `FS_LLM_PROVIDER=gigachat`, `docker compose up -d --wait`, в чате приложения задать
+вопросы. Для каждого записать: какие tools вызваны, совпали ли числа, сколько секунд занял ответ. Вызовы и время — в логе:
+
+```bash
+docker compose logs fleet_service | grep -E 'модель вызывает tool|чат: схема'
+# итерация 1: модель вызывает tool list_vehicles(...) ; чат: схема …, обращений к модели 3 (primary, primary, primary), tools […], 12.3 с
+```
+
+| Вопрос | Что проверить |
+|---|---|
+| «Сколько топлива у <машина> за сутки?» | Цепочка из двух tools: `list_vehicles`, затем `get_vehicle_summary` |
+| «Есть ли аномалии у <машина> за неделю?» | `check_vehicle`; статус предиктивной проверки назван честно |
+| «Сравни расход топлива <машина 1> и <машина 2> за неделю» | Цепочка из трёх и более tools: укладывается ли в `FS_AGENT_MAX_ITERATIONS` (5) и в срок ответа |
+| «Какие аномалии были вчера? Что решили по последней?» | `list_anomalies`, затем `get_anomaly` |
+| Чат из карточки аномалии: «Что случилось и что делать?» | Контекст аномалии учтён, в ответе нет выдуманных чисел |
+| «Подготовь письмо механику о перегреве» | `list_recipients`, затем `draft_email`; письмо уходит только после подтверждения |
+| То же в Telegram-боте | Ответы и черновики работают без изменений в боте |
+
+**Числа.** Результаты tools в лог не пишутся: сверяйте числа из ответа с данными за тот же период. Топливо и параметры — на
+экранах «Таблицы» и «Графики» приложения или в `GET /v1/telemetry`, аномалии — в `POST /v1/anomalies/check` и в ленте.
+Ответ без вызова tool при вопросе о данных (в логе нет `модель вызывает tool`) — сбой: `tool_choice: required` в этом режиме
+недоступен, и модель может отвечать сама.
+
+**Вопросы про сливы топлива.** Задать 5–10 обычных вопросов: «Был ли слив топлива у <машина> вчера?», «Покажи сливы за
+неделю», «Как понять, что топливо сливают?». Обычный вопрос не должен получать отказ по теме:
+
+```bash
+docker compose logs gigachat_gateway | grep -c 'blacklist'     # 0
+```
+
+Если отказы есть, переключать ли режим, решает владелец.
+
+**Время.** Ответы укладываются в `FS_CHAT_TIMEOUT_SECONDS` (100 с): последнее число в строке `чат: …`. p95 не считается: нет
+инструмента, выборка мала (`docs/assistant-eval.md`). Два одновременных вопроса с разных устройств идут по очереди, второй дольше.
+
+**Откат.** `FS_LLM_PROVIDER=openrouter`, `docker compose up -d --wait`; в логе после вопроса — `режим openrouter`, чат отвечает.
 
 ## Если что-то не так
 
@@ -150,4 +214,4 @@ docker compose exec fleet_service sh -c 'cat /srv/data/fleet.db*' | grep -ac '<�
 - с «Фоновой проверкой на стенде» стенд хранит последний токен устройства в базе зашифрованным
   (`FS_ACCESS_ENCRYPTION_KEY`); пароль — только с «Разрешить стенду входить самостоятельно», тоже зашифрованным;
   выключение переключателя удаляет оба;
-- в OpenRouter, `predictive_antifraud` и таблицы аномалий токен не попадает.
+- в модель (OpenRouter, GigaChat), `predictive_antifraud` и таблицы аномалий токен не попадает.
