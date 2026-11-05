@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     app_name: str = "Петрович: стенд ассистента и аналитики"
     log_level: str = "INFO"
 
+    # Какой провайдер отвечает за модель ассистента: openrouter или gigachat (через шлюз gigachat_gateway). Переключение —
+    # эта настройка и перезапуск compose. Режимы не подменяют друг друга автоматически: иначе данные могли бы незаметно
+    # уйти другому провайдеру. По умолчанию openrouter: обновление работающего стенда не ломает чат.
+    llm_provider: Literal["openrouter", "gigachat"] = "openrouter"
+
     # OpenRouter (формат OpenAI chat completions).
     openrouter_api_key: SecretStr | None = None
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -32,8 +37,29 @@ class Settings(BaseSettings):
     openrouter_provider_sort: Literal["", "latency", "throughput", "price"] = ""
     openrouter_allow_fallbacks: bool = True
 
+    # GigaChat. Ключ авторизации (Base64 от Client ID и Client Secret) нужен только шлюзу для получения токена.
+    gigachat_credentials: SecretStr | None = None
+    gigachat_scope: Literal["GIGACHAT_API_PERS", "GIGACHAT_API_B2B", "GIGACHAT_API_CORP"] = "GIGACHAT_API_PERS"
+    gigachat_base_url: str = "https://api.giga.chat/v1"
+    gigachat_auth_url: str = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    gigachat_model: str = "GigaChat-2-Pro"
+    # Запасные модели GigaChat через запятую, по порядку; только через прокси.
+    gigachat_fallback_models: str = ""
+    # Файл корневого сертификата Минцифры (PEM). TLS проверяется всегда; настройки отключения нет.
+    gigachat_ca_bundle: Path | None = None
+    # Одновременных запросов шлюза к GigaChat: столько потоков разрешает тариф (PERS — 1, ИП и юрлица — 10).
+    gigachat_concurrency: int = Field(1, ge=1)
+    # Срок запроса в шлюзе вместе с ожиданием места и токена. В режиме gigachat — меньше FS_LLM_TIMEOUT_SECONDS (проверяется
+    # при старте): иначе прокси бросает попытку раньше шлюза, а тот ещё держит место, и повтор упирается в него же.
+    gigachat_timeout_seconds: float = Field(50, gt=0)
+    # В каком виде шлюз передаёт arguments вызова функции обратно: object или string (JSON в строке). В спецификации
+    # тип и примеры — объект, описание — строка; сверяется на настоящем API.
+    gigachat_arguments_format: Literal["object", "string"] = "object"
+    # Адрес шлюза от стенда и прокси (OpenAI-совместимый, с /v1).
+    gigachat_gateway_url: str = "http://gigachat_gateway:8000/v1"
+
     # Прокси LiteLLM (сервис llm_proxy в docker compose): повторы и запасные модели. Пусто — стенд обращается
-    # к OpenRouter напрямую, без повторов. Конфигурацию прокси строит python -m fleet_service.llm_proxy из этих же FS_*.
+    # к модели напрямую (OpenRouter или шлюз GigaChat), без повторов. Конфигурацию прокси строит python -m fleet_service.llm_proxy из этих же FS_*.
     llm_proxy_url: str = ""
     # Запасные модели OpenRouter через запятую: берутся по порядку, если основная не ответила (через прокси — после
     # исчерпания повторов основной, без прокси — полем models запроса).
@@ -44,9 +70,9 @@ class Settings(BaseSettings):
     llm_retries: int = Field(2, ge=0, le=5)
     llm_retry_base_seconds: float = Field(1, ge=0)
     llm_retry_max_seconds: float = Field(10, ge=0)
-    # Резервная модель вне OpenRouter — любой OpenAI-совместимый адрес (свой vLLM, профиль reserve-llm в compose).
-    # Прокси переходит к ней, когда не ответили основная и запасные модели (в том числе при 402 и недоступном
-    # OpenRouter). Пустой адрес — резерва нет. Только через прокси.
+    # Резервная модель вне основного провайдера — любой OpenAI-совместимый адрес (свой vLLM, профиль reserve-llm в
+    # compose). Прокси переходит к ней, когда не ответили основная и запасные модели (в том числе при 402 и недоступном
+    # провайдере), в обоих режимах. Пустой адрес — резерва нет. Только через прокси.
     llm_reserve_base_url: str = ""
     llm_reserve_model: str = ""
     llm_reserve_api_key: SecretStr | None = None
@@ -55,7 +81,7 @@ class Settings(BaseSettings):
 
     # Circuit breaker на AutoGRAPH, predictive_antifraud и модель: после FS_BREAKER_FAILURES сбоев за
     # FS_BREAKER_WINDOW_SECONDS — сразу отказ на FS_BREAKER_OPEN_SECONDS, затем один пробный запрос. Для модели сбой —
-    # и ответ резерва; пока открыт, стенд обращается сразу к резерву (если он задан), минуя OpenRouter.
+    # и ответ резерва; пока открыт, стенд обращается сразу к резерву (если он задан), минуя основного провайдера.
     breaker_failures: int = Field(5, ge=1)
     breaker_window_seconds: float = Field(30, gt=0)
     breaker_open_seconds: float = Field(60, gt=0)
@@ -65,7 +91,7 @@ class Settings(BaseSettings):
     # в nginx (DEPLOY.md, п. 8.7), поэтому по умолчанию выключен — обновление стенда его не откроет.
     metrics_enabled: bool = False
 
-    # Модель и генерация. Пустая модель — ассистент не настроен (/v1/chat отвечает 503).
+    # Модель OpenRouter и генерация. Пустая модель в режиме openrouter — ассистент не настроен (/v1/chat отвечает 503).
     llm_model: str = ""
     llm_temperature: float = Field(0.2, ge=0, le=2)
     llm_max_tokens: int = Field(1024, gt=0)
@@ -233,20 +259,37 @@ class Settings(BaseSettings):
             raise ValueError("FS_BACKGROUND_WINDOW_HOURS не может быть больше FS_TELEMETRY_MAX_PERIOD_HOURS")
         return self
 
+    @model_validator(mode="after")
+    def _gateway_answers_before_proxy_gives_up(self) -> "Settings":
+        if self.llm_provider == "gigachat" and self.gigachat_timeout_seconds >= self.llm_timeout_seconds:
+            raise ValueError("В режиме gigachat FS_GIGACHAT_TIMEOUT_SECONDS должен быть меньше FS_LLM_TIMEOUT_SECONDS")
+        return self
+
     @property
     def llm_configured(self) -> bool:
-        key = self.openrouter_api_key.get_secret_value() if self.openrouter_api_key else ""
-        return bool(key and self.llm_model)
+        """Заданы ключ и модель активного провайдера."""
+        secret = self.gigachat_credentials if self.llm_provider == "gigachat" else self.openrouter_api_key
+        return bool(secret.get_secret_value() if secret else "") and bool(self.active_model)
+
+    @property
+    def llm_provider_name(self) -> str:
+        """Имя активного провайдера для логов и ошибок."""
+        return "GigaChat" if self.llm_provider == "gigachat" else "OpenRouter"
+
+    @property
+    def active_model(self) -> str:
+        return (self.gigachat_model if self.llm_provider == "gigachat" else self.llm_model).strip()
 
     @property
     def reserve_configured(self) -> bool:
         return bool(self.llm_reserve_base_url.strip() and self.llm_reserve_model.strip())
 
     @property
-    def fallback_models(self) -> list[str]:
-        """FS_LLM_FALLBACK_MODELS списком, без пустых и без повтора основной модели."""
-        names = [m.strip() for m in self.llm_fallback_models.split(",")]
-        return list(dict.fromkeys(m for m in names if m and m != self.llm_model))
+    def active_fallback_models(self) -> list[str]:
+        """Запасные модели активного провайдера списком, без пустых и без повтора основной модели."""
+        source = self.gigachat_fallback_models if self.llm_provider == "gigachat" else self.llm_fallback_models
+        names = [m.strip() for m in source.split(",")]
+        return list(dict.fromkeys(m for m in names if m and m != self.active_model))
 
     @property
     def email_configured(self) -> bool:

@@ -15,7 +15,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from . import __version__
 from .agent.fleet_tools import build_fleet_tools
-from .agent.llm import LLMClient, OpenRouterClient
+from .agent.llm import ChatCompletionsClient, LLMClient
 from .agent.loop import Agent
 from .agent.mail_tools import build_mail_tools
 from .agent.prompt import load_system_prompt
@@ -152,7 +152,7 @@ def create_app(
         app.state.telegram_notifier = TelegramNotifier(settings, telegram_links, telegram_sessions, telemetry, store,
                                                        app.state.telegram_reports)
         app.state.agent = Agent(
-            llm or OpenRouterClient(settings, client, breakers["llm"], metrics),
+            llm or ChatCompletionsClient(settings, client, breakers["llm"], metrics),
             tools if tools is not None else build_tools(settings, telemetry, checks, store, emails),
             settings.agent_max_iterations,
         )

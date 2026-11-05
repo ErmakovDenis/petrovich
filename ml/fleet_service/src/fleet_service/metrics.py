@@ -1,5 +1,5 @@
 """Метрики Prometheus стенда (GET /metrics при FS_METRICS_ENABLED): запросы к внешним системам по коду и
-длительность, ответы модели по маршруту (основная, запасная, резерв), 402 OpenRouter, отказы по причине, попадания
+длительность, ответы модели по маршруту (основная, запасная, резерв), 402 модели, отказы по причине, попадания
 в кэши, состояние breaker'ов, глубина очередей. HTTP-метрики самого стенда — prometheus-fastapi-instrumentator.
 
 Метки — только из короткого известного набора (система, код, причина): ни id машин, ни схем, ни логинов — иначе
@@ -37,10 +37,10 @@ class Metrics:
             "fleet_upstream_duration_seconds", "Длительность запросов к внешним системам", ["upstream"],
             buckets=UPSTREAM_BUCKETS, registry=r)
         self.llm_responses = Counter(
-            "fleet_llm_responses", "Ответы модели по маршруту: primary, fallback (запасная OpenRouter), reserve",
+            "fleet_llm_responses", "Ответы модели по маршруту: primary, fallback (запасная модель), reserve",
             ["route"], registry=r)
         self.llm_credits_exhausted = Counter(
-            "fleet_llm_credits_exhausted", "Ответы 402 OpenRouter: кончились кредиты или лимит ключа", registry=r)
+            "fleet_llm_credits_exhausted", "Ответы 402 модели: кончились кредиты, токены или лимит ключа", registry=r)
         self.rejections = Counter(
             "fleet_rejections", "Отказы стенда без обработки по причине (лимиты, очереди, breaker'ы)", ["reason"],
             registry=r)

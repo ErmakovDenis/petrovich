@@ -50,7 +50,7 @@ def test_credits_exhausted_and_routes_are_counted():
     import httpx
     import pytest
 
-    from fleet_service.agent.llm import LLMCreditsExhausted, OpenRouterClient
+    from fleet_service.agent.llm import LLMCreditsExhausted, ChatCompletionsClient
     from fleet_service.metrics import Metrics
 
     responses = iter([
@@ -59,7 +59,7 @@ def test_credits_exhausted_and_routes_are_counted():
                        headers={"x-litellm-model-id": "reserve"}),
     ])
     metrics = Metrics()
-    client = OpenRouterClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
+    client = ChatCompletionsClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
                               httpx.AsyncClient(transport=httpx.MockTransport(lambda r: next(responses))),
                               metrics=metrics)
 
@@ -126,7 +126,7 @@ def test_llm_error_in_200_body_and_reserve_402_are_told_apart():
     import httpx
     import pytest
 
-    from fleet_service.agent.llm import LLMCreditsExhausted, LLMError, OpenRouterClient
+    from fleet_service.agent.llm import LLMCreditsExhausted, LLMError, ChatCompletionsClient
     from fleet_service.metrics import Metrics
 
     responses = iter([
@@ -134,7 +134,7 @@ def test_llm_error_in_200_body_and_reserve_402_are_told_apart():
         httpx.Response(402, json={"error": {"message": "reserve credits", "code": 402}}),
     ])
     metrics = Metrics()
-    client = OpenRouterClient(
+    client = ChatCompletionsClient(
         test_settings(llm_proxy_url="http://llm_proxy:4000", llm_reserve_model="r", llm_reserve_base_url="http://r/v1"),
         httpx.AsyncClient(transport=httpx.MockTransport(lambda r: next(responses))), metrics=metrics)
 

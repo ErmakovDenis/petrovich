@@ -54,7 +54,7 @@ async def chat(
         http.app.state.metrics.rejections.labels("model_not_configured").inc()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Ассистент на стенде не настроен: не заданы ключ OpenRouter или модель",
+            "Ассистент на стенде не настроен: не заданы ключ или модель",
         )
     if request.messages[-1].role != "user":
         raise HTTPException(UNPROCESSABLE, "Последнее сообщение должно быть от пользователя")
