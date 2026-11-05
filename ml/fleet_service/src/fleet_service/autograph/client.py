@@ -20,6 +20,7 @@ import ijson
 from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
 from ..limits import UpstreamLimiter
+from ..metrics import Metrics
 from ..schemas.contract import Vehicle
 from ..telemetry.mapper import TripTablesBuilder
 from ..telemetry.parameters import RParameter
@@ -47,12 +48,14 @@ def retry_delay(settings: Settings, attempt: int) -> float:
 
 
 class AutoGraphClient:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker,
+                 metrics: Metrics | None = None):
         """[limiter] и [breaker] — общие на процесс для AutoGRAPH (main.create_app), с проверкой сессии."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
         self._breaker = breaker
+        self._metrics = metrics or Metrics()
 
     def _url(self, method: str) -> str:
         return self._settings.autograph_base_url.rstrip("/") + "/" + method
@@ -79,7 +82,8 @@ class AutoGraphClient:
         except BreakerOpen as e:
             log.warning("AutoGRAPH %s: breaker открыт — запрос не отправлен", method)
             raise AutoGraphUnavailable(
-                f"AutoGRAPH недоступен: много сбоев подряд, повтор через {max(1, round(e.retry_after))} с"
+                f"AutoGRAPH недоступен: много сбоев подряд, повтор через {max(1, round(e.retry_after))} с",
+                reason="breaker_autograph",
             ) from None
 
     @asynccontextmanager
@@ -95,7 +99,16 @@ class AutoGraphClient:
             request = self._http.build_request("GET", self._url(method), params=params, timeout=timeout)
             slot = await self._limiter.acquire()
             try:
-                resp = await self._http.send(request, stream=stream)
+                # Исход — по заголовкам ответа; длительность потокового GetTripTables — вместе с чтением тела (ниже).
+                with self._metrics.upstream("autograph") as call:
+                    try:
+                        resp = await self._http.send(request, stream=stream)
+                    except httpx.TimeoutException:
+                        call.outcome = "timeout"
+                        raise
+                    call.status(resp.status_code)
+                    if stream:
+                        call.defer()
             except httpx.TransportError as e:
                 slot.release()
                 last = e
@@ -108,9 +121,16 @@ class AutoGraphClient:
                 raise
             try:
                 if resp.status_code == 200:
-                    yield resp
+                    try:
+                        yield resp
+                    except (httpx.TransportError, AutoGraphUnavailable):
+                        # Заголовки 200 уже учтены: обрыв при чтении тела — отдельным исходом, иначе ошибки не видно.
+                        self._metrics.upstream_requests.labels("autograph", "stream_error").inc()
+                        raise
                     return
             finally:
+                if stream:
+                    call.finish()
                 # Место освобождается, даже если закрытие ответа прервано (отмена запроса, обрыв связи).
                 try:
                     await resp.aclose()

@@ -1,3 +1,4 @@
+import json
 import logging
 
 import httpx
@@ -8,15 +9,15 @@ from fleet_service.agent.llm import (
     LLMError,
     LLMRetryable,
     LLMTimeout,
-    OpenRouterClient,
+    ChatCompletionsClient,
     llm_scope,
 )
 
 from .conftest import test_settings
 
 
-def client_with(handler) -> OpenRouterClient:
-    return OpenRouterClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+def client_with(handler) -> ChatCompletionsClient:
+    return ChatCompletionsClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
 
 @pytest.mark.anyio
@@ -179,7 +180,7 @@ async def test_direct_request_has_fallback_models_and_provider_routing():
 
     settings = test_settings(llm_fallback_models=" x/fallback, fake/model ,,y/second",
                              openrouter_provider_sort="latency", openrouter_allow_fallbacks=False)
-    client = OpenRouterClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(ok)))
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(ok)))
     with llm_scope(None) as scope:
         await client.complete([], [])
     [body] = seen
@@ -212,10 +213,10 @@ async def test_proxy_request_uses_model_group_without_key():
     def ok(request):
         seen.append(request)
         return httpx.Response(200, json={"model": "fake/model", "choices": [{"message": {"content": "ок"}}]},
-                              headers={"x-litellm-model-id": "openrouter"})
+                              headers={"x-litellm-model-id": "primary"})
 
     settings = test_settings(llm_proxy_url="http://llm_proxy:4000/", llm_fallback_models="x/fallback")
-    client = OpenRouterClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(ok)))
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(ok)))
     with llm_scope(None) as scope:
         await client.complete([{"role": "user", "content": "?"}], [])
     assert scope.routes == ["primary"]
@@ -234,7 +235,7 @@ async def test_proxy_fallback_is_seen_by_deployment_id():
         return httpx.Response(200, json={"model": "assistant", "choices": [{"message": {"content": "ок"}}]},
                               headers={"x-litellm-model-id": "fallback-1", "x-litellm-attempted-fallbacks": "1"})
 
-    client = OpenRouterClient(test_settings(llm_proxy_url="http://llm_proxy:4000", llm_fallback_models="x/fallback"),
+    client = ChatCompletionsClient(test_settings(llm_proxy_url="http://llm_proxy:4000", llm_fallback_models="x/fallback"),
                               httpx.AsyncClient(transport=httpx.MockTransport(ok)))
     with llm_scope(None) as scope:
         await client.complete([], [])
@@ -251,7 +252,7 @@ async def test_proxy_timeout_covers_retries_until_chat_deadline():
         seen.append(request.extensions["timeout"]["read"])
         return httpx.Response(200, json={"choices": [{"message": {"content": "ок"}}]})
 
-    client = OpenRouterClient(test_settings(llm_proxy_url="http://llm_proxy:4000", llm_timeout_seconds=30),
+    client = ChatCompletionsClient(test_settings(llm_proxy_url="http://llm_proxy:4000", llm_timeout_seconds=30),
                               httpx.AsyncClient(transport=httpx.MockTransport(ok)))
     await client.complete([], [])
     with llm_scope(80):
@@ -264,8 +265,38 @@ async def test_proxy_errors_name_the_proxy():
     def down(request):
         raise httpx.ConnectError("refused", request=request)
 
-    client = OpenRouterClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
+    client = ChatCompletionsClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
                               httpx.AsyncClient(transport=httpx.MockTransport(down)))
     with pytest.raises(LLMRetryable) as e:
         await client.complete([], [])
     assert str(e.value) == "Прокси модели недоступен: ConnectError"
+
+
+@pytest.mark.anyio
+async def test_gigachat_direct_request_goes_to_gateway_without_key_and_openrouter_fields():
+    seen: list[httpx.Request] = []
+
+    def ok(request):
+        seen.append(request)
+        return httpx.Response(200, json={"model": "GigaChat-2-Pro", "choices": [{"message": {"content": "ок"}}]})
+
+    settings = test_settings(llm_provider="gigachat", gigachat_credentials="giga-secret",
+                             gigachat_gateway_url="http://gigachat_gateway:8000/v1/", gigachat_fallback_models="GigaChat-2-Max")
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(ok)))
+    await client.complete([{"role": "user", "content": "?"}], [])
+    [request] = seen
+    assert str(request.url) == "http://gigachat_gateway:8000/v1/chat/completions"
+    assert "authorization" not in request.headers
+    body = json.loads(request.content)
+    assert body["model"] == "GigaChat-2-Pro" and "provider" not in body and "models" not in body
+
+
+@pytest.mark.anyio
+async def test_error_text_names_active_provider():
+    def rejected(_):
+        return httpx.Response(400, json={"error": {"message": "плохой запрос", "code": 400}})
+
+    settings = test_settings(llm_provider="gigachat", gigachat_credentials="giga-secret")
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(rejected)))
+    with pytest.raises(LLMError, match="Шлюз GigaChat ответил 400"):
+        await client.complete([{"role": "user", "content": "?"}], [])

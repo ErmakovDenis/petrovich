@@ -21,11 +21,13 @@ class LoginRejected(Exception):
 
 class AutoGraphUnavailable(Exception):
     """[upstream_failure] — признак недоступности AutoGRAPH для circuit breaker'а (сеть, 5xx, обрыв ответа); ответ
-    4xx на запрос — AutoGRAPH работает, breaker его не учитывает."""
+    4xx на запрос — AutoGRAPH работает, breaker его не учитывает. [reason] — причина отказа в fleet_rejections_total."""
 
-    def __init__(self, message: str = "AutoGRAPH недоступен", upstream_failure: bool = True):
+    def __init__(self, message: str = "AutoGRAPH недоступен", upstream_failure: bool = True,
+                 reason: str = "autograph_unavailable"):
         super().__init__(message)
         self.upstream_failure = upstream_failure
+        self.reason = reason
 
 
 class TripTablesTooLarge(Exception):

@@ -1,0 +1,145 @@
+{
+  "uid": "fleet-service",
+  "title": "Петрович: стенд",
+  "description": "Устойчивость стенда: внешние системы, модель, breaker'ы, очереди, отказы, кэши (ml/docs/load-and-resilience.md, шаг 6)",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "30s",
+  "tags": ["petrovich"],
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Доля ответов 503 (10 мин)",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(fleet_http_503_total{job=\"fleet_service\"}[10m])) / clamp_min(sum(rate(http_requests_total{job=\"fleet_service\"}[10m])), 1e-9)"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 1,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d03b3b", "value": 0.05}]}}},
+      "options": {"colorMode": "background", "graphMode": "area", "textMode": "value"}
+    },
+    {
+      "id": 2, "type": "stat", "title": "Circuit breaker'ы",
+      "gridPos": {"x": 6, "y": 0, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "fleet_breaker_state", "legendFormat": "{{upstream}}"}],
+      "fieldConfig": {"defaults": {
+        "mappings": [{"type": "value", "options": {
+          "0": {"text": "закрыт", "color": "#0ca30c"},
+          "1": {"text": "пробный", "color": "#fab219"},
+          "2": {"text": "открыт", "color": "#d03b3b"}}}],
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value_and_name"}
+    },
+    {
+      "id": 3, "type": "stat", "title": "402 модели (1 ч)",
+      "gridPos": {"x": 14, "y": 0, "w": 5, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(max by (provider) (increase(fleet_llm_credits_exhausted_total[1h])))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d03b3b", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 4, "type": "stat", "title": "Ответы через резерв (1 ч)",
+      "gridPos": {"x": 19, "y": 0, "w": 5, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(increase(fleet_llm_responses_total{route=\"reserve\"}[1h]))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#fab219", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Ответы модели по маршруту, в минуту",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (route) (rate(fleet_llm_responses_total[5m])) * 60", "legendFormat": "{{route}}"}],
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"lineWidth": 2, "fillOpacity": 0}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "primary"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#3987e5"}}, {"id": "displayName", "value": "основная"}]},
+          {"matcher": {"id": "byName", "options": "fallback"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#d95926"}}, {"id": "displayName", "value": "запасная"}]},
+          {"matcher": {"id": "byName", "options": "reserve"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#9085e9"}}, {"id": "displayName", "value": "резерв"}]}]},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Ошибки внешних систем по коду, в минуту",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (upstream, outcome) (rate(fleet_upstream_requests_total{outcome!~\"2..\"}[5m])) * 60", "legendFormat": "{{upstream}} {{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"lineWidth": 2, "fillOpacity": 0}}},
+      "options": {"legend": {"displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"]}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Длительность запросов к внешним системам, p95",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (upstream, le) (rate(fleet_upstream_duration_seconds_bucket[5m])))", "legendFormat": "{{upstream}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 0}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "llm"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#3987e5"}}]},
+        {"matcher": {"id": "byName", "options": "autograph"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#199e70"}}]},
+        {"matcher": {"id": "byName", "options": "predictive"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#c98500"}}]}]},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Длительность запросов к внешним системам, p50",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.5, sum by (upstream, le) (rate(fleet_upstream_duration_seconds_bucket[5m])))", "legendFormat": "{{upstream}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 0}}, "overrides": [
+        {"matcher": {"id": "byName", "options": "llm"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#3987e5"}}]},
+        {"matcher": {"id": "byName", "options": "autograph"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#199e70"}}]},
+        {"matcher": {"id": "byName", "options": "predictive"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "#c98500"}}]}]},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Очереди: ждут места",
+      "gridPos": {"x": 0, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "fleet_queue_depth", "legendFormat": "{{limiter}}"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 0}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Отказы стенда по причине, в минуту",
+      "gridPos": {"x": 8, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (reason) (rate(fleet_rejections_total[5m])) * 60", "legendFormat": "{{reason}}"}],
+      "fieldConfig": {"defaults": {"unit": "none", "custom": {"lineWidth": 2, "fillOpacity": 0}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Попадания в кэш",
+      "gridPos": {"x": 16, "y": 20, "w": 8, "h": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (cache) (rate(fleet_cache_requests_total{result=\"hit\"}[15m])) / clamp_min(sum by (cache) (rate(fleet_cache_requests_total[15m])), 1e-9)", "legendFormat": "{{cache}}"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"lineWidth": 2, "fillOpacity": 0}}},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    },
+    {
+      "id": 12, "type": "stat", "title": "Провайдер модели",
+      "gridPos": {"x": 0, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "fleet_llm_provider_info{job=\"fleet_service\"}", "legendFormat": "{{provider}}", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "none", "thresholds": {"mode": "absolute", "steps": [{"color": "#3987e5", "value": null}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "name"}
+    },
+    {
+      "id": 13, "type": "stat", "title": "GigaChat: тематические отказы (1 ч)",
+      "gridPos": {"x": 8, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(increase(fleet_gigachat_blacklist_total{job=\"gigachat_gateway\"}[1h]))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d95926", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    },
+    {
+      "id": 14, "type": "stat", "title": "GigaChat: нет места в шлюзе (1 ч)",
+      "gridPos": {"x": 16, "y": 28, "w": 8, "h": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(increase(fleet_rejections_total{job=\"gigachat_gateway\", reason=\"gigachat_no_slot\"}[1h]))"}],
+      "fieldConfig": {"defaults": {"unit": "none", "decimals": 0,
+        "thresholds": {"mode": "absolute", "steps": [{"color": "#0ca30c", "value": null}, {"color": "#d95926", "value": 1}]}}},
+      "options": {"colorMode": "background", "graphMode": "none", "textMode": "value"}
+    }
+  ]
+}

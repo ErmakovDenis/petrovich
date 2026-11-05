@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from ..agent.llm import LLMCreditsExhausted, LLMError, LLMRetryable, LLMTimeout
+from ..agent.llm import LLMBreakerOpen, LLMCreditsExhausted, LLMError, LLMRetryable, LLMTimeout
 from ..agent.loop import AgentIterationLimit
 from ..autograph.errors import AutoGraphUnavailable, SessionInvalid, TripTablesTooLarge
 from ..limits import Overloaded, RateLimited
@@ -29,12 +29,15 @@ def install_error_handlers(app: FastAPI) -> None:
         return _detail(status.HTTP_504_GATEWAY_TIMEOUT, str(e))
 
     @app.exception_handler(LLMCreditsExhausted)
-    async def llm_credits(_: Request, e: LLMCreditsExhausted) -> JSONResponse:
+    async def llm_credits(request: Request, e: LLMCreditsExhausted) -> JSONResponse:
+        request.app.state.metrics.rejections.labels("llm_credits").inc()
         # В лог (ERROR) уже записал клиент модели; пользователю — без подробностей про кредиты.
         return _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Ассистент временно недоступен, попробуйте позже")
 
     @app.exception_handler(LLMRetryable)
-    async def llm_retryable(_: Request, e: LLMRetryable) -> JSONResponse:
+    async def llm_retryable(request: Request, e: LLMRetryable) -> JSONResponse:
+        request.app.state.metrics.rejections.labels(
+            "breaker_llm" if isinstance(e, LLMBreakerOpen) else "llm_unavailable").inc()
         # Подробности (текст провайдера или прокси) — только в лог: пользователю они ничего не скажут.
         log.warning("модель: %s", e)
         response = _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Модель временно недоступна, повторите позже")
@@ -48,15 +51,17 @@ def install_error_handlers(app: FastAPI) -> None:
         return _detail(status.HTTP_502_BAD_GATEWAY, f"Модель не ответила: {e}")
 
     @app.exception_handler(RateLimited)
-    async def rate_limited(_: Request, e: RateLimited) -> JSONResponse:
+    async def rate_limited(request: Request, e: RateLimited) -> JSONResponse:
         log.info("лимит чата пользователя: повтор через %.0f с", e.retry_after)
+        request.app.state.metrics.rejections.labels("chat_rate_limit").inc()
         response = _detail(status.HTTP_429_TOO_MANY_REQUESTS, str(e))
         response.headers["Retry-After"] = str(math.ceil(e.retry_after))
         return response
 
     @app.exception_handler(Overloaded)
-    async def overloaded(_: Request, e: Overloaded) -> JSONResponse:
+    async def overloaded(request: Request, e: Overloaded) -> JSONResponse:
         log.warning("перегрузка: %s — отказ", e)
+        request.app.state.metrics.rejections.labels("chat_queue_full").inc()
         response = _detail(status.HTTP_503_SERVICE_UNAVAILABLE, "Высокая нагрузка на ассистента, повторите через минуту")
         response.headers["Retry-After"] = "60"
         return response
@@ -76,7 +81,8 @@ def install_error_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(AutoGraphUnavailable)
-    async def autograph_unavailable(_: Request, e: AutoGraphUnavailable) -> JSONResponse:
+    async def autograph_unavailable(request: Request, e: AutoGraphUnavailable) -> JSONResponse:
+        request.app.state.metrics.rejections.labels(e.reason).inc()
         log.warning("AutoGRAPH: %s", e)
         return _detail(status.HTTP_503_SERVICE_UNAVAILABLE, str(e))
 

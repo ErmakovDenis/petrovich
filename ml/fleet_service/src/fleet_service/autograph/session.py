@@ -17,6 +17,7 @@ import httpx
 from ..breaker import BreakerOpen, CircuitBreaker, counts_as_failure
 from ..config import Settings
 from ..limits import UpstreamLimiter
+from ..metrics import Metrics
 from .errors import AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 
 log = logging.getLogger(__name__)
@@ -36,12 +37,14 @@ class _Outcome(Enum):
 
 
 class AutoGraphSessionChecker:
-    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker):
+    def __init__(self, settings: Settings, http: httpx.AsyncClient, limiter: UpstreamLimiter, breaker: CircuitBreaker,
+                 metrics: Metrics | None = None):
         """[limiter] и [breaker] — общие с AutoGraphClient (один на процесс)."""
         self._settings = settings
         self._http = http
         self._limiter = limiter
         self._breaker = breaker
+        self._metrics = metrics or Metrics()
         self._cache: OrderedDict[str, tuple[float, _Outcome]] = OrderedDict()
         self._lock = asyncio.Lock()
 
@@ -88,19 +91,22 @@ class AutoGraphSessionChecker:
                 slot = await self._limiter.acquire()
         except TimeoutError:
             log.warning("AutoGRAPH: нет места для проверки сессии за %g с (FS_AUTOGRAPH_CONCURRENCY)", timeout)
-            raise AutoGraphUnavailable() from None
+            raise AutoGraphUnavailable(reason="autograph_no_slot") from None
         try:
-            with self._breaker.attempt() as outcome:
+            with self._breaker.attempt() as outcome, self._metrics.upstream("autograph") as call:
                 try:
                     resp = await self._http.get(url, params={"session": session}, timeout=timeout)
-                except httpx.HTTPError:
+                except httpx.HTTPError as e:
+                    if isinstance(e, httpx.TimeoutException):
+                        call.outcome = "timeout"
                     outcome.fail()
                     raise
+                call.status(resp.status_code)
                 if counts_as_failure(resp.status_code):
                     outcome.fail()
         except BreakerOpen:
             # Недоступность AutoGRAPH не кэшируется и не превращается в 401 — как и при сетевой ошибке.
-            raise AutoGraphUnavailable() from None
+            raise AutoGraphUnavailable(reason="breaker_autograph") from None
         except httpx.HTTPError as e:
             log.warning("AutoGRAPH: проверка сессии не удалась: %s", type(e).__name__)
             raise AutoGraphUnavailable() from e

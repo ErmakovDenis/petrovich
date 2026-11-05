@@ -17,6 +17,7 @@ from ..autograph.errors import SessionInvalid
 from ..autograph.session import session_key
 from ..cache import TtlCache
 from ..config import Settings
+from ..metrics import Metrics
 from ..schemas.contract import Vehicle
 from .mapper import BuildResult, TripTablesBuilder
 from .parameters import Aggregation, select
@@ -59,11 +60,13 @@ def utc_now() -> datetime:
 
 
 class TelemetryService:
-    def __init__(self, settings: Settings, client: AutoGraphClient, clock: Callable[[], datetime] = utc_now):
+    def __init__(self, settings: Settings, client: AutoGraphClient, clock: Callable[[], datetime] = utc_now,
+                 metrics: Metrics | None = None):
         """[clock] — текущее время UTC без пояса (в тестах — подставное)."""
         self._settings = settings
         self._client = client
         self.clock = clock
+        self._metrics = metrics or Metrics()
         s = settings
         self._devices: TtlCache[list[Vehicle]] = TtlCache(s.devices_cache_ttl_seconds, s.auth_cache_max_entries)
         self._parameters: TtlCache[_Selected] = TtlCache(s.parameters_cache_ttl_seconds, s.parameters_cache_max_entries)
@@ -106,6 +109,7 @@ class TelemetryService:
         vehicle = await self.vehicle(session, schema_id, vehicle_id)
         key = self.cache_key(schema_id, vehicle_id, from_, to, utc_offset_minutes, bucket)
         cached = self._telemetry.peek(key)
+        self._metrics.cache("telemetry", cached is not None)
         if cached is not None and cached.closed:
             log.info("телеметрия: схема %s, машина %s, %s — %s — из кэша (закрытый период)", schema_id, vehicle_id,
                      from_, to)

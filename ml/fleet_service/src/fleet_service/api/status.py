@@ -31,17 +31,21 @@ def require_admin(
 def stand_status(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, object]:
     state = request.app.state
     limits = state.limits
+    via_proxy = bool(settings.llm_proxy_url.strip())
+    # Без прокси запасные модели есть только у OpenRouter (поле models запроса); шлюз GigaChat их не перебирает.
+    fallbacks = settings.active_fallback_models if via_proxy or settings.llm_provider == "openrouter" else []
     return {
         "breakers": {name: b.status() for name, b in state.breakers.items()},
         "limits": {
             "chat": {"active": limits.chat.active, "waiting": limits.chat.waiting,
-                     "concurrency": settings.chat_concurrency, "queueMax": settings.chat_queue_max},
+                     "concurrency": settings.effective_chat_concurrency, "queueMax": settings.chat_queue_max},
             "autograph": {"active": limits.autograph.active, "background": limits.autograph.background_active,
                           "waiting": limits.autograph.waiting, "concurrency": settings.autograph_concurrency},
             "predictive": {"active": limits.predictive.active, "background": limits.predictive.background_active,
                            "waiting": limits.predictive.waiting, "concurrency": settings.predictive_concurrency},
         },
         "caches": state.telemetry_service.cache_sizes(),
-        "llm": {"viaProxy": bool(settings.llm_proxy_url.strip()), "fallbackModels": settings.fallback_models,
+        "llm": {"provider": settings.llm_provider, "model": settings.active_model,
+                "viaProxy": via_proxy, "fallbackModels": fallbacks,
                 "reserveConfigured": settings.reserve_configured},
     }

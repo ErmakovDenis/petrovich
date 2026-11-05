@@ -10,7 +10,7 @@ def test_config_from_settings():
     s = test_settings(llm_fallback_models="x/fallback, y/second", llm_retries=3, openrouter_provider_sort="price")
     config = proxy_config(s)
     primary, first, second = config["model_list"]
-    assert primary["model_name"] == "assistant" and primary["model_info"]["id"] == "openrouter"
+    assert primary["model_name"] == "assistant" and primary["model_info"]["id"] == "primary"
     params = primary["litellm_params"]
     assert params["model"] == "openrouter/fake/model"
     assert params["api_base"] == "http://fakes/openrouter/api/v1"
@@ -88,3 +88,34 @@ def test_retry_delays():
     env = proxy_env(test_settings(llm_retry_base_seconds=0.5, llm_retry_max_seconds=4, openrouter_api_key=None))
     assert env["INITIAL_RETRY_DELAY"] == "0.5" and env["MAX_RETRY_DELAY"] == "4"
     assert "FS_OPENROUTER_API_KEY" not in env
+
+
+def _gigachat_settings(**overrides):
+    return test_settings(llm_provider="gigachat", gigachat_credentials="giga-secret", gigachat_model="GigaChat-2-Pro",
+                         gigachat_gateway_url="http://gigachat_gateway:8000/v1/", **overrides)
+
+
+def test_gigachat_models_go_through_gateway_without_key_and_routing():
+    config = proxy_config(_gigachat_settings(gigachat_fallback_models="GigaChat-2-Max, GigaChat-2-Pro,",
+                                             llm_fallback_models="x/fallback"))
+    primary, fallback = config["model_list"]
+    assert primary["model_name"] == "assistant" and primary["model_info"]["id"] == "primary"
+    assert primary["litellm_params"]["model"] == "openai/GigaChat-2-Pro"
+    assert primary["litellm_params"]["api_base"] == "http://gigachat_gateway:8000/v1"
+    assert primary["litellm_params"]["api_key"] == "no-key"
+    assert "extra_body" not in primary["litellm_params"]
+    # Запасные — свои у режима: модели OpenRouter в шлюз не попадают, основная не повторяется.
+    assert (fallback["model_name"], fallback["model_info"]["id"], fallback["litellm_params"]["model"]) == (
+        "assistant-fallback-1", "fallback-1", "openai/GigaChat-2-Max")
+    assert config["router_settings"]["fallbacks"] == [{"assistant": ["assistant-fallback-1"]}]
+
+
+def test_gigachat_mode_gives_proxy_no_model_keys(tmp_path):
+    write(tmp_path, _gigachat_settings(llm_reserve_base_url="http://r/v1", llm_reserve_model="m",
+                                       llm_reserve_api_key="reserve-secret"))
+    env = (tmp_path / "litellm.env").read_text()
+    yaml = (tmp_path / "litellm.yaml").read_text(encoding="utf-8")
+    # Ключ GigaChat есть только у шлюза, ключ OpenRouter в этом режиме не нужен; резерв работает как раньше.
+    assert "giga-secret" not in env + yaml and FAKE_LLM_KEY not in env + yaml
+    assert "FS_LLM_RESERVE_API_KEY='reserve-secret'" in env
+    assert json.loads(yaml)["model_list"][-1]["model_info"]["id"] == "reserve"

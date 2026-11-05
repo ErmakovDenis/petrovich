@@ -1,0 +1,70 @@
+# Тесты правил алертов:
+#   docker run --rm --entrypoint promtool -v "$PWD/ml/monitoring:/m:ro" -w /m prom/prometheus:v3.15.0 test rules alerts_test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'fleet_llm_credits_exhausted_total{job="fleet_service", provider="gigachat"}'
+        values: "0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+      # Тот же 402 посчитал и шлюз: алерт всё равно один.
+      - series: 'fleet_llm_credits_exhausted_total{job="gigachat_gateway", provider="gigachat"}'
+        values: "0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+      # У неактивного провайдера счётчик стоит: алерта по нему нет.
+      - series: 'fleet_llm_credits_exhausted_total{job="fleet_service", provider="openrouter"}'
+        values: "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+      - series: 'fleet_llm_responses_total{job="fleet_service", route="reserve"}'
+        values: "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+      - series: 'fleet_breaker_state{job="fleet_service", upstream="autograph"}'
+        values: "0 2 2 1 2 2 2 2 2 2 2 2 2 2 2 2"
+      # Сбои AutoGRAPH продолжаются (пробные запросы не проходят) — секунды с последнего сбоя не растут.
+      - series: 'fleet_breaker_seconds_since_failure{job="fleet_service", upstream="autograph"}'
+        values: "0 60 0 60 0 60 0 60 0 60 0 60 0 60 0 60"
+      # Короткий сбой модели: половина минуты в open, дальше half-open без запросов — алерта нет.
+      - series: 'fleet_breaker_state{job="fleet_service", upstream="llm"}'
+        values: "0 2 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+      - series: 'fleet_breaker_seconds_since_failure{job="fleet_service", upstream="llm"}'
+        values: "0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 900"
+      - series: 'http_requests_total{job="fleet_service", handler="/v1/chat", status="200"}'
+        values: "0+10x30"
+      - series: 'http_requests_total{job="fleet_service", handler="/v1/chat", status="503"}'
+        values: "0+1x30"
+      - series: 'fleet_http_503_total{job="fleet_service"}'
+        values: "0+1x30"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: LLMCreditsExhausted
+        exp_alerts:
+          - exp_labels: {severity: critical, provider: gigachat}
+            exp_annotations:
+              summary: "Провайдер gigachat ответил 402: кончились кредиты, токены или лимит ключа"
+              description: "openrouter: пополните баланс или поднимите лимит ключа (FS_OPENROUTER_API_KEY). gigachat: купите пакет токенов для модели или смените тариф (FS_GIGACHAT_MODEL, FS_GIGACHAT_SCOPE)."
+      - eval_time: 8m
+        alertname: LLMReserveAnswering
+        exp_alerts:
+          - exp_labels: {severity: warning, job: fleet_service, route: reserve}
+            exp_annotations:
+              summary: "Ассистент отвечает через резервную модель"
+              description: "Основная и запасные модели провайдера не отвечают — проверьте кредиты и токены (402 в логах llm_proxy и gigachat_gateway), провайдера и сеть стенда. Данные уходят на адрес резерва (FS_LLM_RESERVE_BASE_URL)."
+      # Breaker AutoGRAPH не закрывается с 1-й минуты, сбои идут — к 7-й алерт; breaker модели просто ждёт запроса — алерта нет.
+      - eval_time: 7m
+        alertname: CircuitBreakerOpen
+        exp_alerts:
+          - exp_labels: {severity: critical, job: fleet_service, upstream: autograph}
+            exp_annotations:
+              summary: "Circuit breaker autograph открыт дольше 5 минут"
+              description: "Стенд сразу отказывает в обращениях к autograph: система недоступна. /v1/status — подробности."
+      # 1 из 11 ответов — 503 (9 %) дольше 10 минут.
+      - eval_time: 25m
+        alertname: HighShareOf503
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Больше 5 % ответов стенда — 503"
+              description: "Смотрите fleet_rejections_total по причинам и fleet_upstream_requests_total по системам на дашборде."
+      - eval_time: 3m
+        alertname: HighShareOf503
+        exp_alerts: []

@@ -9,7 +9,7 @@ from .fakes import SCHEMA_ID, VALID_TOKEN
 def test_health_without_token(make_client):
     with make_client() as client:
         assert client.get("/health").json() == {
-            "status": "ok", "llmConfigured": True, "backgroundConfigured": False, "emailConfigured": False,
+            "status": "ok", "llmProvider": "openrouter", "llmConfigured": True, "backgroundConfigured": False, "emailConfigured": False,
             "reserveConfigured": False, "telegramConfigured": False,
             "breakers": {"llm": "closed", "autograph": "closed", "predictive": "closed"},
         }
@@ -84,3 +84,32 @@ def test_unavailability_is_not_cached(make_client, fakes):
         for _ in range(2):
             client.post("/v1/chat", json=ask(), headers={**AUTH, "Authorization": "Bearer down"})
     assert fakes.state.calls["EnumSchemas"] == 2
+
+
+def test_health_and_chat_follow_active_provider(make_client):
+    # Ключа OpenRouter достаточно только в его режиме.
+    settings = test_settings(llm_provider="gigachat")
+    with make_client(settings) as client:
+        health = client.get("/health").json()
+        assert health["llmProvider"] == "gigachat" and health["llmConfigured"] is False
+        r = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "?"}], "utcOffsetMinutes": 300},
+                        headers=AUTH)
+        assert r.status_code == 503 and "не настроен" in r.json()["detail"] and "OpenRouter" not in r.json()["detail"]
+    with make_client(test_settings(llm_provider="gigachat", gigachat_credentials="giga-secret")) as client:
+        assert client.get("/health").json()["llmConfigured"] is True
+    with make_client(test_settings(llm_provider="gigachat", gigachat_credentials="giga-secret", gigachat_model=" ")) as client:
+        assert client.get("/health").json()["llmConfigured"] is False
+
+
+def test_status_shows_provider_and_model(make_client):
+    def status(**overrides):
+        settings = test_settings(admin_token="admin", llm_provider="gigachat", gigachat_credentials="giga-secret",
+                                 gigachat_fallback_models="GigaChat-2-Max", **overrides)
+        with make_client(settings) as client:
+            return client.get("/v1/status", headers={"Authorization": "Bearer admin"}).json()["llm"]
+
+    llm = status(llm_proxy_url="http://llm_proxy:4000")
+    assert llm["provider"] == "gigachat" and llm["model"] == "GigaChat-2-Pro"
+    assert llm["fallbackModels"] == ["GigaChat-2-Max"]
+    # Без прокси шлюз запасные модели не перебирает: показывать их нельзя.
+    assert status()["fallbackModels"] == []

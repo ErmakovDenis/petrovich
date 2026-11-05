@@ -5,7 +5,7 @@ import asyncio
 import httpx
 import pytest
 
-from fleet_service.agent.llm import LLMError, LLMRetryable, LLMTimeout, OpenRouterClient, llm_scope
+from fleet_service.agent.llm import LLMError, LLMRetryable, LLMTimeout, ChatCompletionsClient, llm_scope
 from fleet_service.analytics.client import AnalyticsClient
 from fleet_service.autograph.client import AutoGraphClient
 from fleet_service.autograph.errors import AutoGraphUnavailable, SessionInvalid
@@ -158,7 +158,7 @@ async def test_llm_breaker_fails_fast_without_waiting_for_timeout():
         return httpx.Response(503, json={"error": {"message": "No provider", "code": 503}})
 
     breaker = CircuitBreaker("llm", failures=2, window_seconds=30, open_seconds=60)
-    client = OpenRouterClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(down)), breaker)
+    client = ChatCompletionsClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(down)), breaker)
     for _ in range(3):
         with pytest.raises(LLMRetryable) as e:
             await client.complete([], [])
@@ -172,7 +172,7 @@ async def test_llm_request_errors_do_not_open_breaker():
         return httpx.Response(400, json={"error": {"message": "Bad request", "code": 400}})
 
     breaker = CircuitBreaker("llm", failures=1, window_seconds=30, open_seconds=60)
-    client = OpenRouterClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(bad)), breaker)
+    client = ChatCompletionsClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(bad)), breaker)
     for _ in range(3):
         with pytest.raises(Exception):
             await client.complete([], [])
@@ -269,7 +269,7 @@ async def test_llm_timeout_cut_by_chat_deadline_is_not_a_failure():
         raise httpx.ReadTimeout("slow", request=request)
 
     breaker = CircuitBreaker("llm", failures=1, window_seconds=30, open_seconds=60)
-    client = OpenRouterClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(slow)), breaker)
+    client = ChatCompletionsClient(test_settings(), httpx.AsyncClient(transport=httpx.MockTransport(slow)), breaker)
     with llm_scope(5):  # осталось 5 с из срока чата — таймаут короче FS_LLM_TIMEOUT_SECONDS
         with pytest.raises(LLMTimeout):
             await client.complete([], [])
@@ -287,7 +287,7 @@ async def test_proxy_error_with_reserve_counts_even_if_4xx():
     breaker = CircuitBreaker("llm", failures=1, window_seconds=30, open_seconds=60)
     settings = test_settings(llm_proxy_url="http://llm_proxy:4000", llm_reserve_base_url="http://reserve/v1",
                              llm_reserve_model="m")
-    client = OpenRouterClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(reserve_misconfigured)),
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(reserve_misconfigured)),
                               breaker)
     with pytest.raises(LLMError):
         await client.complete([], [])
@@ -341,7 +341,7 @@ async def test_open_breaker_goes_straight_to_reserve_group():
     breaker = CircuitBreaker("llm", failures=2, window_seconds=30, open_seconds=60, clock=clock)
     settings = test_settings(llm_proxy_url="http://llm_proxy:4000", llm_reserve_base_url="http://reserve/v1",
                              llm_reserve_model="fake/reserve")
-    client = OpenRouterClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(proxy)), breaker)
+    client = ChatCompletionsClient(settings, httpx.AsyncClient(transport=httpx.MockTransport(proxy)), breaker)
     for _ in range(3):
         await client.complete([], [])
     assert groups == ["assistant", "assistant", "assistant-reserve"] and breaker.state == "open"
@@ -360,7 +360,7 @@ async def test_open_breaker_without_reserve_fails_fast():
         return httpx.Response(503, json={"error": {"message": "down", "code": "503"}})
 
     breaker = CircuitBreaker("llm", failures=1, window_seconds=30, open_seconds=60)
-    client = OpenRouterClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
+    client = ChatCompletionsClient(test_settings(llm_proxy_url="http://llm_proxy:4000"),
                               httpx.AsyncClient(transport=httpx.MockTransport(reserve_only)), breaker)
     with pytest.raises(LLMRetryable):
         await client.complete([], [])

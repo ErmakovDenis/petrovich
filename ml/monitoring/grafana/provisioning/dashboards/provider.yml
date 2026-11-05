@@ -1,0 +1,10 @@
+# Дашборды из файлов: ml/monitoring/grafana/dashboards (fleet.json — стенд).
+apiVersion: 1
+providers:
+  - name: fleet
+    folder: Петрович
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards

@@ -21,7 +21,8 @@ FastAPI-сервис для «Петрович Телеметрия» по пл�
   (переключатель «Фоновая проверка на стенде»);
 - письма: ассистент готовит черновик (tools `list_recipients`, `draft_email`), пользователь подтверждает в
   приложении, стенд отправляет по SMTP — `POST /v1/emails/{id}/confirm` (переключатель «Письма из чата»);
-- ассистент отвечает моделью через OpenRouter (в compose — через прокси LiteLLM с повторами и запасными моделями) и
+- ассистент отвечает моделью GigaChat или OpenRouter (`FS_LLM_PROVIDER`; в compose — через прокси LiteLLM с повторами и
+  запасными моделями, к GigaChat — ещё через шлюз `gigachat_gateway`) и
   получает числа из tools `list_vehicles`, `get_vehicle_summary`, `check_vehicle`, `list_anomalies` и `get_anomaly`.
 
 ## Запуск
@@ -29,7 +30,8 @@ FastAPI-сервис для «Петрович Телеметрия» по пл�
 ```bash
 cd ml/fleet_service
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"     # локально — python3.14 из conda env fuel_antifrod
-cp .env.example .env                                           # заполнить FS_OPENROUTER_API_KEY и FS_LLM_MODEL
+cp .env.example .env                                           # выбрать FS_LLM_PROVIDER и заполнить настройки режима;
+                                                               # без compose проще FS_LLM_PROVIDER=openrouter (см. ниже)
 .venv/bin/uvicorn --factory fleet_service.main:create_app --app-dir src --reload --port 8080   # http://127.0.0.1:8080/docs
 .venv/bin/pytest
 ```
@@ -56,7 +58,7 @@ compose — файл `/srv/data/fleet.db` в томе `fleet_data`: пережи
 ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить стенд запущенным
 ```
 
-Поднимает compose с дополнением `scripts/smoke.compose.yml`: OpenRouter и AutoGRAPH заменены подставным
+Поднимает compose с дополнением `scripts/smoke.compose.yml`: OpenRouter, GigaChat и AutoGRAPH заменены подставным
 сервисом `fakes` (`tests/fakes.py`, тот же код, что в pytest; модель вызывает tools по сценарию);
 `predictive_antifraud` — настоящий, без моделей. Проверяет `/health` обоих сервисов, 401 без токена и с
 недействительным токеном, список машин, телеметрию за сутки, 404 для чужой машины, ответ `/v1/chat` с числом из
@@ -64,7 +66,7 @@ ml/fleet_service/scripts/smoke.sh          # KEEP=1 — оставить сте�
 повтор и ответ; 503 подряд — ответ запасной модели и запись об этом в логе; 402 — без повторов, ответ подставной
 резервной модели с пометкой и WARNING в логе; OpenRouter лежит — breaker стенда открыт, ответ резерва без запросов к
 OpenRouter, `/health` показывает `open`, через срок — пробный запрос и снова основная модель; неверный
-`FS_OPENROUTER_BASE_URL` при заданном резерве — ответ через резерв), проверку машины (правила нашли перегрев, аналитика `not_ready`), ответы ассистента об
+`FS_OPENROUTER_BASE_URL` при заданном резерве — ответ через резерв; в конце — переключение `FS_LLM_PROVIDER` командой `up -d --wait` туда и обратно: чат с tool через шлюз и ноль запросов к OpenRouter, ключ GigaChat не виден прокси, чаты при одном потоке идут по очереди без 429 и открытого breaker'а, 402 и 422 с резервом и без него), проверку машины (правила нашли перегрев, аналитика `not_ready`), ответы ассистента об
 аномалиях (найдены / по правилам нет, но предиктивная проверка недоступна), проверку при остановленном
 `predictive_antifraud`, проверку с сохранением и повторную другим окном (те же id, новых нет), ленту без
 дубликатов, решение с `X-User-Name`, вопросы ассистенту о ленте и о решении (чат из карточки по `anomalyId`), перенос
@@ -75,48 +77,89 @@ OpenRouter, `/health` показывает `open`, через срок — пр�
 фоновую проверку в логе, отсутствие токенов, ключа, паролей, адресов и текста письма в логах и токенов и паролей в
 файле базы, ключей модели — в логах прокси. Реальные ключи не нужны.
 
+## Режимы модели и шлюз GigaChat
+
+```
+FS_LLM_PROVIDER=gigachat:    fleet_service → llm_proxy → gigachat_gateway → GigaChat
+FS_LLM_PROVIDER=openrouter:  fleet_service → llm_proxy → OpenRouter
+```
+
+Переключатель один: `FS_LLM_PROVIDER` и `docker compose up -d --wait`, образы и APK не пересобираются (`ml/DEPLOY.md`, п. 4.2:
+ключ, сертификат, откат, риски). В коде по умолчанию `openrouter`, в `.env.example` — `gigachat`. Режимы не подменяют друг
+друга автоматически; резерв `FS_LLM_RESERVE_*` работает в обоих. Приложение, Telegram-бот и контракт `/v1/chat` от режима не
+зависят.
+
+В `.env.example` адрес шлюза рассчитан на compose (`http://gigachat_gateway:8000/v1`). Запуск uvicorn без compose в режиме
+`gigachat` требует запущенного шлюза (`.venv/bin/python -m fleet_service.gigachat`, порт 8000) и настроек
+`FS_GIGACHAT_GATEWAY_URL=http://127.0.0.1:8000/v1`; стенд тогда слушает другой порт.
+
+Шлюз (`fleet_service/gigachat/`, `python -m fleet_service.gigachat`) — OpenAI-совместимый `POST /v1/chat/completions` и `GET /health`,
+порт не публикуется. Свой, а не провайдер `gigachat` из LiteLLM: тот отключает проверку сертификата, понижает лишние `system`
+до `user` и теряет `functions_state_id`.
+
+- Токен — в памяти, обновление за 60 с до срока, одна загрузка на все запросы, один повтор при 401. `expires_at` — в секундах
+  или миллисекундах (спецификация противоречит сама себе).
+- TLS проверяется всегда, файл — `FS_GIGACHAT_CA_BUNDLE`, настройки отключения нет; ключ без файла или неверный файл — ошибка при
+  старте.
+- Запрос: системные сообщения склеиваются в первое; `tools` → `functions` c `function_call: auto`; `tool_calls` → `function_call`;
+  `tool` → `function`; результат не в виде объекта — `{"result": ...}`; `User-Agent` всегда. Вид `arguments` —
+  `FS_GIGACHAT_ARGUMENTS_FORMAT`; в ответе принимаются оба. `temperature` 0 поднимается до 0,01: у GigaChat она строго больше нуля.
+- `functions_state_id` лежит в `id` вызова (`gcs-<значение>`): шлюз не хранит состояния, а `agent/loop.py` передаёт `tool_calls` как есть.
+- Ответ: `function_call` → `tool_calls`; `finish_reason: error` → 502; `blacklist` — текст модели, WARNING и счётчик
+  `fleet_gigachat_blacklist_total`. Ошибки 402, 429, 5xx передаются с `error.code`, 422 становится 400 — без повторов.
+- Потоков к GigaChat не больше `FS_GIGACHAT_CONCURRENCY`; не дождался места за `FS_GIGACHAT_TIMEOUT_SECONDS` — 429 с `Retry-After`.
+  Запрос, который бросила вызывающая сторона, отменяется сразу. В режиме `gigachat` предел чата на стенде — меньшее из
+  `FS_CHAT_CONCURRENCY` и `FS_GIGACHAT_CONCURRENCY`, поэтому очередь стоит на стенде, а до 429 шлюза дело не доходит.
+- Окружение шлюза пишет одноразовый `gigachat_gateway_config` (`python -m fleet_service.gigachat.config /config`) в том
+  `gigachat_config`, файл `gigachat.env` с правами 600: только `FS_GIGACHAT_*`, уровень логов и выключатель метрик. Прокси ключа не видит.
+
 ## Модель: прокси, повторы, запасные модели
 
 В `ml/docker-compose.yml` стенд обращается к модели через прокси LiteLLM (`llm_proxy`, образ закреплён по версии,
 порт наружу не открыт). Конфигурацию прокси строит одноразовый сервис `llm_proxy_config` командой
 `python -m fleet_service.llm_proxy /config` из тех же `FS_*` в `.env` при каждом `docker compose up`; ключ OpenRouter
-в файл конфигурации не пишется (`os.environ/FS_OPENROUTER_API_KEY`). Поправили `.env` — `docker compose up -d`.
+в файл конфигурации не пишется (`os.environ/FS_OPENROUTER_API_KEY`), в режиме `gigachat` его у прокси нет вовсе, а копии ведут в
+шлюз как `openai/<модель>` с ключом `no-key`. Поправили `.env` — `docker compose up -d --wait`: прокси читает конфигурацию только при
+старте, поэтому перезапускается, когда она изменилась (`depends_on.restart`).
 
 - Повторы — только в прокси (`FS_LLM_RETRIES` без первой попытки): 408, 429, 5xx и сеть повторяются с паузой
   `FS_LLM_RETRY_BASE_SECONDS · 2^n` (не больше `FS_LLM_RETRY_MAX_SECONDS`, плюс до 0,75 с случайно), `Retry-After`
   провайдера до 60 с выдерживается; 400, 401, 402, 403 не повторяются. Стенд и приложение сами не повторяют.
-- Запасные модели `FS_LLM_FALLBACK_MODELS` — по порядку, после исчерпания повторов основной. Какая модель ответила,
-  видно в логе стенда: `модель: ответила … (primary|fallback), копия прокси openrouter|fallback-N`.
+- Запасные модели активного режима (`FS_LLM_FALLBACK_MODELS` или `FS_GIGACHAT_FALLBACK_MODELS`) — по порядку, после
+  исчерпания повторов основной. Какая модель ответила, видно в логе стенда:
+  `модель: ответила … (primary|fallback), копия прокси primary|fallback-N, режим gigachat|openrouter`.
 - `require_parameters` остаётся `true`: иначе запасной провайдер может молча игнорировать tools. Порядок провайдеров
   одной модели — `FS_OPENROUTER_PROVIDER_SORT`, переход между ними — `FS_OPENROUTER_ALLOW_FALLBACKS`.
-- 402 (кончились кредиты или лимит ключа) — ответ 503 «Ассистент временно недоступен, попробуйте позже» и запись
+- 402 (кончились кредиты, токены модели или лимит ключа) — ответ 503 «Ассистент временно недоступен, попробуйте позже» и запись
   уровня ERROR `модель: кончились кредиты…` — повод для алерта.
 - Срок ответа чата `FS_CHAT_TIMEOUT_SECONDS` общий для всех обращений: таймаут обращения не дольше остатка, а меньше
   чем за 1 с до срока новое обращение не начинается.
 
-- Резервная модель вне OpenRouter (`FS_LLM_RESERVE_BASE_URL`, `FS_LLM_RESERVE_MODEL`, `FS_LLM_RESERVE_API_KEY`) —
-  любой OpenAI-совместимый адрес с tool calling: свой vLLM (профиль `reserve-llm` в compose, нужен GPU) или внешний
-  провайдер. Последняя в цепочке прокси: отвечает, когда не ответили основная и запасные (OpenRouter недоступен,
-  402, повторы исчерпаны). Ответ резерва — WARNING `модель: ответила … (reserve)` в логе и, при
+- Резервная модель вне основного провайдера (`FS_LLM_RESERVE_BASE_URL`, `FS_LLM_RESERVE_MODEL`, `FS_LLM_RESERVE_API_KEY`),
+  в обоих режимах — любой OpenAI-совместимый адрес с tool calling: свой vLLM (профиль `reserve-llm` в compose, нужен GPU) или внешний
+  провайдер. Последняя в цепочке прокси: отвечает, когда не ответили основная и запасные (провайдер недоступен,
+  402, запрос отвергнут, повторы исчерпаны). Ответ резерва — WARNING `модель: ответила … (reserve)` в логе и, при
   `FS_LLM_RESERVE_DEGRADED=true`, пометка «упрощённый режим» в ответе (цифры те же — их считают tools).
 
 **Circuit breaker** (`breaker.py`) — на модель, AutoGRAPH и аналитику: после `FS_BREAKER_FAILURES` сбоев за
 `FS_BREAKER_WINDOW_SECONDS` система считается недоступной на `FS_BREAKER_OPEN_SECONDS`, запросы сразу получают
 отказ без ожидания таймаута (модель — 503 с `Retry-After`, AutoGRAPH — 503 «много сбоев подряд», аналитика —
 `unavailable` «временно отключён»); затем один пробный запрос. Сбой — сеть, таймаут, 5xx, 408, 429; ответы 4xx на
-неверный запрос или ключ breaker не открывают. Для модели сбой — и ответ резерва: значит, OpenRouter не ответил.
+неверный запрос или ключ breaker не открывают. Для модели сбой — и ответ резерва: значит, провайдер не ответил.
 Пока breaker модели открыт и резерв задан, стенд обращается сразу к группе резерва в прокси — без запросов к
-OpenRouter, повторов и пауз; пробный запрос по сроку идёт снова к OpenRouter. Cooldown самого LiteLLM выключен: на
+провайдеру, повторов и пауз; пробный запрос по сроку идёт снова к нему. Cooldown самого LiteLLM выключен: на
 закреплённой версии он считает сбой раз на запрос, окно у него — срок cooldown, а запасные группы в цепочке не
 охлаждает (проверено smoke-сценарием). Состояние — в `/health` (`breakers`) и `GET /v1/status`.
 
-Без прокси (`FS_LLM_PROXY_URL` пуст, запуск uvicorn без compose) стенд ходит в OpenRouter напрямую и без повторов:
-запасные модели — полем `models` запроса, модель и провайдер ответа — в логе; резерва нет, breaker модели работает.
+Без прокси (`FS_LLM_PROXY_URL` пуст, запуск uvicorn без compose) стенд обращается к модели напрямую и без повторов: к
+OpenRouter (запасные модели — полем `models` запроса, модель и провайдер ответа — в логе) или к шлюзу GigaChat
+(`FS_GIGACHAT_GATEWAY_URL`, только основная модель). Резерва нет, breaker модели работает.
 
 ### `GET /v1/status`
 
 Состояние стенда для администратора: breaker'ы (состояние, сбоев в окне, сколько раз открывался, через сколько
-пробный запрос), пределы (в работе, фоновых, ждут, предел), число записей в кэшах, прокси/запасные модели/резерв.
+пробный запрос), пределы (в работе, фоновых, ждут, предел; у чата — с учётом потоков GigaChat), число записей в кэшах,
+провайдер, модель, прокси, запасные модели и резерв.
 Заголовок `Authorization: Bearer <FS_ADMIN_TOKEN>`; без `FS_ADMIN_TOKEN` эндпоинт выключен (404), неверный ключ —
 401. Данных пользователей в ответе нет.
 
@@ -130,6 +173,9 @@ FS_EVAL_API_KEY=<ключ OpenRouter> .venv/bin/python -m fleet_service.agent.ev
     --base-url https://openrouter.ai/api/v1 --model <основная> --model <кандидат> --repeat 3
 docker compose exec -e FS_EVAL_API_KEY=<ключ> fleet_service python -m fleet_service.agent.eval_tools \
     --base-url https://openrouter.ai/api/v1 --model <основная> --model <кандидат>
+# Модели GigaChat — через шлюз, ключ у него свой; в любом режиме, в том числе до переключения:
+docker compose exec -e FS_EVAL_API_KEY=test fleet_service python -m fleet_service.agent.eval_tools \
+    --base-url http://gigachat_gateway:8000/v1 --model GigaChat-2-Pro --model GigaChat-2-Max --repeat 3
 ```
 
 Кандидат допускается, если доля «tool и аргументы» не ниже, чем у основной модели, с оговорённым допуском
@@ -181,11 +227,45 @@ docker compose exec -e FS_EVAL_API_KEY=<ключ> fleet_service python -m fleet_
 работает для явных прошлых периодов (вопросы в чате, канонические окна проверок с сохранением), на графики
 приложения почти не влияет.
 
+## Метрики и несколько реплик
+
+`GET /metrics` стенда и шлюза (`FS_METRICS_ENABLED`, по умолчанию выключен) — формат Prometheus, без авторизации и без данных
+пользователей: метки только из короткого набора (система, код, причина), ни id машин, ни схем, ни логинов. Включается
+вместе с запретом пути в nginx, Prometheus и Grafana — профиль `monitoring` в compose (`ml/DEPLOY.md`, п. 8.7).
+
+| Метрика | Что показывает |
+|---|---|
+| `fleet_upstream_requests_total{upstream,outcome}` | запросы к `llm`, `autograph`, `predictive`, у шлюза — `gigachat` и `gigachat_oauth`: HTTP-код, `error`, `timeout`; `error_in_body` — ошибка модели в ответе 200; `stream_error` — обрыв при чтении `GetTripTables` |
+| `fleet_upstream_duration_seconds{upstream}` | длительность запросов, у потокового `GetTripTables` — с чтением тела (p50/p95 на дашборде) |
+| `fleet_llm_responses_total{route}` | ответы модели: `primary`, `fallback`, `reserve` |
+| `fleet_llm_provider_info{provider}` | активный провайдер модели: значение 1 |
+| `fleet_llm_credits_exhausted_total{provider}` | ответы 402 провайдера. На стенде при заданном резерве не растёт — прокси уходит к резерву, см. `route="reserve"`; шлюз считает 402 GigaChat всегда, поэтому в запросах — сумма или максимум по `provider` |
+| `fleet_gigachat_blacklist_total` | у шлюза: ответы GigaChat с тематическим ограничением |
+| `fleet_rejections_total{reason}` | отказы 429/503 по причине: лимит и очередь чата, модель не настроена или недоступна, кредиты, breaker'ы, нет места или недоступен AutoGRAPH, нет места в аналитике |
+| `fleet_cache_requests_total{cache,result}` | попадания в кэши |
+| `fleet_breaker_state{upstream}` | 0 — закрыт, 1 — пробный, 2 — открыт |
+| `fleet_breaker_seconds_since_failure{upstream}` | секунд с последнего сбоя: отличает идущий сбой от half-open, который ждёт первого запроса |
+| `fleet_queue_depth{limiter}`, `fleet_inflight{limiter}` | ждут места и заняты места в пределах |
+| `http_requests_total`, `http_request_duration_seconds`, `fleet_http_503_total` | HTTP-метрики самого стенда по шаблону пути; неизвестные пути не учитываются |
+
+Алерты — `ml/monitoring/alerts.yml`, их тесты — `alerts_test.yml` (`promtool test rules`). Alertmanager не подключён:
+сработавшие алерты видны только в Prometheus и Grafana.
+
+**Решение о репликах.** Сейчас работает один процесс uvicorn, и этого достаточно. Реплики делаются, только когда
+метрики покажут, что одного процесса не хватает (очереди и отказы при свободных внешних системах). Тогда:
+- rate limit чата и лимит писем — в Redis, иначе лимит «10 в минуту» на трёх репликах станет 30;
+- кэш — остаётся локальным (хуже hit rate, но корректно) или в Redis;
+- фоновая проверка — только на одной реплике: блокировка в Redis или в базе;
+- SQLite заменяется на PostgreSQL;
+- перед репликами — nginx/Traefik со стратегией least connections: ответы чата длятся от секунд до минуты,
+  round-robin даёт неравномерную нагрузку;
+- breaker'ы и общие пределы внешних вызовов остаются на процесс: их значения делятся на число реплик.
+
 ## Эндпоинты
 
 | Метод | Путь | Описание |
 |---|---|---|
-| GET | `/health` | liveness; `llmConfigured` — заданы ли ключ и модель; `backgroundConfigured` — включена ли фоновая проверка; `emailConfigured` — настроены ли письма |
+| GET | `/health` | liveness; `llmProvider` — активный провайдер; `llmConfigured` — заданы ли его ключ и модель; `backgroundConfigured` — включена ли фоновая проверка; `emailConfigured` — настроены ли письма |
 | POST | `/v1/chat` | ответ ассистента |
 | GET | `/v1/vehicles` | машины схемы, доступные пользователю (`EnumDevices`, без `Allowed=false`), по имени |
 | GET | `/v1/telemetry?vehicleId&from&to&utcOffsetMinutes` | `VehicleTelemetry` машины за период |
@@ -513,14 +593,14 @@ ml/fleet_service/scripts/compare_real.sh /path/to/dir
 | 429 | лимит писем пользователя исчерпан; слишком много вопросов ассистенту подряд (`FS_CHAT_RATE_PER_MINUTE`, `FS_CHAT_BURST`) — с `Retry-After` |
 | 422 | неверный запрос: пустая история, последнее сообщение не от пользователя, слишком длинное сообщение; период телеметрии с поясом, пустой или длиннее предела; период проверки короче шага сетки; перенос больше `FS_IMPORT_MAX_ITEMS` записей; AutoGRAPH не принял пароль для фоновой проверки или нет логина; больше `FS_NOTIFICATION_CLAIM_MAX_IDS` id в `/v1/notifications/claim` |
 | 502 | модель ответила ошибкой (400, 401, 403), вернула пустой ответ или не уложилась в `FS_AGENT_MAX_ITERATIONS`; AutoGRAPH вернул сбойный ответ (слишком много точек); почтовый сервер не принял письмо |
-| 503 | ассистент не настроен (нет ключа или модели); очередь ответов чата заполнена — «Высокая нагрузка на ассистента, повторите через минуту», `Retry-After: 60`; модель временно недоступна (408, 429, 5xx или сеть после всех повторов; открыт breaker модели без резерва; `Retry-After`, если известен); кончились кредиты OpenRouter (402) без резерва — «Ассистент временно недоступен, попробуйте позже»; фоновая проверка не включена (`/v1/background/access`); письма не настроены (`/v1/emails`); AutoGRAPH недоступен (после всех попыток или открыт его breaker) |
+| 503 | ассистент не настроен (нет ключа или модели); очередь ответов чата заполнена — «Высокая нагрузка на ассистента, повторите через минуту», `Retry-After: 60`; модель временно недоступна (408, 429, 5xx или сеть после всех повторов; открыт breaker модели без резерва; `Retry-After`, если известен); кончились кредиты OpenRouter или токены GigaChat (402) без резерва — «Ассистент временно недоступен, попробуйте позже»; фоновая проверка не включена (`/v1/background/access`); письма не настроены (`/v1/emails`); AutoGRAPH недоступен (после всех попыток или открыт его breaker) |
 | 504 | модель не ответила за `FS_LLM_TIMEOUT_SECONDS` или ответ не уложился в `FS_CHAT_TIMEOUT_SECONDS` |
 | 500 | «Внутренняя ошибка стенда» — без стека; стек только в логе |
 
 ## Настройки
 
 Все — переменные `FS_*`, описаны в `.env.example` (тест `test_config.py` следит, чтобы ни одна не потерялась):
-ключ и адрес OpenRouter, маршрутизация провайдеров (`FS_OPENROUTER_REQUIRE_PARAMETERS`,
+активный провайдер (`FS_LLM_PROVIDER`), настройки GigaChat (`FS_GIGACHAT_*`), ключ и адрес OpenRouter, маршрутизация провайдеров (`FS_OPENROUTER_REQUIRE_PARAMETERS`,
 `FS_OPENROUTER_DATA_COLLECTION`, `FS_OPENROUTER_PROVIDER_SORT`, `FS_OPENROUTER_ALLOW_FALLBACKS`), адрес прокси модели,
 запасные модели, повторы и пауза между ними, пределы нагрузки (rate limit и очередь чата, одновременные запросы к
 AutoGRAPH и аналитике), модель, температура, лимит токенов, таймауты, лимит обращений к модели, путь к
@@ -532,8 +612,8 @@ AutoGRAPH и аналитике), модель, температура, лими
 срок хранения, предел записей в ленте, допуск и запас окна переноса, предел записей переноса; фоновая проверка —
 ключ шифрования доступа, выключатель, интервал и окно, параллельность, срок неподтверждённого доступа, предел id
 в `/v1/notifications/claim`; письма — SMTP (адрес, порт, шифрование, логин, пароль, отправитель, таймаут), файл
-получателей, срок черновика, лимит и его период, пределы получателей, темы, текста и черновиков за ответ. Пустое
-значение в `.env` — значение по умолчанию.
+получателей, срок черновика, лимит и его период, пределы получателей, темы, текста и черновиков за ответ; выключатель
+метрик. Пустое значение в `.env` — значение по умолчанию.
 
 Системный промпт — `src/fleet_service/prompts/system.md` (или файл из `FS_SYSTEM_PROMPT_PATH`). В нём
 зафиксировано: числа и факты только из tools или переданной аномалии; нет данных — так и сказать; «нет данных» и
@@ -568,9 +648,9 @@ AutoGRAPH и аналитике), модель, температура, лими
 
 ## Секреты и логи
 
-Ключ OpenRouter задаётся только в `.env` стенда. AutoGRAPH принимает логин, пароль и токен в query-строке, а
+Ключи OpenRouter и GigaChat задаются только в `.env` стенда, а прокси и шлюз получают из него только нужное. AutoGRAPH принимает логин, пароль и токен в query-строке, а
 httpx пишет адреса запросов в лог, поэтому `log_masking.py` маскирует `session=`, `UserName=`, `Password=`,
-`Bearer …` и `sk-or-…` во всех записях логов, включая текст исключений. Пароль SMTP — только в `.env`; адреса
+`Bearer …`, `Basic …`, `access_token` и `sk-or-…` во всех записях логов, включая текст исключений. Пароль SMTP — только в `.env`; адреса
 получателей и текст письма в лог не пишутся (аргументы `draft_email` скрыты, ошибки SMTP — без адресов). Кэши стенда хранят не токен, а его хэш.
 Ключ `X-API-Key` аналитики (`FS_PREDICTIVE_API_KEY`) уходит только в заголовок и в логи не пишется.
 Доступ фоновой проверки — в базе только шифротекстом (ключ `FS_ACCESS_ENCRYPTION_KEY` в `.env`); в логах фоновой
@@ -586,6 +666,7 @@ src/fleet_service/
   cache.py             кэш со сроком жизни и одной загрузкой на ключ
   limits.py            rate limit, очередь чата, общие пределы запросов к AutoGRAPH и аналитике
   breaker.py           circuit breaker на модель, AutoGRAPH и аналитику
+  metrics.py           метрики Prometheus (GET /metrics)
   log_masking.py       маскирование секретов в логах
   api/                 /health, /v1/chat, /v1/vehicles и /v1/telemetry, /v1/anomalies (check, scan, лента,
                        resolve, import), /v1/background и /v1/notifications (background.py), /v1/emails
@@ -607,7 +688,10 @@ src/fleet_service/
   telemetry/           parameters.py — выбор параметров и свёртка; mapper.py — потоковый разбор GetTripTables
                        в интервалы; service.py — машины и телеметрия пользователя с кэшами
   llm_proxy.py         конфигурация прокси LiteLLM из FS_* (python -m fleet_service.llm_proxy)
-  agent/               llm.py — клиент модели (прокси или OpenRouter), классы ошибок, срок ответа;
+  envfile.py           файлы окружения соседних контейнеров: права 600, значения для sh
+  gigachat/            шлюз GigaChat: app.py — приложение, TLS, пределы; token.py — токен; convert.py — преобразование
+                       запроса и ответа; errors.py — ошибки; config.py — окружение шлюза (gigachat.env)
+  agent/               llm.py — клиент модели (прокси, OpenRouter или шлюз GigaChat), классы ошибок, срок ответа;
                        eval_tools.py, eval_cases.jsonl — проверка модели на tools; tools.py — реестр tools; loop.py — цикл агента;
                        fleet_tools.py — tools телеметрии и проверки; store_tools.py — tools хранилища;
                        mail_tools.py — tools писем;
@@ -617,8 +701,9 @@ src/fleet_service/
                        anomalies.py — запрос и ответ проверки; store.py — хранилище; background.py — фоновая
                        проверка; emails.py — черновики и подтверждение писем
 config/                recipients.example.toml — образец файла получателей писем
+certs/                 корневой сертификат Минцифры для шлюза (/srv/certs в контейнере)
 scripts/               smoke.sh, smoke.compose.yml, compare_real.sh
-tests/                 fakes.py — подставные OpenRouter, AutoGRAPH, predictive_antifraud и SMTP; recipients.toml —
+tests/                 fakes.py — подставные OpenRouter, строгий GigaChat, AutoGRAPH, predictive_antifraud и SMTP; recipients.toml —
                        получатели для тестов; тесты
 ```
 

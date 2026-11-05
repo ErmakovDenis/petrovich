@@ -1,5 +1,6 @@
 # Стенд «Петрович Телеметрия»: fleet_service (ассистент, телеметрия, аномалии и их хранилище), прокси модели
-# llm_proxy (LiteLLM) и predictive_antifraud.
+# llm_proxy (LiteLLM), шлюз GigaChat gigachat_gateway и predictive_antifraud.
+# Модель выбирает FS_LLM_PROVIDER в ml/fleet_service/.env; сменили — docker compose up -d --wait, без пересборки.
 #   cd ml && docker compose up -d --build
 # Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
 # Ключ X-API-Key аналитики: PA_API_KEY и FS_PREDICTIVE_API_KEY задаются одним значением.
@@ -21,8 +22,8 @@ services:
     # проверке аномалий. Порядок запуска — после него, но без ожидания готовности: сбой аналитики не должен
     # останавливать чат и проверку по правилам.
     # Ассистент обращается к модели через прокси LiteLLM (повторы, запасные модели). Обойти прокси (он не стартует,
-    # а чат нужен): в ml/.env строка `FS_LLM_PROXY_URL=` (пусто) и docker compose up -d — стенд пойдёт в OpenRouter
-    # напрямую, без повторов.
+    # а чат нужен): в ml/.env строка `FS_LLM_PROXY_URL=` (пусто) и docker compose up -d — стенд пойдёт напрямую к модели
+    # активного режима (OpenRouter или шлюз GigaChat), без повторов.
     environment:
       FS_LLM_PROXY_URL: ${FS_LLM_PROXY_URL-http://llm_proxy:4000}
     depends_on:
@@ -33,6 +34,9 @@ services:
       llm_proxy:
         condition: service_started
         required: false
+      gigachat_gateway:
+        condition: service_started
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 5s
@@ -40,8 +44,8 @@ services:
       retries: 12
     restart: unless-stopped
 
-  # Конфигурация прокси LiteLLM из FS_* в ml/fleet_service/.env (модель, запасные модели, повторы): пишется в том
-  # llm_config при каждом запуске compose — поправили .env, перезапустите: docker compose up -d.
+  # Конфигурация прокси LiteLLM из FS_* в ml/fleet_service/.env (режим, модель, запасные модели, повторы): пишется в том
+  # llm_config при каждом запуске compose — поправили .env, перезапустите: docker compose up -d --wait.
   llm_proxy_config:
     build: ./fleet_service
     env_file:
@@ -52,9 +56,9 @@ services:
       - llm_config:/config
     restart: "no"
 
-  # Прокси LiteLLM: повторы с паузой и Retry-After, запасные модели OpenRouter. Порт наружу не открыт — к нему
+  # Прокси LiteLLM: повторы с паузой и Retry-After, запасные модели. Порт наружу не открыт — к нему
   # обращается только fleet_service. Весь .env стенда стороннему образу не передаётся: окружение прокси (паузы
-  # повторов и ключ OpenRouter) — в litellm.env (права 600) из тома llm_config, модели — в litellm.yaml.
+  # повторов и ключ OpenRouter в его режиме) — в litellm.env (права 600) из тома llm_config, модели — в litellm.yaml.
   llm_proxy:
     image: ghcr.io/berriai/litellm:main-v1.83.14-stable
     entrypoint: ["sh", "-c", "set -a && . /config/litellm.env && set +a && exec litellm --config /config/litellm.yaml --port 4000"]
@@ -63,11 +67,46 @@ services:
     depends_on:
       llm_proxy_config:
         condition: service_completed_successfully
+        # Конфигурацию прокси читает только при старте: без перезапуска он остался бы на прежнем провайдере. Шаг получает
+        # весь .env, поэтому прокси перезапускается при любой его правке; без правок — нет.
+        restart: true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]
       interval: 5s
       timeout: 5s
       retries: 24
+    restart: unless-stopped
+
+  # Окружение шлюза GigaChat из FS_* в ml/fleet_service/.env: пишется в том gigachat_config (права 600) при каждом запуске.
+  gigachat_gateway_config:
+    build: ./fleet_service
+    env_file:
+      - path: ./fleet_service/.env
+        required: false
+    command: ["python", "-m", "fleet_service.gigachat.config", "/config"]
+    volumes:
+      - gigachat_config:/config
+    restart: "no"
+
+  # Шлюз GigaChat: токен, проверка TLS и преобразование сообщений. Порт наружу не открыт. Запускается всегда, чтобы
+  # переключатель был один, а проверка качества шла до переключения: без ключа /health отвечает, а чат — 503.
+  # Ключ задан — нужен сертификат Минцифры: файл в ml/fleet_service/certs и FS_GIGACHAT_CA_BUNDLE=/srv/certs/<файл>;
+  # без него шлюз не стартует. Весь .env этому контейнеру не передаётся.
+  gigachat_gateway:
+    build: ./fleet_service
+    entrypoint: ["sh", "-c", "set -a && . /config/gigachat.env && set +a && exec python -m fleet_service.gigachat"]
+    volumes:
+      - gigachat_config:/config:ro
+      - ./fleet_service/certs:/srv/certs:ro
+    depends_on:
+      gigachat_gateway_config:
+        condition: service_completed_successfully
+        restart: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   # Резервная модель на своём GPU (vLLM, OpenAI-совместимый API) — заготовка, обычный `docker compose up` её НЕ
@@ -144,8 +183,43 @@ services:
       retries: 12
     restart: unless-stopped
 
+  # Мониторинг (профиль monitoring, по умолчанию не запускается): docker compose --profile monitoring up -d.
+  # Перед запуском: FS_METRICS_ENABLED=true и GRAFANA_ADMIN_PASSWORD (DEPLOY.md, п. 8.7). Порты — только на 127.0.0.1
+  # (PROMETHEUS_PORT, GRAFANA_PORT в ml/.env).
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: ["monitoring"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    profiles: ["monitoring"]
+    # Без пароля не запускается: иначе база Grafana создастся с admin/admin, и пароль, заданный позже, уже не подействует.
+    entrypoint: ["sh", "-c", 'test -n "$$GF_SECURITY_ADMIN_PASSWORD" || { echo "Задайте GRAFANA_ADMIN_PASSWORD в ml/.env" >&2; exit 1; }; exec /run.sh']
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   fleet_data:
   telegram_data:
+  prometheus_data:
+  grafana_data:
   llm_config:
+  gigachat_config:
   reserve_llm_cache:

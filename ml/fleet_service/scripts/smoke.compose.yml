@@ -24,6 +24,14 @@ services:
       # SMOKE_OPENROUTER_URL — шаг «неверный адрес OpenRouter → ответ через резерв».
       FS_OPENROUTER_BASE_URL: ${SMOKE_OPENROUTER_URL:-http://fakes:9000/openrouter/api/v1}
       FS_LLM_MODEL: fake/model
+      # SMOKE_LLM_PROVIDER — шаг переключения режима одной настройкой и командой up -d --wait.
+      FS_LLM_PROVIDER: ${SMOKE_LLM_PROVIDER:-openrouter}
+      FS_GIGACHAT_CREDENTIALS: test-gigachat-key
+      FS_GIGACHAT_MODEL: GigaChat-2-Pro
+      FS_GIGACHAT_FALLBACK_MODELS: ""
+      FS_GIGACHAT_GATEWAY_URL: http://gigachat_gateway:8000/v1
+      FS_GIGACHAT_CONCURRENCY: "1"
+      FS_GIGACHAT_TIMEOUT_SECONDS: "50"
       FS_LLM_FALLBACK_MODELS: x/fallback
       FS_LLM_RETRIES: "2"
       FS_LLM_RETRY_BASE_SECONDS: "0.2"
@@ -35,7 +43,8 @@ services:
       FS_OPENROUTER_PROVIDER_SORT: ""
       FS_OPENROUTER_ALLOW_FALLBACKS: "true"
       # Резерв вне OpenRouter — подставной; breaker стенда — короткий, чтобы проверить и пробный запрос.
-      FS_LLM_RESERVE_BASE_URL: http://fakes:9000/reserve/v1
+      # SMOKE_RESERVE_URL= (пусто) — шаг «режим gigachat без резерва».
+      FS_LLM_RESERVE_BASE_URL: ${SMOKE_RESERVE_URL-http://fakes:9000/reserve/v1}
       FS_LLM_RESERVE_MODEL: fake/reserve
       FS_LLM_RESERVE_API_KEY: reserve-key
       FS_LLM_RESERVE_DEGRADED: "true"
@@ -49,12 +58,35 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Шлюз ходит в подставной GigaChat. Сертификат — только чтобы шлюз стартовал с ключом: адреса здесь без TLS, а сам TLS
+  # проверяет tests/test_gigachat_gateway.py. В файле только открытая часть.
+  # Весь набор настроек, как при настоящем .env: смена режима пересоздаёт и этот шаг, и шлюз, а .env разработчика не мешает.
+  gigachat_gateway_config:
+    environment:
+      <<: *llm
+      FS_GIGACHAT_BASE_URL: http://fakes:9000/gigachat/v1
+      FS_GIGACHAT_AUTH_URL: http://fakes:9000/gigachat/oauth
+      FS_GIGACHAT_CA_BUNDLE: /srv/smoke/fake_gigachat_ca.pem
+      FS_GIGACHAT_ARGUMENTS_FORMAT: object
+      FS_LOG_LEVEL: INFO
+      FS_METRICS_ENABLED: "true"
+
+  gigachat_gateway:
+    volumes:
+      - ./fleet_service/tests/fake_gigachat_ca.pem:/srv/smoke/fake_gigachat_ca.pem:ro
+    depends_on:
+      fakes:
+        condition: service_healthy
+    restart: "no"
+
   fleet_service:
     environment:
       <<: *llm
       FS_LLM_PROXY_URL: http://llm_proxy:4000
       # Сценарий задаёт вопросы подряд от одного пользователя; сам лимит проверяет tests/test_load_limits.py.
       FS_CHAT_BURST: "100"
+      FS_METRICS_ENABLED: "true"
+      FS_ADMIN_TOKEN: smoke-admin
       FS_AUTOGRAPH_BASE_URL: http://fakes:9000/autograph/ServiceJSON/
       # Фоновая проверка: ключ только для подставных данных (32 нулевых байта) и короткий интервал (3 с).
       FS_ACCESS_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
