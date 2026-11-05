@@ -7,6 +7,8 @@
 # стенд проверяет сам, одно уведомление на пользователя) → письмо (черновик от ассистента → подтверждение → письмо
 # у подставного SMTP, повторное подтверждение отклонено) → перезапуск стенда (хранилище и доступ на месте) → отзыв
 # доступа → проверка при остановленной аналитике.
+# В конце — переключение режима: FS_LLM_PROVIDER=gigachat и обычный up -d --wait (чат с tool через шлюз на строгом
+# подставном GigaChat, ноль запросов к подставному OpenRouter, очередь чатов при одном потоке) и обратно.
 # Запуск из любого каталога: ml/fleet_service/scripts/smoke.sh
 # Порты на хосте: SMOKE_FLEET_PORT (18080), SMOKE_PREDICTIVE_PORT (18001). KEEP=1 — не останавливать стенд.
 set -euo pipefail
@@ -18,6 +20,8 @@ COMPOSE=(docker compose -p fleet-smoke -f "$ML/docker-compose.yml" -f "$ML/fleet
 BASE="http://127.0.0.1:$FLEET_SERVICE_PORT"
 AUTH=(-H "Authorization: Bearer valid-token" -H "X-Schema-Id: schema-1")
 
+RESULT_DIR="$(mktemp -d)"
+
 cleanup() {
     local code=$?
     if [ "$code" != 0 ]; then
@@ -25,6 +29,7 @@ cleanup() {
         "${COMPOSE[@]}" logs --no-color --tail 80 || true
     fi
     [ "${KEEP:-0}" = 1 ] || "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+    rm -rf "$RESULT_DIR"
     exit "$code"
 }
 trap cleanup EXIT
@@ -32,6 +37,9 @@ trap cleanup EXIT
 step() { echo "▶ $*"; }
 fail() { echo "✗ $*" >&2; exit 1; }
 # Проверка JSON без jq: python3 из системы, выражение над переменной d.
+# Вывод проверяется целиком, а не конвейером: при pipefail grep -q обрывает писателя (SIGPIPE), и утечка осталась бы
+# незамеченной, а верный вывод уронил бы сценарий.
+contains() { grep -qE "$2" <<<"$1"; }
 json_check() { python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if ($1) else 1)"; }
 
 step "сборка и запуск compose"
@@ -102,7 +110,7 @@ reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION
 echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d.get("reply", "")' || fail "ответ запасной модели: $reply"
 fakes_api /openrouter/_requests | json_check '[r["model"] for r in d][:4] == ["fake/model"] * 3 + ["x/fallback"]' \
     || fail "прокси не перешёл к запасной модели"
-"${COMPOSE[@]}" logs --no-color fleet_service | grep -q 'модель: ответила .* (fallback), копия прокси fallback-1' \
+contains "$("${COMPOSE[@]}" logs --no-color fleet_service)" 'модель: ответила .* \(fallback\), копия прокси fallback-1' \
     || fail "в логе стенда не видно ответа запасной модели"
 
 NOTICE="упрощённом режиме"
@@ -116,7 +124,7 @@ echo "$reply" | json_check '"средний уровень топлива 250.0 
 fakes_api /openrouter/_requests | json_check '[r["model"] for r in d][:3] == ["fake/model", "x/fallback", "fake/model"]' \
     || fail "402 повторялся"
 fakes_api /reserve/_requests | json_check '[r["model"] for r in d] == ["fake/reserve"]' || fail "резерв не вызывался"
-"${COMPOSE[@]}" logs --no-color fleet_service | grep -q 'WARNING.*модель: ответила .* (reserve), копия прокси reserve' \
+contains "$("${COMPOSE[@]}" logs --no-color fleet_service)" 'WARNING.*модель: ответила .* \(reserve\), копия прокси reserve' \
     || fail "в логе стенда нет WARNING об ответе резерва"
 
 step "OpenRouter лежит (503 подряд) → breaker стенда открыт: следующий ответ — резерв без запросов к OpenRouter"
@@ -329,13 +337,129 @@ if grep -qE 'valid-token|other-token|login-token|test-key|reserve-key|fake-passw
 fi
 
 step "в логах прокси модели нет ключей OpenRouter и резерва"
-if "${COMPOSE[@]}" logs --no-color llm_proxy llm_proxy_config | grep -qE 'test-key|reserve-key'; then
+if contains "$("${COMPOSE[@]}" logs --no-color llm_proxy llm_proxy_config)" 'test-key|reserve-key|test-gigachat-key'; then
     fail "ключ модели попал в лог прокси"
 fi
 
 step "в базе стенда нет токена и пароля в открытом виде"
-if "${COMPOSE[@]}" exec -T fleet_service sh -c 'cat /srv/data/fleet.db*' | grep -aqE 'valid-token|login-token|fake-password'; then
+if contains "$("${COMPOSE[@]}" exec -T fleet_service sh -c 'cat /srv/data/fleet.db*' | tr -d '\000')" 'valid-token|login-token|fake-password'; then
     fail "токен или пароль лежит в базе в открытом виде"
 fi
+
+gigachat_api() { "${COMPOSE[@]}" exec -T fakes python -c '
+import sys, urllib.request
+data = sys.argv[2].encode() if len(sys.argv) > 2 else None
+req = urllib.request.Request("http://localhost:9000" + sys.argv[1], data=data, headers={"Content-Type": "application/json"})
+print(urllib.request.urlopen(req).read().decode())' "$@"; }
+gateway_metrics() { "${COMPOSE[@]}" exec -T gigachat_gateway python -c \
+    'import urllib.request; print(urllib.request.urlopen("http://localhost:8000/metrics").read().decode())'; }
+
+step "шлюз запущен и в режиме openrouter: проверка качества идёт до переключения, данные в OpenRouter не меняются"
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 >/dev/null 2>&1
+gigachat_api /gigachat/_config '{}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+"${COMPOSE[@]}" exec -T -e FS_EVAL_API_KEY=test fleet_service python -m fleet_service.agent.eval_tools \
+    --base-url http://gigachat_gateway:8000/v1 --model GigaChat-2-Pro >"$RESULT_DIR/eval.txt"
+grep -q 'Верный tool: ' "$RESULT_DIR/eval.txt" || fail "eval_tools через шлюз: $(tail -3 "$RESULT_DIR/eval.txt")"
+if grep -q 'ошибка:' "$RESULT_DIR/eval.txt"; then fail "eval_tools через шлюз получил ошибки"; fi
+gigachat_api /gigachat/_stats | json_check 'd["requests"] > 0' || fail "eval_tools не дошёл до GigaChat"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "eval_tools ходил в OpenRouter"
+
+step "FS_LLM_PROVIDER=gigachat, docker compose up -d --wait → чат с tool через шлюз, ноль запросов к OpenRouter"
+export SMOKE_LLM_PROVIDER=gigachat
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 >/dev/null 2>&1
+curl -fsS "$BASE/health" | json_check 'd["llmProvider"] == "gigachat" and d["llmConfigured"]' || fail "/health в режиме gigachat"
+gigachat_api /gigachat/_config '{}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d.get("reply", "")' || fail "ответ через шлюз: $reply"
+echo "  ответ: $reply"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "в режиме gigachat были запросы к OpenRouter"
+fakes_api /reserve/_requests | json_check 'd == []' || fail "в режиме gigachat были запросы к резерву"
+gigachat_api /gigachat/_requests | json_check '
+    len(d) == 3 and [m["function_call"]["name"] for m in d[-1]["messages"] if "function_call" in m] == ["list_vehicles", "get_vehicle_summary"]
+    and all(m["functions_state_id"] for m in d[-1]["messages"] if "function_call" in m)
+    and [m["role"] for m in d[0]["messages"]] == ["system", "user"]' \
+    || fail "через прокси потерялся functions_state_id или цепочка tools"
+contains "$("${COMPOSE[@]}" logs --no-color fleet_service)" 'модель: ответила .* \(primary\), копия прокси primary, режим gigachat' \
+    || fail "в логе стенда не видно ответа в режиме gigachat"
+
+step "ключ GigaChat не виден контейнеру llm_proxy и логам; файл шлюза с правами 600"
+if contains "$("${COMPOSE[@]}" exec -T llm_proxy sh -c 'env; cat /config/litellm.env /config/litellm.yaml')" 'test-gigachat-key'; then
+    fail "ключ GigaChat виден контейнеру llm_proxy"
+fi
+if contains "$("${COMPOSE[@]}" exec -T llm_proxy sh -c 'env; cat /config/litellm.env')" 'test-key'; then
+    fail "в режиме gigachat прокси видит ключ OpenRouter"
+fi
+[ "$("${COMPOSE[@]}" exec -T gigachat_gateway stat -c %a /config/gigachat.env | tr -d '[:space:]')" = 600 ] || fail "права gigachat.env"
+if contains "$("${COMPOSE[@]}" exec -T gigachat_gateway sh -c 'env; cat /config/gigachat.env')" 'smtp-pass|reserve-key|pa-key|test-key|AAAAAAAA'; then
+    fail "шлюз видит чужие секреты"
+fi
+if contains "$("${COMPOSE[@]}" logs --no-color llm_proxy llm_proxy_config gigachat_gateway gigachat_gateway_config fleet_service)" 'test-gigachat-key|giga-token'; then
+    fail "ключ или токен GigaChat попал в лог"
+fi
+
+step "один поток: одновременные чаты идут по очереди, шлюз не отвечает 429, breaker не открывается"
+curl -fsS -H "Authorization: Bearer smoke-admin" "$BASE/v1/status" | json_check \
+    'd["llm"]["provider"] == "gigachat" and d["llm"]["model"] == "GigaChat-2-Pro" and d["limits"]["chat"]["concurrency"] == 1' \
+    || fail "/v1/status в режиме gigachat"
+gigachat_api /gigachat/_config '{"delay":0.5,"maxStreams":1}' >/dev/null
+for n in 1 2 3 4; do
+    curl -sS -o "$RESULT_DIR/chat-$n.json" -w '%{http_code}' -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" \
+        "$BASE/v1/chat" >"$RESULT_DIR/chat-$n.code" &
+done
+wait
+for n in 1 2 3 4; do
+    [ "$(cat "$RESULT_DIR/chat-$n.code")" = 200 ] || fail "чат $n: $(cat "$RESULT_DIR/chat-$n.code") $(cat "$RESULT_DIR/chat-$n.json")"
+done
+gigachat_api /gigachat/_stats | json_check 'd["peak"] == 1 and d["rejected"] == 0 and d["requests"] == 12' \
+    || fail "потоки GigaChat: $(gigachat_api /gigachat/_stats)"
+grep -qF 'fleet_rejections_total{reason="gigachat_no_slot"} 0.0' <<<"$(gateway_metrics)" || fail "шлюз отвечал 429: нет места"
+curl -fsS "$BASE/health" | json_check 'd["breakers"]["llm"] == "closed"' || fail "breaker открылся при очереди чатов"
+gigachat_api /gigachat/_config '{}' >/dev/null
+
+step "GigaChat ответил 429 с Retry-After → прокси повторил через шлюз; 422 → без повторов, ответ резерва"
+gigachat_api /gigachat/_config '{"failures":[{"status":429,"retryAfter":1}]}' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d["reply"]' || fail "ответ после 429 через шлюз: $reply"
+gigachat_api /gigachat/_stats | json_check 'd["requests"] == 4' || fail "прокси не повторил запрос после 429 шлюза"
+gigachat_api /gigachat/_config '{"failures":[{"status":422,"message":"Invalid params"}]}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"'"$NOTICE"'" in d["reply"]' || fail "ответ резерва при 422 GigaChat: $reply"
+# Одно обращение с 422 без повтора (шлюз отдаёт 400, прокси уходит к резерву) и два следующих обращения ответа.
+gigachat_api /gigachat/_stats | json_check 'd["requests"] == 3' || fail "422 шлюза повторялся: $(gigachat_api /gigachat/_stats)"
+fakes_api /reserve/_requests | json_check 'len(d) == 1' || fail "при 422 GigaChat не ответил резерв"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "при 422 GigaChat данные ушли в OpenRouter"
+gigachat_api /gigachat/_config '{}' >/dev/null
+
+step "GigaChat ответил 402 → без повторов, ответ резерва с пометкой; запросов к OpenRouter нет"
+gigachat_api /gigachat/_config '{"failures":[{"status":402,"message":"Payment required"}]}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"'"$NOTICE"'" in d["reply"]' || fail "ответ резерва при 402 GigaChat: $reply"
+fakes_api /reserve/_requests | json_check 'len(d) == 1' || fail "резерв при 402 GigaChat"
+fakes_api /openrouter/_requests | json_check 'd == []' || fail "при 402 GigaChat данные ушли в OpenRouter"
+gigachat_api /gigachat/_config '{}' >/dev/null
+
+step "обратно: FS_LLM_PROVIDER=openrouter, docker compose up -d --wait → чат через OpenRouter, ноль запросов к GigaChat"
+export SMOKE_LLM_PROVIDER=openrouter
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 >/dev/null 2>&1
+curl -fsS "$BASE/health" | json_check 'd["llmProvider"] == "openrouter" and d["llmConfigured"]' || fail "/health в режиме openrouter"
+gigachat_api /gigachat/_config '{}' >/dev/null
+fakes_api /openrouter/_failures '[]' >/dev/null
+reply=$(curl -fsS -H 'Content-Type: application/json' "${AUTH[@]}" -d "$QUESTION" "$BASE/v1/chat")
+echo "$reply" | json_check '"средний уровень топлива 250.0 л" in d.get("reply", "")' || fail "ответ через OpenRouter: $reply"
+fakes_api /openrouter/_requests | json_check 'len(d) == 3' || fail "в режиме openrouter нет запросов к OpenRouter"
+gigachat_api /gigachat/_stats | json_check 'd["requests"] == 0' || fail "в режиме openrouter были запросы к GigaChat"
+if contains "$("${COMPOSE[@]}" exec -T llm_proxy sh -c 'env; cat /config/litellm.env /config/litellm.yaml')" 'test-gigachat-key'; then
+    fail "в режиме openrouter ключ GigaChat виден контейнеру llm_proxy"
+fi
+
+step "повторный docker compose up -d --wait без правок не перезапускает прокси и шлюз"
+started() { docker inspect -f '{{.State.StartedAt}}' "$("${COMPOSE[@]}" ps -q "$1")"; }
+before="$(started llm_proxy) $(started gigachat_gateway)"
+"${COMPOSE[@]}" up -d --wait --wait-timeout 180 >/dev/null 2>&1
+[ "$before" = "$(started llm_proxy) $(started gigachat_gateway)" ] || fail "прокси или шлюз перезапущены без изменений"
 
 echo "✓ smoke: все проверки пройдены"

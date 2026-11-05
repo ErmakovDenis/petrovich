@@ -85,8 +85,8 @@ class Gateway:
             async with asyncio.timeout(left):
                 data = await self._call(request)
         except TimeoutError:
-            log.warning("GigaChat не ответил за %.0f с", timeout)
-            raise GatewayError(504, f"GigaChat не ответил за {timeout:.0f} с") from None
+            log.warning("GigaChat не ответил за %g с", timeout)
+            raise GatewayError(504, f"GigaChat не ответил за {timeout:g} с") from None
         finally:
             self.slots.release()
         return self._response(data, request["model"])
@@ -94,7 +94,7 @@ class Gateway:
     def _no_slot(self) -> GatewayError:
         s = self._settings
         self._metrics.rejections.labels("gigachat_no_slot").inc()
-        log.warning("шлюз: нет места за %.0f с (FS_GIGACHAT_CONCURRENCY=%d) — 429", s.gigachat_timeout_seconds,
+        log.warning("шлюз: нет места за %g с (FS_GIGACHAT_CONCURRENCY=%d) — 429", s.gigachat_timeout_seconds,
                     s.gigachat_concurrency)
         return GatewayError(429, "Заняты все потоки GigaChat", NO_SLOT_RETRY_AFTER)
 
@@ -139,8 +139,8 @@ class Gateway:
                     raise
                 call.status(resp.status_code)
         except httpx.TimeoutException:
-            log.warning("GigaChat не ответил за %.0f с", s.gigachat_timeout_seconds)
-            raise GatewayError(504, f"GigaChat не ответил за {s.gigachat_timeout_seconds:.0f} с") from None
+            log.warning("GigaChat не ответил за %g с", s.gigachat_timeout_seconds)
+            raise GatewayError(504, f"GigaChat не ответил за {s.gigachat_timeout_seconds:g} с") from None
         except httpx.HTTPError as e:
             log.warning("GigaChat недоступен: %s: %s", type(e).__name__, e)
             raise GatewayError(503, f"GigaChat недоступен: {type(e).__name__}") from e

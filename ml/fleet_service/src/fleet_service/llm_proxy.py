@@ -23,10 +23,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import SecretStr
-
 from .agent.llm import FALLBACK_ID, PRIMARY_ID, PROXY_MODEL, RESERVE_GROUP, RESERVE_ID, provider_preferences
 from .config import Settings
+from .envfile import secret_value as _secret
+from .envfile import write_env_file
 
 
 def _openrouter(s: Settings, name: str, model: str, deployment_id: str) -> dict[str, Any]:
@@ -131,22 +131,10 @@ def proxy_env(s: Settings) -> dict[str, str]:
     return env
 
 
-def _secret(value: SecretStr | None) -> str:
-    return value.get_secret_value() if value is not None else ""
-
-
-def _env_line(name: str, value: str) -> str:
-    # Значение в одинарных кавычках: файл читает sh (`. litellm.env`), спецсимволы ключа не раскрываются.
-    return f"{name}='" + value.replace("'", "'\\''") + "'\n"
-
-
 def write(directory: Path, s: Settings) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "litellm.yaml").write_text(json.dumps(proxy_config(s), ensure_ascii=False, indent=2), encoding="utf-8")
-    env = directory / "litellm.env"
-    env.touch(mode=0o600)
-    env.chmod(0o600)
-    env.write_text("".join(_env_line(k, v) for k, v in proxy_env(s).items()), encoding="utf-8")
+    write_env_file(directory / "litellm.env", proxy_env(s))
 
 
 def main(argv: list[str]) -> None:

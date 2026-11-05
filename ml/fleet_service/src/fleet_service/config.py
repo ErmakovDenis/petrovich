@@ -281,6 +281,14 @@ class Settings(BaseSettings):
         return (self.gigachat_model if self.llm_provider == "gigachat" else self.llm_model).strip()
 
     @property
+    def effective_chat_concurrency(self) -> int:
+        """Предел одновременных ответов чата. В режиме gigachat — не больше потоков шлюза: иначе при одном потоке (PERS)
+        чаты упираются в ожидание места в шлюзе, получают 429 и открывают breaker."""
+        if self.llm_provider == "gigachat":
+            return min(self.chat_concurrency, self.gigachat_concurrency)
+        return self.chat_concurrency
+
+    @property
     def reserve_configured(self) -> bool:
         return bool(self.llm_reserve_base_url.strip() and self.llm_reserve_model.strip())
 

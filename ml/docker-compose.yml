@@ -1,5 +1,6 @@
 # Стенд «Петрович Телеметрия»: fleet_service (ассистент, телеметрия, аномалии и их хранилище), прокси модели
-# llm_proxy (LiteLLM) и predictive_antifraud.
+# llm_proxy (LiteLLM), шлюз GigaChat gigachat_gateway и predictive_antifraud.
+# Модель выбирает FS_LLM_PROVIDER в ml/fleet_service/.env; сменили — docker compose up -d --wait, без пересборки.
 #   cd ml && docker compose up -d --build
 # Настройки сервисов — в ml/fleet_service/.env (FS_*) и ml/predictive_antifraud/.env (PA_*), образцы в .env.example.
 # Ключ X-API-Key аналитики: PA_API_KEY и FS_PREDICTIVE_API_KEY задаются одним значением.
@@ -33,6 +34,9 @@ services:
       llm_proxy:
         condition: service_started
         required: false
+      gigachat_gateway:
+        condition: service_started
+        required: false
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 5s
@@ -63,11 +67,45 @@ services:
     depends_on:
       llm_proxy_config:
         condition: service_completed_successfully
+        # Конфигурацию прокси читает только при старте: без перезапуска он остался бы на прежнем провайдере.
+        restart: true
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]
       interval: 5s
       timeout: 5s
       retries: 24
+    restart: unless-stopped
+
+  # Окружение шлюза GigaChat из FS_* в ml/fleet_service/.env: пишется в том gigachat_config (права 600) при каждом запуске.
+  gigachat_gateway_config:
+    build: ./fleet_service
+    env_file:
+      - path: ./fleet_service/.env
+        required: false
+    command: ["python", "-m", "fleet_service.gigachat.config", "/config"]
+    volumes:
+      - gigachat_config:/config
+    restart: "no"
+
+  # Шлюз GigaChat: токен, проверка TLS и преобразование сообщений. Порт наружу не открыт. Запускается всегда, чтобы
+  # переключатель был один, а проверка качества шла до переключения: без ключа /health отвечает, а чат — 503.
+  # Ключ задан — нужен сертификат Минцифры: файл в ml/fleet_service/certs и FS_GIGACHAT_CA_BUNDLE=/srv/certs/<файл>;
+  # без него шлюз не стартует. Весь .env этому контейнеру не передаётся.
+  gigachat_gateway:
+    build: ./fleet_service
+    entrypoint: ["sh", "-c", "set -a && . /config/gigachat.env && set +a && exec python -m fleet_service.gigachat"]
+    volumes:
+      - gigachat_config:/config:ro
+      - ./fleet_service/certs:/srv/certs:ro
+    depends_on:
+      gigachat_gateway_config:
+        condition: service_completed_successfully
+        restart: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   # Резервная модель на своём GPU (vLLM, OpenAI-совместимый API) — заготовка, обычный `docker compose up` её НЕ
@@ -182,4 +220,5 @@ volumes:
   prometheus_data:
   grafana_data:
   llm_config:
+  gigachat_config:
   reserve_llm_cache:

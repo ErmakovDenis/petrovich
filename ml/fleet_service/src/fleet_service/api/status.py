@@ -38,7 +38,7 @@ def stand_status(request: Request, settings: Annotated[Settings, Depends(get_set
         "breakers": {name: b.status() for name, b in state.breakers.items()},
         "limits": {
             "chat": {"active": limits.chat.active, "waiting": limits.chat.waiting,
-                     "concurrency": settings.chat_concurrency, "queueMax": settings.chat_queue_max},
+                     "concurrency": settings.effective_chat_concurrency, "queueMax": settings.chat_queue_max},
             "autograph": {"active": limits.autograph.active, "background": limits.autograph.background_active,
                           "waiting": limits.autograph.waiting, "concurrency": settings.autograph_concurrency},
             "predictive": {"active": limits.predictive.active, "background": limits.predictive.background_active,

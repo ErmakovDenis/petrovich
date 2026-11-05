@@ -113,7 +113,7 @@ def create_app(
         predictive_limit = UpstreamLimiter("predictive", settings.predictive_concurrency)
         app.state.limits = Limits(
             chat_rate=TokenBuckets(settings.chat_rate_per_minute, settings.chat_burst),
-            chat=AdmissionLimiter("chat", settings.chat_concurrency, settings.chat_queue_max),
+            chat=AdmissionLimiter("chat", settings.effective_chat_concurrency, settings.chat_queue_max),
             autograph=autograph_limit,
             predictive=predictive_limit,
         )
