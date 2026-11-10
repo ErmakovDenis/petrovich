@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +58,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.data.TELEGRAM_CATEGORIES
+import ru.petrovich.telemetry.data.TELEGRAM_KINDS
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.Contact
 import ru.petrovich.telemetry.ui.common.AppTopBar
@@ -118,6 +121,35 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PChip("Только текст", selected = !s.voiceReportEnabled, onClick = { save { it.copy(voiceReportEnabled = false) } })
                     PChip("Текст и голос", selected = s.voiceReportEnabled, onClick = { save { it.copy(voiceReportEnabled = true) } })
+                }
+            }
+
+            SectionLabel("Какие проблемы показывать")
+            Card {
+                Text(
+                    "Выключенное не видно в «Проблемах», на главной и в «Парке» и не приходит уведомлением, даже если оно срочное. " +
+                        "В Telegram скрывается то же.",
+                    style = MaterialTheme.typography.bodySmall, color = c.muted,
+                    modifier = Modifier.padding(vertical = 10.dp),
+                )
+                TELEGRAM_KINDS.forEach { (category, kinds) ->
+                    HorizontalDivider(color = c.line)
+                    Text(TELEGRAM_CATEGORIES.getValue(category), style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 8.dp))
+                    kinds.forEach { (kind, name) ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = kind !in s.mutedKinds,
+                                onCheckedChange = { on ->
+                                    val next = if (on) s.mutedKinds - kind else s.mutedKinds + kind
+                                    scope.launch {
+                                        repo.update { it.copy(mutedKinds = next) }
+                                        pushMutedKinds(next)
+                                    }
+                                },
+                            )
+                            Text(name, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             }
 

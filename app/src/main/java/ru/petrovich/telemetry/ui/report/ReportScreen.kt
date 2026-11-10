@@ -54,6 +54,7 @@ import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.plural
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.common.time
 import ru.petrovich.telemetry.ui.home.AnomalyOrder
 import ru.petrovich.telemetry.ui.home.HomeData
@@ -70,9 +71,11 @@ fun ReportScreen(onBack: () -> Unit, onOpenCard: (String) -> Unit, onOpenProblem
     val all by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val c = Petrovich.colors
-    val list = remember(all) {
+    val list = remember(all, settings?.mutedKinds) {
         val since = LocalDateTime.now().minusHours(24)
-        all.filter { a -> a.resolution != Resolution.FALSE_ALARM && a.time?.let { it.isAfter(since) } == true }.sortedWith(AnomalyOrder)
+        all.shown(settings?.mutedKinds.orEmpty())
+            .filter { a -> a.resolution != Resolution.FALSE_ALARM && a.time?.let { it.isAfter(since) } == true }
+            .sortedWith(AnomalyOrder)
     }
     val vehicles = list.map { it.vehicleId }.distinct().size
     val voiceEnabled = settings?.voiceReportEnabled ?: true

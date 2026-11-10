@@ -68,6 +68,21 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
+/**
+ * Записать выключенные типы во все подключённые чаты, чтобы бот скрывал то же, что приложение.
+ * Нет чатов или стенд недоступен — фильтр приложения всё равно уже сохранён.
+ */
+internal suspend fun pushMutedKinds(kinds: Set<String>) {
+    val chats = runCatchingCancellable { ServiceLocator.telegram.chats() }.getOrNull()?.chats ?: return
+    val list = TELEGRAM_KINDS.values.flatten().map { it.first }.filter { it in kinds }
+    for (chat in chats) {
+        if (chat.subscription.mutedKinds.toSet() == list.toSet()) continue
+        runCatchingCancellable {
+            ServiceLocator.telegram.setSubscription(chat.chatId, chat.subscription.copy(mutedKinds = list))
+        }
+    }
+}
+
 /** Варианты как в боте (/settings): лимит в день и тихие часы. */
 private val LIMITS = listOf<Int?>(3, 5, 10, null)
 private val QUIET = listOf<Pair<Int?, Int?>>(22 to 7, 23 to 7, null to null)
@@ -95,7 +110,14 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
     fun reload() = scope.launch {
         loading = true
         runCatchingCancellable { ServiceLocator.telegram.chats() }
-            .onSuccess { data = it; error = null }
+            .onSuccess {
+                data = it
+                error = null
+                // Один чат: правка в боте (/settings) становится фильтром приложения.
+                val only = it.chats.singleOrNull() ?: return@onSuccess
+                val muted = only.subscription.mutedKinds.toSet()
+                ServiceLocator.settings.update { cur -> if (cur.mutedKinds == muted) cur else cur.copy(mutedKinds = muted) }
+            }
             .onFailure { error = "Не получилось загрузить: ${it.message}" }
         loading = false
     }
@@ -218,6 +240,9 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
                                     // Сразу на экране; отказ стенда — возвращаем как было.
                                     data = d.copy(chats = d.chats.map { if (it.chatId == chat.chatId) it.copy(subscription = sub) else it })
                                     scope.launch {
+                                        if (sub.mutedKinds.toSet() != chat.subscription.mutedKinds.toSet()) {
+                                            ServiceLocator.settings.update { it.copy(mutedKinds = sub.mutedKinds.toSet()) }
+                                        }
                                         runCatchingCancellable { ServiceLocator.telegram.setSubscription(chat.chatId, sub) }
                                             .onSuccess { error = null }
                                             .onFailure { error = "Не сохранилось: ${it.message}"; reload() }
@@ -375,8 +400,8 @@ private fun VehiclesSettings(sub: TelegramSubscription, vehicles: List<TelegramV
 
 @Composable
 private fun EventsSettings(sub: TelegramSubscription, onChange: (TelegramSubscription) -> Unit) {
-    Note("Выключенное событие не приходит совсем, даже критичное, и не показывается в «Проблемах» и «Парке» бота. " +
-        "То же — в боте: /settings → «События»")
+    Note("Выключенное событие не приходит совсем, даже критичное, и не показывается в «Проблемах», на главной и в «Парке» — " +
+        "и в приложении, и в боте. То же — в боте: /settings → «События»")
     TELEGRAM_KINDS.forEach { (category, kinds) ->
         Text(TELEGRAM_CATEGORIES.getValue(category), style = MaterialTheme.typography.labelLarge)
         kinds.forEach { (kind, name) ->

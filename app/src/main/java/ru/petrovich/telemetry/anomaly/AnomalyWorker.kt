@@ -9,6 +9,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.home.HomeData
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalTime
@@ -48,7 +49,7 @@ class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         if (today.dayOfWeek !in prefs.reportDays || prefs.lastReportDate == today.toString()) return
         val reportTime = runCatching { LocalTime.parse(prefs.reportTime) }.getOrDefault(LocalTime.of(8, 0))
         if (now.toLocalTime().isBefore(reportTime)) return
-        val anomalies = ServiceLocator.anomalyStore.anomalies.value
+        val anomalies = ServiceLocator.anomalyStore.anomalies.value.shown(prefs.mutedKinds)
         val vehicleCount = runCatching { ServiceLocator.telemetry.vehicles().size }.getOrNull()?.takeIf { it > 0 }
         ServiceLocator.notifier.notifyDailyReport(HomeData(anomalies, vehicleCount, scanned = true, today = today))
         ServiceLocator.settings.update { it.copy(lastReportDate = today.toString()) }

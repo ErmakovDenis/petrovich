@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.time.DayOfWeek
+import java.time.LocalTime
 
 /** Оформление: следовать системе или зафиксировать светлую/тёмную тему. */
 enum class ThemeMode(val title: String) { SYSTEM("Системная"), LIGHT("Светлая"), DARK("Тёмная") }
@@ -49,6 +50,11 @@ data class AppSettings(
     val quietHoursStart: String = "22:00",
     /** Конец тихих часов, "HH:mm". */
     val quietHoursEnd: String = "07:00",
+    /**
+     * Выключенные типы событий ([ru.petrovich.telemetry.data.TELEGRAM_KINDS]): не показываются в списках
+     * приложения и не приходят уведомлением, даже срочные. Те же типы можно выключить в Telegram.
+     */
+    val mutedKinds: Set<String> = emptySet(),
     /** Не больше 3 обычных (не срочных) push в день — срочные идут без ограничения. */
     val limitDailyPush: Boolean = true,
     /** За какой день (yyyy-MM-dd) уже отправлен доклад — чтобы не дублировать. */
@@ -109,6 +115,19 @@ data class AppSettings(
 
     /** Фоновая проверка на стенде — продолжение хранилища на стенде; выключенная «Фоновая проверка» выключает и её. */
     val backgroundOnServer: Boolean get() = anomalyStoreOnServer && backgroundViaServer && backgroundChecks
+
+    /**
+     * Местное [now] попадает в тихие часы. Как у Telegram-бота: некритичное в это время не присылается,
+     * срочное — приходит. Окно через полночь (22:00–07:00) считается; одинаковые границы и выключенная
+     * настройка — тихих часов нет.
+     */
+    fun isQuietAt(now: LocalTime): Boolean {
+        if (!quietHoursEnabled) return false
+        val start = runCatching { LocalTime.parse(quietHoursStart) }.getOrNull() ?: return false
+        val end = runCatching { LocalTime.parse(quietHoursEnd) }.getOrNull() ?: return false
+        if (start == end) return false
+        return if (start < end) !now.isBefore(start) && now.isBefore(end) else !now.isBefore(start) || now.isBefore(end)
+    }
 }
 
 private val Context.dataStore by preferencesDataStore("settings")
@@ -134,6 +153,7 @@ class SettingsRepository(private val context: Context) {
         val quietHoursEnabled = booleanPreferencesKey("quiet_hours_enabled")
         val quietHoursStart = stringPreferencesKey("quiet_hours_start")
         val quietHoursEnd = stringPreferencesKey("quiet_hours_end")
+        val mutedKinds = stringPreferencesKey("muted_kinds")
         val limitDailyPush = booleanPreferencesKey("limit_daily_push")
         val lastReportDate = stringPreferencesKey("last_report_date")
         val pushCountDate = stringPreferencesKey("push_count_date")
@@ -179,6 +199,7 @@ class SettingsRepository(private val context: Context) {
         quietHoursEnabled = this[Keys.quietHoursEnabled] ?: true,
         quietHoursStart = this[Keys.quietHoursStart] ?: "22:00",
         quietHoursEnd = this[Keys.quietHoursEnd] ?: "07:00",
+        mutedKinds = this[Keys.mutedKinds].orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet(),
         limitDailyPush = this[Keys.limitDailyPush] ?: true,
         lastReportDate = this[Keys.lastReportDate].orEmpty(),
         pushCountDate = this[Keys.pushCountDate].orEmpty(),
@@ -229,6 +250,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.quietHoursEnabled] = new.quietHoursEnabled
             p[Keys.quietHoursStart] = new.quietHoursStart
             p[Keys.quietHoursEnd] = new.quietHoursEnd
+            p[Keys.mutedKinds] = new.mutedKinds.joinToString(",")
             p[Keys.limitDailyPush] = new.limitDailyPush
             p[Keys.lastReportDate] = new.lastReportDate
             p[Keys.pushCountDate] = new.pushCountDate

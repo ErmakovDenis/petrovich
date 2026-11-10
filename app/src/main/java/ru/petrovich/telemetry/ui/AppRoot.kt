@@ -50,6 +50,8 @@ import ru.petrovich.telemetry.ui.chat.ChatScreen
 import ru.petrovich.telemetry.ui.chat.ChatViewModel
 import ru.petrovich.telemetry.ui.common.TelemetryViewModel
 import ru.petrovich.telemetry.ui.common.isNew
+import ru.petrovich.telemetry.ui.common.shown
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import ru.petrovich.telemetry.ui.detail.AnomalyDetailScreen
 import ru.petrovich.telemetry.ui.home.HomeScreen
 import ru.petrovich.telemetry.ui.home.WidgetDetailScreen
@@ -124,11 +126,20 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
     val route = backStack?.destination?.route
     val telemetry by telemetryVm.state.collectAsStateWithLifecycle()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
-    val pending = anomalies.count { it.isNew }
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val pending = anomalies.shown(settings?.mutedKinds.orEmpty()).count { it.isNew }
     val notifications by ServiceLocator.notificationStore.items.collectAsStateWithLifecycle()
     val unreadNotifications = notifications.count { !it.read }
     var problemsTab by rememberSaveable { mutableStateOf(ProblemsTab.NEW) }
     val scope = rememberCoroutineScope()
+    // Один подключённый чат: выключенные в боте события — те же, что скрывает приложение.
+    LaunchedEffect(Unit) {
+        runCatchingCancellable {
+            val only = ServiceLocator.telegram.chats().chats.singleOrNull() ?: return@runCatchingCancellable
+            val muted = only.subscription.mutedKinds.toSet()
+            ServiceLocator.settings.update { if (it.mutedKinds == muted) it else it.copy(mutedKinds = muted) }
+        }
+    }
     // История чата живёт на уровне Activity и не теряется при смене вкладки.
     val chatVm: ChatViewModel = viewModel(viewModelStoreOwner = checkNotNull(LocalViewModelStoreOwner.current))
 

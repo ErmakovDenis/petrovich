@@ -53,6 +53,7 @@ import ru.petrovich.telemetry.ui.common.color
 import ru.petrovich.telemetry.ui.common.formatValue
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.isNew
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.common.label
 import ru.petrovich.telemetry.ui.common.resolutionLabel
 import ru.petrovich.telemetry.ui.common.softColor
@@ -81,7 +82,9 @@ fun VehicleCardScreen(
     onAsk: (String) -> Unit,
 ) {
     val c = Petrovich.colors
-    val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
+    val allAnomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val anomalies = remember(allAnomalies, settings?.mutedKinds) { allAnomalies.shown(settings?.mutedKinds.orEmpty()) }
     var vehicle by remember(vehicleId) { mutableStateOf<Vehicle?>(null) }
     var vehicleLoaded by remember(vehicleId) { mutableStateOf(false) }
     var period by remember { mutableStateOf(CardPeriod.TODAY) }

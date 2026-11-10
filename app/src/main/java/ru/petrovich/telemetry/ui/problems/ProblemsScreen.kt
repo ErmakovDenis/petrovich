@@ -46,6 +46,7 @@ import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.isNew
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.home.AnomalyOrder
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
@@ -60,7 +61,9 @@ fun ProblemsScreen(
     onAsk: (String) -> Unit,
 ) {
     val store = ServiceLocator.anomalyStore
-    val anomalies by store.anomalies.collectAsStateWithLifecycle()
+    val all by store.anomalies.collectAsStateWithLifecycle()
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val anomalies = remember(all, settings?.mutedKinds) { all.shown(settings?.mutedKinds.orEmpty()) }
     var scanning by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }

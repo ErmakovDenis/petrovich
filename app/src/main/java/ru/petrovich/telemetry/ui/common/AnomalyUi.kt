@@ -40,6 +40,12 @@ fun Severity.softColor(): Color = with(Petrovich.colors) {
 
 val Anomaly.isNew: Boolean get() = resolution == null && !acknowledged
 
+/** Выключенный в настройках тип (слив, напряжение и т.д.) не показываем и не присылаем. */
+fun Anomaly.isShown(mutedKinds: Set<String>): Boolean = kind !in mutedKinds
+
+fun List<Anomaly>.shown(mutedKinds: Set<String>): List<Anomaly> =
+    if (mutedKinds.isEmpty()) this else filter { it.isShown(mutedKinds) }
+
 val Anomaly.time: LocalDateTime? get() = runCatching { LocalDateTime.parse(eventTime) }.getOrNull()
 
 private val RuLocale = Locale("ru")

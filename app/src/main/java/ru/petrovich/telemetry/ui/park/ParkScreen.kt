@@ -58,6 +58,7 @@ import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.Pill
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.isNew
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
@@ -88,6 +89,8 @@ private data class ParkRow(val vehicle: Vehicle, val stats: VehicleStats?) {
 fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
     val c = Petrovich.colors
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val visibleAnomalies = remember(anomalies, settings?.mutedKinds) { anomalies.shown(settings?.mutedKinds.orEmpty()) }
     var vehicles by remember { mutableStateOf<List<Vehicle>>(emptyList()) }
     var statsById by remember { mutableStateOf<Map<String, VehicleStats?>>(emptyMap()) }
     var loading by remember { mutableStateOf(true) }
@@ -118,8 +121,8 @@ fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
         }
     }
 
-    val pendingSeverity = remember(anomalies) {
-        anomalies.filter { it.isNew && it.severity != Severity.INFO }
+    val pendingSeverity = remember(visibleAnomalies) {
+        visibleAnomalies.filter { it.isNew && it.severity != Severity.INFO }
             .groupBy { it.vehicleId }
             .mapValues { (_, list) -> list.maxByOrNull { it.severity.ordinal }!!.severity }
     }

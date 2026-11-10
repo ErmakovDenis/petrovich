@@ -68,6 +68,7 @@ import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.common.shortDate
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.problems.ProblemsTab
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
@@ -108,7 +109,9 @@ fun HomeScreen(
 
     val s = settings ?: return
     val scanned = s.lastScanAt > 0
-    val data = remember(anomalies, vehicleCount, scanned) { HomeData(anomalies, vehicleCount, scanned) }
+    val data = remember(anomalies, s.mutedKinds, vehicleCount, scanned) {
+        HomeData(anomalies.shown(s.mutedKinds), vehicleCount, scanned)
+    }
     var scanning by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
 

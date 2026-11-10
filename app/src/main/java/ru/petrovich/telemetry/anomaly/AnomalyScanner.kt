@@ -9,13 +9,11 @@ import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.VehicleTelemetry
 import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.ui.common.label
+import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
-
-/** Тихие часы — фиксированное ночное окно, как в настройках («Тихие часы 22:00–07:00»). */
-private fun isQuietHour(hour: Int): Boolean = hour >= 22 || hour < 7
 
 /** «На линии» / «стоят» / «без связи» — честная оценка по тем же данным, что уже загружены для поиска аномалий. */
 enum class VehicleActivity { ON_LINE, STOPPED, OFFLINE }
@@ -127,8 +125,9 @@ class AnomalyScanner(
 
     /** История уведомлений (экран «Уведомления»). */
     private suspend fun remember(fresh: List<Anomaly>) {
-        if (fresh.isEmpty()) return
-        notificationStore.addAll(fresh.map {
+        val visible = fresh.shown(settings.current().mutedKinds)
+        if (visible.isEmpty()) return
+        notificationStore.addAll(visible.map {
             NotificationItem(
                 id = it.id,
                 title = "${it.severity.label()} · ${it.vehicleName}: ${it.title}",
@@ -140,12 +139,15 @@ class AnomalyScanner(
     }
 
     private suspend fun notifyFresh(fresh: List<Anomaly>) {
-        if (fresh.isEmpty()) return
         val prefs = settings.current()
+        // Выключенный тип не приходит совсем, даже срочный — как в Telegram.
+        val fresh = fresh.shown(prefs.mutedKinds)
+        if (fresh.isEmpty()) return
         val today = LocalDate.now().toString()
         val sentToday = if (prefs.pushCountDate == today) prefs.pushCountToday else 0
-        // Ночью и сверх дневного лимита продолжают идти только срочные — остальное видно в «Проблемах».
-        val quiet = prefs.quietHoursEnabled && isQuietHour(LocalDateTime.now().hour)
+        // В тихие часы и сверх дневного лимита продолжают идти только срочные — остальное видно в «Проблемах».
+        // Окно берётся из настроек, как у Telegram-бота (некритичное пропускается и потом не досылается).
+        val quiet = prefs.isQuietAt(LocalDateTime.now().toLocalTime())
         val overLimit = prefs.limitDailyPush && sentToday >= 3
         val pushWarning = prefs.pushWarning && !quiet && !overLimit
         val toNotify = if (prefs.backgroundOnServer && background != null) {

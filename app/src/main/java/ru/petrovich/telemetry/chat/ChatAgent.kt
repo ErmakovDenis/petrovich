@@ -142,8 +142,11 @@ class PetrovichAgent : ChatAgent {
         delay(350)
         val question = history.lastOrNull { it.author == Author.USER }?.text.orEmpty()
         val q = question.lowercase(Locale("ru"))
-        val anomalies = ServiceLocator.anomalyStore.anomalies.value
-        val context = contextAnomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
+        val all = ServiceLocator.anomalyStore.anomalies.value
+        val muted = ServiceLocator.settings.current().mutedKinds
+        // Скрытый тип не предлагаем в ответах. Карточку, которую уже открыли, разбираем как есть.
+        val anomalies = all.filter { it.kind !in muted || it.id == contextAnomalyId }
+        val context = contextAnomalyId?.let { id -> all.firstOrNull { it.id == id } }
 
         context?.let { ctx ->
             recallReply(q, ctx, anomalies)?.let { return it }

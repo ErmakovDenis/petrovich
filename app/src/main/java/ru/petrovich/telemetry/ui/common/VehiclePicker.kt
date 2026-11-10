@@ -59,7 +59,10 @@ private const val NO_GROUP = "Без группы"
 @Composable
 fun VehiclePicker(vehicles: List<Vehicle>, selectedId: String?, onSelect: (String) -> Unit) {
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
-    val pending = remember(anomalies) { anomalies.filter { it.isNew }.groupingBy { it.vehicleId }.eachCount() }
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val pending = remember(anomalies, settings?.mutedKinds) {
+        anomalies.shown(settings?.mutedKinds.orEmpty()).filter { it.isNew }.groupingBy { it.vehicleId }.eachCount()
+    }
     var open by remember { mutableStateOf(false) }
     val c = Petrovich.colors
     val index = vehicles.indexOfFirst { it.id == selectedId }
