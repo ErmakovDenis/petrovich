@@ -19,7 +19,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.LocalShipping
-import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -70,14 +69,14 @@ private enum class CardPeriod(val title: String, val days: Long) {
 
 /**
  * 3.13 «Карточка машины»: номер крупно, период Сегодня/Неделя/Месяц, три показателя (в баке,
- * пробег, холостой ход — честно посчитаны из телеметрии), детали, «Показать на карте»,
- * текущая аномалия (если есть) и «Петрович помнит».
+ * пробег, холостой ход — честно посчитаны из телеметрии), детали, текущая аномалия (если есть)
+ * и «Петрович помнит». Кнопка «Показать на карте» скрыта: у AutoGRAPH нет GPS/маршрута.
  */
 @Composable
 fun VehicleCardScreen(
     vehicleId: String,
     onBack: () -> Unit,
-    onShowOnMap: (String) -> Unit,
+    @Suppress("UNUSED_PARAMETER") onShowOnMap: (String) -> Unit,
     onOpenAnomaly: (String) -> Unit,
     onAsk: (String) -> Unit,
 ) {
@@ -183,19 +182,6 @@ fun VehicleCardScreen(
                             DetailRow("Датчик топлива", fuelSensorText(stats), valueColor = if (stats?.fuelSensorOk == false) c.med else null)
                             HorizontalDivider(color = c.line)
                             DetailRow("Сейчас", (stats?.activity ?: VehicleActivity.OFFLINE).label().replaceFirstChar { it.lowercase() })
-                        }
-                    }
-
-                    SurfaceCard(onClick = { onShowOnMap(vehicleId) }, shape = RoundedCornerShape(16.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.accentSoft), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Outlined.Map, null, tint = c.accent)
-                            }
-                            Column(Modifier.weight(1f)) {
-                                Text("Показать на карте", style = MaterialTheme.typography.titleSmall)
-                                Text("где сейчас и маршрут", style = MaterialTheme.typography.bodySmall, color = c.muted)
-                            }
-                            Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = c.muted)
                         }
                     }
 

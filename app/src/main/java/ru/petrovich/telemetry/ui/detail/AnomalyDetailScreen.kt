@@ -1,6 +1,7 @@
 package ru.petrovich.telemetry.ui.detail
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,19 +20,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
-import androidx.compose.material.icons.outlined.BatteryAlert
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Compress
-import androidx.compose.material.icons.outlined.ElectricBolt
-import androidx.compose.material.icons.outlined.LocalGasStation
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.OilBarrel
-import androidx.compose.material.icons.outlined.ReportProblem
 import androidx.compose.material.icons.outlined.Sensors
-import androidx.compose.material.icons.outlined.Thermostat
-import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -59,7 +52,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -196,23 +188,21 @@ fun AnomalyDetailScreen(
                 title = "",
                 onBack = onBack,
                 actions = {
-                    if (anomaly != null) {
-                        StatusPill(anomaly, Modifier.padding(end = 4.dp))
-                        if (!anomaly.isNew) {
-                            Box {
-                                IconButton(onClick = { menuOpen = true }) {
-                                    Icon(Icons.Outlined.MoreVert, "Ещё", tint = Petrovich.colors.ink)
-                                }
-                                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("Вернуть") },
-                                        onClick = { menuOpen = false; reopenWithUndo(anomaly) },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Ход разбора") },
-                                        onClick = { menuOpen = false; onOpenResolution(anomaly.id) },
-                                    )
-                                }
+                    // Статус («Срочно» и др.) — только в шапке контента, не дублируем в TopBar.
+                    if (anomaly != null && !anomaly.isNew) {
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(Icons.Outlined.MoreVert, "Ещё", tint = Petrovich.colors.ink)
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Вернуть") },
+                                    onClick = { menuOpen = false; reopenWithUndo(anomaly) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Ход разбора") },
+                                    onClick = { menuOpen = false; onOpenResolution(anomaly.id) },
+                                )
                             }
                         }
                     }
@@ -275,18 +265,6 @@ fun AnomalyDetailScreen(
     }
 }
 
-/** Иконка по типу события — тот же словарь, что и в списке «Проблемы» (ProblemRow.kt). */
-private fun Anomaly.icon(): ImageVector = when (kind) {
-    "drain", "drop" -> Icons.Outlined.LocalGasStation
-    "power" -> Icons.Outlined.ElectricBolt
-    "volt" -> Icons.Outlined.BatteryAlert
-    "overheat" -> Icons.Outlined.Thermostat
-    "oil" -> Icons.Outlined.OilBarrel
-    "brake" -> Icons.Outlined.Compress
-    "nodata" -> Icons.Outlined.WifiOff
-    else -> Icons.Outlined.ReportProblem
-}
-
 /**
  * Статус-метка по единому словарю макета (4. Общие элементы): «Срочно» — красная, «Внимание» — жёлтая,
  * «Закрыто» — зелёная, «В работе» и «Ложная тревога» — серые. Молчащий датчик — это продолжающаяся
@@ -325,15 +303,13 @@ private fun Anomaly.unitLabel(): String? = when (kind) {
 @Composable
 private fun Headline(a: Anomaly) {
     val c = Petrovich.colors
-    val color = if (a.kind == "nodata") c.muted else a.severity.color()
     Column(
         Modifier.fillMaxWidth().padding(top = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        horizontalAlignment = Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         StatusPill(a)
-        Icon(a.icon(), null, Modifier.size(28.dp), tint = color)
-        Text(a.headline(), style = MaterialTheme.typography.headlineSmall, color = c.ink, textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
+        Text(a.headline(), style = MaterialTheme.typography.headlineSmall, color = c.ink, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -342,7 +318,12 @@ private fun WhatToCheckBlock(a: Anomaly) {
     val c = Petrovich.colors
     val points = a.advice().split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }.take(3)
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface2).padding(14.dp),
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.surface)
+            .border(1.dp, c.line, RoundedCornerShape(16.dp))
+            .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text("Что проверить", style = MaterialTheme.typography.titleSmall)
@@ -365,7 +346,7 @@ private fun VehicleTimeLink(a: Anomaly, onClick: () -> Unit) {
     } else a.eventTime
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("${a.vehicleName} · $whenText", style = MaterialTheme.typography.labelLarge, color = c.accent)
@@ -393,7 +374,10 @@ private fun Fact(icon: ImageVector, label: String, value: String) {
 @Composable
 private fun DetailsCard(a: Anomaly, state: EvidenceState) {
     val c = Petrovich.colors
-    SurfaceCard(shape = RoundedCornerShape(18.dp)) {
+    SurfaceCard(
+        modifier = Modifier.border(1.dp, c.line, RoundedCornerShape(18.dp)),
+        shape = RoundedCornerShape(18.dp),
+    ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
             val time = a.time
             Fact(Icons.Outlined.AccessTime, "Когда", time?.let { "${it.toLocalDate().title()}, ${it.hhmm()}" } ?: a.eventTime)
@@ -563,7 +547,13 @@ private fun ActionsBar(
                 PrimaryButton("Разобраться с Петровичем", onAct, Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (urgentDrain) {
-                        SoftButton("Сообщить в СБ", onReportSecurity, Modifier.weight(1f))
+                        SoftButton(
+                            "Сообщить в СБ",
+                            onReportSecurity,
+                            Modifier.weight(1f),
+                            content = c.high,
+                            border = c.high,
+                        )
                     }
                     SoftButton("Ложная тревога", onFalseAlarm, Modifier.weight(1f))
                 }
