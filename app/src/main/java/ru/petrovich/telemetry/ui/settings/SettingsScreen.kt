@@ -176,7 +176,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                     }
                 }
             }
-            SoftButton("+ Добавить сотрудника", onClick = { addingContact = true }, modifier = Modifier.fillMaxWidth(), leading = Icons.Filled.Add)
+            SoftButton("Добавить сотрудника", onClick = { addingContact = true }, modifier = Modifier.fillMaxWidth(), leading = Icons.Filled.Add)
 
             SectionLabel("Помощь")
             Card {
@@ -201,7 +201,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Подключение и данные", style = MaterialTheme.typography.titleSmall)
-                        Text("AutoGRAPH, демо-режим, оформление, детектор аномалий", style = MaterialTheme.typography.bodySmall, color = c.muted)
+                        Text("AutoGRAPH, стенд, оформление", style = MaterialTheme.typography.bodySmall, color = c.muted)
                     }
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.muted)
                 }

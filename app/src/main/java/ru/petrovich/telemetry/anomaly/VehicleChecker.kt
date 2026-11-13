@@ -96,7 +96,7 @@ class SwitchingVehicleChecker(
         val s = settings()
         if (s.anomalyStoreOnServer && stored != null) return stored.check(vehicle, from, to)
         val onServer = s.anomaliesOnServer
-        val compare = compareAllowed && s.anomalyCompare && !s.demoMode && s.serverUrl.isNotBlank()
+        val compare = compareAllowed && s.anomalyCompare && s.serverUrl.isNotBlank()
         if (!compare) return (if (onServer) server else local).check(vehicle, from, to)
 
         // Оба варианта параллельно: время проверки машины не удваивается.

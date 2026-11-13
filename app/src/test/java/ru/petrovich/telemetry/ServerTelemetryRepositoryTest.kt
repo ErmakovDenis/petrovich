@@ -158,9 +158,9 @@ class ServerTelemetryRepositoryTest {
         switching.vehicles()
         settings = settings.copy(serverUrl = "https://stand")
         switching.vehicles()
-        settings = settings.copy(demoMode = true) // демо-режим: новые пути не действуют
+        settings = AppSettings(serverUrl = "")
         switching.vehicles()
-        assertEquals(listOf("autograph", "autograph", "стенд", "демо"), calls)
+        assertEquals(listOf("autograph", "autograph", "стенд", "autograph"), calls)
     }
 
     private fun MockWebServer.requestUrl() = takeRequest().requestUrl!!

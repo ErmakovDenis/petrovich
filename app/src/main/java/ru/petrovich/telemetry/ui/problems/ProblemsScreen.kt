@@ -59,6 +59,7 @@ fun ProblemsScreen(
     onTab: (ProblemsTab) -> Unit,
     onOpenCard: (String) -> Unit,
     onAsk: (String) -> Unit,
+    onTriage: () -> Unit = {},
 ) {
     val store = ServiceLocator.anomalyStore
     val all by store.anomalies.collectAsStateWithLifecycle()
@@ -93,7 +94,7 @@ fun ProblemsScreen(
             val msg = runCatchingCancellable { ServiceLocator.anomalyScanner.scan(lookbackHours = 24) }.fold(
                 onSuccess = { r ->
                     buildString {
-                        append("Проверено машин: ${r.checkedVehicles}, новых аномалий: ${r.newAnomalies.size}")
+                        append("Проверено машин: ${r.checkedVehicles}, новых проблем: ${r.newAnomalies.size}")
                         if (r.errors.isNotEmpty()) append(". Ошибок: ${r.errors.size}")
                     }
                 },
@@ -140,6 +141,15 @@ fun ProblemsScreen(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    if (tab == ProblemsTab.NEW && newCount > 0) {
+                        item(key = "triage") {
+                            PrimaryButton(
+                                "Разобрать по порядку · $newCount ${pluralNew(newCount)}",
+                                onClick = onTriage,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                     items(shown, key = { it.id }) { a ->
                         if (tab == ProblemsTab.NEW) NewProblemCard(a, onOpen = { onOpenCard(a.id) }, onAsk = { onAsk(a.id) })
                         else ProblemRow(a, onClick = { onOpenCard(a.id) })
@@ -151,6 +161,16 @@ fun ProblemsScreen(
                 }
             }
         }
+    }
+}
+
+private fun pluralNew(n: Int): String {
+    val m = n % 10
+    val h = n % 100
+    return when {
+        m == 1 && h != 11 -> "новая"
+        m in 2..4 && h !in 12..14 -> "новых"
+        else -> "новых"
     }
 }
 

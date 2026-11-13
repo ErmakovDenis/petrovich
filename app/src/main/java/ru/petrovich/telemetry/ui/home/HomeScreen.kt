@@ -2,7 +2,7 @@ package ru.petrovich.telemetry.ui.home
 
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.delay
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,18 +26,20 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,7 +50,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,18 +61,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
+import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.ui.common.Pill
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
-import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.dashedBorder
 import ru.petrovich.telemetry.ui.common.greeting
+import ru.petrovich.telemetry.ui.common.headline
 import ru.petrovich.telemetry.ui.common.hhmm
-import ru.petrovich.telemetry.ui.common.title
+import ru.petrovich.telemetry.ui.common.label
 import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.common.shortDate
 import ru.petrovich.telemetry.ui.common.shown
+import ru.petrovich.telemetry.ui.common.time
+import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.problems.ProblemsTab
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
@@ -77,6 +84,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import kotlin.math.abs
 
 @Composable
 fun HomeScreen(
@@ -129,11 +137,16 @@ fun HomeScreen(
     // Первая проверка запускается сама: пока её нет, сводке нечего сказать.
     LaunchedEffect(scanned) { if (!scanned) scan() }
 
-    // Данные «Сводки» — один компактный запрос; пока стенд заполняет историю, экран показывает новые строки частями.
+    // Снимок парка для плиток «на линии / стоят / без связи» — общий с вкладкой «Парк», без ожидания скана аномалий.
+    LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.fleetCache.ensureFresh() } }
+
+    // «Неделя в цифрах»: один запрос на период; при переключении на месяц — отдельная подгрузка.
+    var homePeriod by remember { mutableStateOf(WidgetPeriod.WEEK) }
     var fleetWeek by remember { mutableStateOf<FleetWeek?>(null) }
-    LaunchedEffect(s.telemetryOnServer) {
+    LaunchedEffect(s.telemetryOnServer, homePeriod) {
+        fleetWeek = null
         do {
-            fleetWeek = runCatchingCancellable { loadFleetWeek() }.getOrNull()
+            fleetWeek = runCatchingCancellable { loadFleetPeriod(homePeriod) }.getOrNull()
             if (!s.telemetryOnServer) break
             delay(15_000)
         } while (true)
@@ -143,102 +156,201 @@ fun HomeScreen(
     LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.anomalySync.refresh() } }
     val layout = s.layout
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        HeaderBand(vehicleCount, data, s, unreadNotifications, onOpenNotifications, onOpenChat, onOpenFleet)
+    Column(
+        Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        HomeHeader(
+            unreadNotifications = unreadNotifications,
+            onOpenNotifications = onOpenNotifications,
+            onAsk = onOpenChat,
+        )
 
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            QuickActionsRow(data.pendingCount, onOpenChat, onOpenReport, { onOpenProblems(ProblemsTab.NEW) }, onOpenWidgets)
+        StatusBanner(
+            data = data,
+            fleetUpdatedAt = s.fleetUpdatedAt,
+            vehicleCount = vehicleCount,
+            onOpenMainProblem = { id -> onOpenCard(id) },
+            onOpenProblems = { onOpenProblems(ProblemsTab.NEW) },
+        )
 
-            // Фоновая проверка на стенде: отметка — со стенда и не двигается, пока AutoGRAPH или стенд недоступны.
-            if (s.backgroundOnServer && s.lastScanAt > 0 && now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L) {
-                StaleScanCard(s.lastScanAt)
-            }
-            ProblemsOrOkCard(data, scanning, scanError, onScan = ::scan, onOpenCard, onOpenProblems)
+        FleetTiles(s, onOpenFleet)
 
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Сводка", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = onOpenWidgets) { Text("Изменить", color = Petrovich.colors.accent, fontWeight = FontWeight.SemiBold) }
-            }
-            if (layout.isEmpty()) {
-                EmptyWidgets(onOpenWidgets)
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    layout.forEach { slot -> MetricWidgetCard(slot.type, fleetWeek, onClick = { onOpenWidgetDetail(slot.type) }) }
-                }
-            }
-
-            SectionLabel("Данные по машинам")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                LinkCard("Таблицы", "Значения по времени", Icons.Outlined.TableChart, onOpenTables, Modifier.weight(1f))
-                LinkCard("Графики", "Линии и аномалии", Icons.Outlined.BarChart, onOpenCharts, Modifier.weight(1f))
-            }
-
-            ReportLinkCard(s.reportTime, s.voiceReportEnabled, onOpenReport)
-            Spacer(Modifier.height(8.dp))
+        // Фоновая проверка на стенде: отметка — со стенда и не двигается, пока AutoGRAPH или стенд недоступны.
+        if (s.backgroundOnServer && s.lastScanAt > 0 && now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L) {
+            StaleScanCard(s.lastScanAt)
         }
+        // Статус уже на цветной плашке; ниже — только «ещё не проверял» с кнопкой скана.
+        if (data.tone == BriefTone.NEUTRAL) {
+            ProblemsOrOkCard(data, scanning, scanError, onScan = ::scan, onOpenCard, onOpenProblems)
+        }
+
+        WeekInNumbersHeader(homePeriod, onPeriod = { homePeriod = it })
+        if (layout.isEmpty()) {
+            EmptyWidgets(onOpenWidgets)
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                widgetRows(layout).forEach { row ->
+                    if (row.size == 1) {
+                        MetricWidgetCard(row[0].type, fleetWeek, homePeriod, anomalies, Modifier.fillMaxWidth(), onClick = { onOpenWidgetDetail(row[0].type) })
+                    } else {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            row.forEach { slot ->
+                                MetricWidgetCard(slot.type, fleetWeek, homePeriod, anomalies, Modifier.weight(1f), onClick = { onOpenWidgetDetail(slot.type) })
+                            }
+                        }
+                    }
+                }
+                AddWidgetButton("+ Добавить или убрать виджеты", onOpenWidgets)
+            }
+        }
+
+        SectionLabel("Данные по машинам")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            LinkCard("Таблицы", "Значения по времени", Icons.Outlined.TableChart, onOpenTables, Modifier.weight(1f))
+            LinkCard("Графики", "Линии и аномалии", Icons.Outlined.BarChart, onOpenCharts, Modifier.weight(1f))
+        }
+
+        ReportLinkCard(s.reportTime, onOpenReport)
+        Spacer(Modifier.height(8.dp))
     }
 }
 
 /**
- * Тёмно-синяя плашка шапки со скруглённым низом — как в макете 3.2: дата/колокольчик/аватар,
- * приветствие, статус-строка, свежесть данных, плитки статуса и кнопка «Все N машин» — всё на
- * акцентном фоне. Ниже неё экран возвращается на обычный кремовый фон.
+ * Светлая шапка по карте экранов: дата и приветствие слева, «Спросить» справа.
+ * Статус парка — отдельная цветная плашка ниже (не синяя шапка).
  */
 @Composable
-private fun HeaderBand(
-    vehicleCount: Int?,
-    data: HomeData,
-    s: ru.petrovich.telemetry.data.settings.AppSettings,
+private fun HomeHeader(
     unreadNotifications: Int,
     onOpenNotifications: () -> Unit,
-    onOpenChat: () -> Unit,
-    onOpenFleet: () -> Unit,
+    onAsk: () -> Unit,
 ) {
     val c = Petrovich.colors
-    Column(
-        Modifier.fillMaxWidth()
-            .background(c.accent, RoundedCornerShape(bottomStart = 28.dp, bottomEnd = 28.dp))
-            .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(LocalDate.now().shortDate(), style = MaterialTheme.typography.labelMedium, color = c.onAccent.copy(alpha = .7f), modifier = Modifier.weight(1f))
-            NotificationBell(unreadNotifications, onOpenNotifications)
-            Spacer(Modifier.width(10.dp))
-            AvatarP(onOpenChat)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(LocalDate.now().shortDate(), style = MaterialTheme.typography.labelMedium, color = c.muted)
+            Text(greeting(), fontFamily = Petrovich.display, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = c.ink)
         }
-        Text(greeting(), fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = c.onAccent)
-        Text(
-            if (vehicleCount != null) "Парк сегодня · $vehicleCount ${plural(vehicleCount, "машина", "машины", "машин")}" else "Парк сегодня",
-            style = MaterialTheme.typography.bodyMedium, color = c.onAccent.copy(alpha = .7f),
-        )
-        StatusLine(data)
-        FreshnessLine(s.fleetUpdatedAt)
-        Spacer(Modifier.height(8.dp))
-        FleetTiles(s, onOpenFleet)
-        Spacer(Modifier.height(10.dp))
-        FleetButton(
-            "Все ${vehicleCount ?: "—"} ${vehicleCount?.let { plural(it, "машина", "машины", "машин") } ?: "машин"} и их статус",
-            onOpenFleet,
-        )
-        Spacer(Modifier.height(16.dp))
+        if (unreadNotifications > 0) {
+            NotificationBell(unreadNotifications, onOpenNotifications)
+            Spacer(Modifier.width(8.dp))
+        }
+        AskPill(onAsk)
     }
 }
 
-/** Бордерная кнопка на синей плашке — тот же размер/форма, что у [SoftButton], но белая обводка на акцентном фоне. */
 @Composable
-private fun FleetButton(text: String, onClick: () -> Unit) {
+private fun AskPill(onClick: () -> Unit) {
     val c = Petrovich.colors
-    androidx.compose.material3.Button(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Color.Transparent, contentColor = c.onAccent),
-        border = BorderStroke(1.dp, c.onAccent.copy(alpha = .35f)),
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(c.surface)
+            .border(1.dp, c.line, RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
-        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp).padding(start = 6.dp))
+        Icon(Icons.Filled.Mic, null, Modifier.size(16.dp), tint = c.ink)
+        Text("Спросить", style = MaterialTheme.typography.labelLarge, color = c.ink, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+/**
+ * Цветная плашка статуса белым текстом, крупнее приветствия; главная проблема — белой
+ * карточкой сразу под статусом с кнопкой «Разобрать».
+ */
+@Composable
+private fun StatusBanner(
+    data: HomeData,
+    fleetUpdatedAt: Long,
+    vehicleCount: Int?,
+    onOpenMainProblem: (String) -> Unit,
+    onOpenProblems: () -> Unit,
+) {
+    val c = Petrovich.colors
+    val bg = when (data.tone) {
+        BriefTone.RED -> c.high
+        BriefTone.YELLOW -> c.med
+        BriefTone.GREEN -> c.ok
+        BriefTone.NEUTRAL -> c.surface2
+    }
+    val on = if (data.tone == BriefTone.NEUTRAL) c.ink else Color.White
+    val main = data.pending.firstOrNull()
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(bg).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (data.tone == BriefTone.RED || data.tone == BriefTone.YELLOW) {
+                Icon(Icons.Outlined.WarningAmber, null, Modifier.size(28.dp).padding(top = 4.dp), tint = on)
+            }
+            Text(
+                when (data.tone) {
+                    BriefTone.GREEN -> "Всё в порядке"
+                    BriefTone.NEUTRAL -> "Ещё не проверял данные"
+                    else -> "${data.pendingCount} ${plural(data.pendingCount, "проблема ждёт", "проблемы ждут", "проблем ждут")} решения"
+                },
+                fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp, lineHeight = 30.sp, color = on,
+                modifier = Modifier.weight(1f).clickable(enabled = data.pendingCount > 0, onClick = onOpenProblems),
+            )
+        }
+        val restOk = vehicleCount?.let { (it - data.vehiclesWithIssues).coerceAtLeast(0) }
+        val freshness = fleetFreshness(fleetUpdatedAt)
+        Text(
+            buildString {
+                if (data.tone == BriefTone.GREEN || data.tone == BriefTone.NEUTRAL) {
+                    if (vehicleCount != null) append("Парк · $vehicleCount ${plural(vehicleCount, "машина", "машины", "машин")}")
+                } else if (restOk != null && restOk > 0) {
+                    append("Остальные $restOk ${plural(restOk, "машина в порядке", "машины в порядке", "машин в порядке")}")
+                } else {
+                    append("Требует внимания")
+                }
+                if (freshness != null) append(" · $freshness")
+            },
+            style = MaterialTheme.typography.bodyMedium, color = on.copy(alpha = .85f),
+        )
+        if (main != null) {
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color.White).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    buildString {
+                        append(main.severity.label().uppercase())
+                        main.time?.hhmm()?.let { append(" · $it") }
+                        if (main.vehicleName.isNotBlank()) append(" · ${main.vehicleName}")
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (main.severity == ru.petrovich.telemetry.anomaly.Severity.CRITICAL) c.high else c.med,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(main.headline(), style = MaterialTheme.typography.titleSmall, color = c.ink)
+                main.time?.toLocalDate()?.takeIf { it != LocalDate.now() }?.let {
+                    Text(it.title(), style = MaterialTheme.typography.bodySmall, color = c.muted)
+                }
+                PrimaryButton("Разобрать", onClick = { onOpenMainProblem(main.id) }, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+private fun fleetFreshness(updatedAtMillis: Long): String? {
+    if (updatedAtMillis <= 0) return null
+    val minutes = Duration.between(
+        Instant.ofEpochMilli(updatedAtMillis).atZone(ZoneId.systemDefault()).toLocalDateTime(),
+        LocalDateTime.now(),
+    ).toMinutes().coerceAtLeast(0)
+    return when {
+        minutes < 1 -> "только что"
+        minutes < 60 -> "проверено $minutes мин назад"
+        else -> "проверено ${minutes / 60} ч назад"
     }
 }
 
@@ -249,83 +361,15 @@ private fun NotificationBell(count: Int, onClick: () -> Unit) {
     // бейдж там, где он торчит за пределы вписанной окружности (у самого угла).
     Box(Modifier.size(40.dp)) {
         Box(
-            Modifier.size(40.dp).clip(CircleShape).background(c.onAccent.copy(alpha = .14f)).clickable(onClick = onClick),
+            Modifier.size(40.dp).clip(CircleShape).background(c.surface2).clickable(onClick = onClick),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Outlined.NotificationsNone, "Уведомления", Modifier.size(20.dp), tint = c.onAccent) }
+        ) { Icon(Icons.Outlined.NotificationsNone, "Уведомления", Modifier.size(20.dp), tint = c.ink) }
         if (count > 0) {
             Box(
                 Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(16.dp).clip(CircleShape).background(c.high),
                 contentAlignment = Alignment.Center,
-            ) { Text(if (count > 9) "9+" else "$count", color = c.onAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold) }
+            ) { Text(if (count > 9) "9+" else "$count", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold) }
         }
-    }
-}
-
-/** На синей шапке аватар инвертирован (белый кружок, тёмная буква) — иначе он сливается с фоном. */
-@Composable
-private fun AvatarP(onClick: () -> Unit) {
-    val c = Petrovich.colors
-    Box(Modifier.size(40.dp).clip(CircleShape).background(c.onAccent).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
-        Text("П", color = c.accent, fontFamily = Petrovich.display, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-    }
-}
-
-/** Большая цветная строка статуса в шапке — не карточка, просто текст: «2 проблемы» / «Всё в порядке». */
-@Composable
-private fun StatusLine(data: HomeData) {
-    val c = Petrovich.colors
-    val (text, color) = when (data.tone) {
-        BriefTone.GREEN -> "Всё в порядке" to c.ok
-        BriefTone.NEUTRAL -> "Ещё не проверял данные" to c.muted
-        BriefTone.RED -> "${data.pendingCount} ${plural(data.pendingCount, "проблема", "проблемы", "проблем")}" to c.high
-        BriefTone.YELLOW -> "${data.pendingCount} ${plural(data.pendingCount, "проблема", "проблемы", "проблем")}" to c.med
-    }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (data.tone != BriefTone.NEUTRAL) Box(Modifier.size(10.dp).clip(CircleShape).background(color))
-        Text(text, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = color)
-    }
-}
-
-/** «данные на 09:12 · обновлено 2 мин назад» — честная метка свежести того же снимка, что и плитки статуса. */
-@Composable
-private fun FreshnessLine(updatedAtMillis: Long) {
-    if (updatedAtMillis <= 0) return
-    val dt = Instant.ofEpochMilli(updatedAtMillis).atZone(ZoneId.systemDefault()).toLocalDateTime()
-    val minutes = Duration.between(dt, LocalDateTime.now()).toMinutes().coerceAtLeast(0)
-    val ago = when {
-        minutes < 1 -> "только что"
-        minutes < 60 -> "обновлено $minutes мин назад"
-        else -> "обновлено ${minutes / 60} ч назад"
-    }
-    Text("данные на ${dt.hhmm()} · $ago", style = MaterialTheme.typography.bodySmall, color = Petrovich.colors.onAccent.copy(alpha = .6f))
-}
-
-@Composable
-private fun QuickActionsRow(pendingCount: Int, onAsk: () -> Unit, onReport: () -> Unit, onProblems: () -> Unit, onWidgets: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        QuickAction(Icons.Filled.Mic, "Спросить", onAsk, Modifier.weight(1f))
-        QuickAction(Icons.Filled.PlayArrow, "Доклад", onReport, Modifier.weight(1f))
-        QuickAction(Icons.Outlined.WarningAmber, "Проблемы", onProblems, Modifier.weight(1f), badge = pendingCount.takeIf { it > 0 })
-        QuickAction(Icons.Filled.Add, "Сводка", onWidgets, Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun QuickAction(icon: ImageVector, label: String, onClick: () -> Unit, modifier: Modifier, badge: Int? = null) {
-    val c = Petrovich.colors
-    Column(modifier.clickable(onClick = onClick), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.size(52.dp)) {
-            Box(Modifier.size(52.dp).clip(CircleShape).background(c.surface2), contentAlignment = Alignment.Center) {
-                Icon(icon, null, Modifier.size(22.dp), tint = c.ink)
-            }
-            if (badge != null) {
-                Box(
-                    Modifier.align(Alignment.TopEnd).size(18.dp).clip(CircleShape).background(c.high),
-                    contentAlignment = Alignment.Center,
-                ) { Text(if (badge > 9) "9+" else "$badge", color = c.onAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
-            }
-        }
-        Text(label, style = MaterialTheme.typography.labelSmall, color = c.ink, maxLines = 1)
     }
 }
 
@@ -413,61 +457,69 @@ private fun ProblemLine(a: Anomaly, onClick: () -> Unit) {
 }
 
 /**
- * «На линии / стоят / без связи» — те же три плашки, что в макете, посчитанные по телеметрии
- * с последней проверки (см. [ru.petrovich.telemetry.anomaly.classifyActivity]), а не живой статус
- * трекера: обновляются вместе с проверкой аномалий, не постоянно.
- *
- * Макет (3.2) просит открывать «Парк» с фильтром по нажатой плитке; маршрут «Парк», которым
- * управляет интегратор (AppRoot.kt, не мой файл), фильтра пока не принимает — поэтому здесь плитки
- * ведут в «Парк» без фильтра через тот же [onOpenFleet], что и кнопка «Все N машин», а не никуда.
+ * «На линии / стоят / без связи» — белые плитки на светлом фоне, цвет только у цифры
+ * (зелёный / обычный / оранжевый). Маршрут «Парк» фильтра пока не принимает — плитки
+ * ведут в «Парк» через [onOpenFleet].
  */
 @Composable
 private fun FleetTiles(settings: ru.petrovich.telemetry.data.settings.AppSettings, onOpenFleet: () -> Unit) {
     val c = Petrovich.colors
     val known = settings.fleetUpdatedAt > 0
-    val dash = "—"
+    val offlineValue = if (known) "${settings.fleetOffline}" else "нет данных"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FleetTile(
-            "на линии", if (known) "${settings.fleetOnline}" else dash,
-            if (known && settings.fleetOnline > 0) c.onAccent.copy(alpha = .12f) to c.ok else null,
+            "На линии", if (known) "${settings.fleetOnline}" else "—",
+            if (known && settings.fleetOnline > 0) c.ok else c.ink,
             Modifier.weight(1f), onOpenFleet,
         )
-        FleetTile("стоят", if (known) "${settings.fleetIdle}" else dash, null, Modifier.weight(1f), onOpenFleet)
+        FleetTile("Стоят", if (known) "${settings.fleetIdle}" else "—", c.ink, Modifier.weight(1f), onOpenFleet)
         FleetTile(
-            "без связи", if (known) "${settings.fleetOffline}" else dash,
-            if (known && settings.fleetOffline > 0) c.onAccent.copy(alpha = .12f) to c.med else null,
+            "Без связи", offlineValue,
+            if (known && settings.fleetOffline > 0) c.med else c.ink,
             Modifier.weight(1f), onOpenFleet,
+            valueSize = if (known) 24.sp else 14.sp,
         )
     }
 }
 
 @Composable
-private fun FleetTile(label: String, value: String, accent: Pair<Color, Color>?, modifier: Modifier, onClick: () -> Unit) {
+private fun FleetTile(
+    label: String,
+    value: String,
+    valueColor: Color,
+    modifier: Modifier,
+    onClick: () -> Unit,
+    valueSize: androidx.compose.ui.unit.TextUnit = 24.sp,
+) {
     val c = Petrovich.colors
     Column(
-        modifier.clip(RoundedCornerShape(16.dp)).background(accent?.first ?: c.onAccent.copy(alpha = .12f)).clickable(onClick = onClick).padding(12.dp),
+        modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.surface)
+            .border(1.dp, c.line, RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(value, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, color = accent?.second ?: c.onAccent)
-        Text(label, style = MaterialTheme.typography.bodySmall, color = c.onAccent.copy(alpha = .75f))
+        Text(value, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = valueSize, color = valueColor, maxLines = 2)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = c.muted)
     }
 }
 
 @Composable
-private fun ReportLinkCard(reportTime: String, voiceEnabled: Boolean, onClick: () -> Unit) {
+private fun ReportLinkCard(reportTime: String, onClick: () -> Unit) {
     val c = Petrovich.colors
     SurfaceCard(Modifier.fillMaxWidth(), onClick = onClick, shape = RoundedCornerShape(16.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("Доклад на $reportTime", style = MaterialTheme.typography.titleSmall)
-                Text(if (voiceEnabled) "Читать или слушать" else "Читать", style = MaterialTheme.typography.bodySmall, color = c.muted)
+            Box(Modifier.size(40.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.Description, null, Modifier.size(20.dp), tint = c.accent)
             }
-            Box(Modifier.size(48.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.PlayArrow, null, tint = c.accent)
-            }
+            Text("Доклад на $reportTime готов", style = MaterialTheme.typography.titleSmall, color = c.ink, modifier = Modifier.weight(1f))
+            Text("Открыть", style = MaterialTheme.typography.labelLarge, color = c.accent, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -479,7 +531,7 @@ private fun EmptyWidgets(onOpenWidgets: () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(Icons.Outlined.CheckCircle, null, tint = c.ok)
             Text("Здесь пусто", style = MaterialTheme.typography.titleSmall)
-            AddWidgetButton("+ Добавить виджет", onOpenWidgets)
+            AddWidgetButton("+ Добавить или убрать виджеты", onOpenWidgets)
         }
     }
 }
@@ -506,48 +558,202 @@ private fun LinkCard(title: String, subtitle: String, icon: ImageVector, onClick
     }
 }
 
-// ---------- виджеты «Сводки» (3.2/3.16): категория, число, изменение к прошлой неделе, мини-график ----------
+// ---------- «Неделя в цифрах»: период, сетка широких/узких, карточки по макету ----------
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MetricWidgetCard(type: WidgetType, fleetWeek: FleetWeek?, onClick: () -> Unit) {
-    SurfaceCard(Modifier.fillMaxWidth(), onClick = onClick, shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (type == WidgetType.OFFLINE) {
-                val offline = fleetWeek?.offline()
-                WidgetHeader(type, "сейчас")
-                BigNumber(offline?.count?.toString() ?: "—")
-                Sub(
-                    when {
-                        offline == null -> "Загружаю…"
-                        offline.count == 0 -> "Все машины на связи"
-                        else -> offline.silent.joinToString("; ") { "${it.name} — ${it.status}" }
-                    },
-                )
-            } else {
-                val summary = fleetWeek?.summary(type)
-                WidgetHeader(type, "неделя")
-                BigNumber(summary?.let { "${formatCount(it.total)}${if (it.unit.isNotEmpty()) " ${it.unit}" else ""}" } ?: "—")
-                val change = summary?.changePercent
-                Sub(
-                    when {
-                        summary == null -> "Загружаю…"
-                        change == null -> "Нет данных за прошлую неделю для сравнения"
-                        else -> "${if (change >= 0) "↑" else "↓"} ${formatCount(kotlin.math.abs(change))}% к прошлой неделе"
-                    },
-                )
-                summary?.points?.let { WeekBars(it) }
+private fun WeekInNumbersHeader(period: WidgetPeriod, onPeriod: (WidgetPeriod) -> Unit) {
+    val c = Petrovich.colors
+    val choices = listOf(WidgetPeriod.WEEK, WidgetPeriod.MONTH)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Неделя в цифрах", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        SingleChoiceSegmentedButtonRow {
+            choices.forEachIndexed { i, p ->
+                SegmentedButton(
+                    selected = p == period,
+                    onClick = { onPeriod(p) },
+                    shape = SegmentedButtonDefaults.itemShape(i, choices.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = c.surface, activeContentColor = c.ink, activeBorderColor = c.line,
+                        inactiveContainerColor = c.surface2, inactiveContentColor = c.muted, inactiveBorderColor = c.line,
+                    ),
+                ) { Text(p.title, style = MaterialTheme.typography.labelMedium) }
             }
         }
     }
 }
 
 @Composable
-private fun WidgetHeader(type: WidgetType, periodLabel: String) {
+private fun MetricWidgetCard(
+    type: WidgetType,
+    fleetWeek: FleetWeek?,
+    period: WidgetPeriod,
+    anomalies: List<Anomaly>,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val periodLabel = when (type) {
+        WidgetType.OFFLINE, WidgetType.ALARMS -> "сейчас"
+        else -> if (period == WidgetPeriod.MONTH) "месяц" else "неделя"
+    }
+    SurfaceCard(modifier, onClick = onClick, shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (type) {
+                WidgetType.FUEL -> FuelWidgetBody(fleetWeek?.summary(type), periodLabel)
+                WidgetType.OVERCONSUMERS -> OverconsumersBody(fleetWeek?.summary(WidgetType.FUEL), periodLabel)
+                WidgetType.OFFLINE -> OfflineWidgetBody(fleetWeek?.offline())
+                WidgetType.ALARMS -> AlarmsWidgetBody(anomalies)
+                else -> {
+                    val summary = fleetWeek?.summary(type)
+                    WidgetHeader(type, periodLabel, badge = null)
+                    BigNumber(summary?.let { "${formatCount(it.total)}${if (it.unit.isNotEmpty()) " ${it.unit}" else ""}" } ?: "—")
+                    val change = summary?.changePercent
+                    Sub(
+                        when {
+                            summary == null -> "Загружаю…"
+                            change == null -> "Нет данных за прошлый период для сравнения"
+                            else -> "${if (change >= 0) "↑" else "↓"} ${formatCount(abs(change))}% к прошлому периоду"
+                        },
+                    )
+                    summary?.points?.takeIf { it.isNotEmpty() }?.let { WeekBars(it) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FuelWidgetBody(summary: WidgetSummary?, periodLabel: String) {
+    val c = Petrovich.colors
+    WidgetHeader(WidgetType.FUEL, periodLabel, badge = "НОВОЕ")
+    if (summary == null) {
+        BigNumber("—")
+        Sub("Загружаю…")
+        return
+    }
+    val change = summary.changePercent
+    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (change != null) {
+            Text(
+                "${if (change >= 0) "+" else "−"}${formatCount(abs(change))} %",
+                fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp, color = if (change >= 0) c.med else c.ok,
+            )
+            Text("к обычному · ${formatCount(summary.total)} ${summary.unit}", style = MaterialTheme.typography.bodyMedium, color = c.muted, modifier = Modifier.padding(bottom = 4.dp))
+        } else {
+            BigNumber("${formatCount(summary.total)} ${summary.unit}")
+        }
+    }
+    if (change == null) Sub("Нет данных за прошлый период для сравнения")
+    if (summary.points.isNotEmpty()) {
+        WeekBarsWithBaseline(summary.points, summary.usualDaily())
+    }
+    summary.leaders.firstOrNull()?.let { top ->
+        val avg = summary.total / summary.leaders.size.coerceAtLeast(1)
+        val excess = if (avg > 0.5) ((top.value - avg) / avg * 100.0) else null
+        Text(
+            buildString {
+                append("Больше всех: ${top.name}")
+                if (excess != null && excess > 0) append(" — +${formatCount(excess)} %")
+            },
+            style = MaterialTheme.typography.bodySmall, color = c.ink,
+        )
+    }
+}
+
+@Composable
+private fun OverconsumersBody(summary: WidgetSummary?, periodLabel: String) {
+    val c = Petrovich.colors
+    WidgetHeader(WidgetType.OVERCONSUMERS, periodLabel, badge = null)
+    if (summary == null) {
+        BigNumber("—")
+        Sub("Загружаю…")
+        return
+    }
+    val leaders = summary.leaders
+    if (leaders.isEmpty()) {
+        BigNumber("0")
+        Sub("Нет перерасхода за период")
+        return
+    }
+    val max = leaders.maxOf { it.value }.coerceAtLeast(0.01)
+    val mean = leaders.map { it.value }.average()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        leaders.forEach { leader ->
+            val excess = if (mean > 0.5) (leader.value - mean) / mean * 100.0 else 0.0
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(leader.name, style = MaterialTheme.typography.labelMedium, color = c.ink, modifier = Modifier.weight(1f), maxLines = 1)
+                    Text(
+                        if (excess >= 0) "+${formatCount(excess)} %" else "${formatCount(excess)} %",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (excess >= 5) c.high else c.muted,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.surface2)) {
+                    Box(
+                        Modifier.fillMaxWidth((leader.value / max).toFloat().coerceIn(0.04f, 1f)).fillMaxHeight()
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(if (excess >= 5) c.high else c.accentSoft),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineWidgetBody(offline: OfflineSummary?) {
+    WidgetHeader(WidgetType.OFFLINE, "сейчас", badge = null)
+    BigNumber(offline?.count?.toString() ?: "—")
+    Sub(
+        when {
+            offline == null -> "Загружаю…"
+            offline.count == 0 -> "Все машины на связи"
+            else -> offline.silent.joinToString("; ") { "${it.name} — ${it.status}" }
+        },
+    )
+}
+
+@Composable
+private fun AlarmsWidgetBody(anomalies: List<Anomaly>) {
+    val c = Petrovich.colors
+    WidgetHeader(WidgetType.ALARMS, "сейчас", badge = null)
+    val decided = anomalies.filter { it.resolution == Resolution.CONFIRMED || it.resolution == Resolution.FALSE_ALARM }
+    val confirmed = decided.count { it.resolution == Resolution.CONFIRMED }
+    if (decided.isEmpty()) {
+        BigNumber("—")
+        Sub("Пока нет закрытых тревог")
+    } else {
+        BigNumber("$confirmed из ${decided.size}")
+        Sub("${formatCount(confirmed * 100.0 / decided.size)} % подтвердились")
+        val ratio = confirmed.toFloat() / decided.size
+        Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.surface2)) {
+            Box(Modifier.fillMaxWidth(ratio.coerceIn(0.04f, 1f)).fillMaxHeight().clip(RoundedCornerShape(4.dp)).background(c.ok))
+        }
+    }
+}
+
+@Composable
+private fun WidgetHeader(type: WidgetType, periodLabel: String, badge: String?) {
     val c = Petrovich.colors
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Icon(type.icon, null, Modifier.size(18.dp), tint = c.muted)
-        Spacer(Modifier.width(8.dp))
-        Text(type.title, style = MaterialTheme.typography.labelMedium, color = c.muted, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(6.dp))
+        Text(type.title, style = MaterialTheme.typography.labelMedium, color = c.muted, modifier = Modifier.weight(1f), maxLines = 1)
+        if (badge != null) {
+            Text(
+                badge,
+                style = MaterialTheme.typography.labelSmall,
+                color = c.accent,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(c.accentSoft)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(periodLabel, style = MaterialTheme.typography.labelSmall, color = c.muted)
             Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(12.dp), tint = c.muted)
@@ -563,12 +769,45 @@ private fun BigNumber(text: String, color: Color = Petrovich.colors.ink) {
 @Composable
 private fun Sub(text: String) = Text(text, style = MaterialTheme.typography.bodySmall, color = Petrovich.colors.muted)
 
-/** Мини-столбчатый график за неделю — последний (сегодняшний) столбец выделен акцентным цветом. */
+/** Мини-график: столбцы выше «обычно» — тёплые, ниже — мягкий акцент; пунктир — обычный уровень. */
+@Composable
+private fun WeekBarsWithBaseline(points: List<WidgetPoint>, baseline: Double?) {
+    val c = Petrovich.colors
+    val max = listOfNotNull(points.maxOfOrNull { it.value }, baseline).maxOrNull()?.coerceAtLeast(0.01) ?: 0.01
+    Box(Modifier.fillMaxWidth().height(56.dp)) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
+            points.forEach { p ->
+                val above = baseline != null && p.value > baseline * 1.02
+                Box(
+                    Modifier.weight(1f)
+                        .fillMaxHeight((p.value / max).toFloat().coerceIn(0.04f, 1f))
+                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+                        .background(if (above) c.med else c.accentSoft),
+                )
+            }
+        }
+        if (baseline != null && baseline > 0) {
+            val yFrac = (baseline / max).toFloat().coerceIn(0f, 1f)
+            Canvas(Modifier.fillMaxSize()) {
+                val y = size.height * (1f - yFrac)
+                drawLine(
+                    color = c.muted.copy(alpha = .7f),
+                    start = Offset(0f, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 2.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f)),
+                )
+            }
+        }
+    }
+}
+
+/** Обычный мини-график без линии «обычно». */
 @Composable
 private fun WeekBars(points: List<WidgetPoint>) {
     val c = Petrovich.colors
     val max = (points.maxOfOrNull { it.value } ?: 0.0).coerceAtLeast(0.01)
-    Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.fillMaxWidth().height(48.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
         points.forEachIndexed { i, p ->
             Box(
                 Modifier.weight(1f)

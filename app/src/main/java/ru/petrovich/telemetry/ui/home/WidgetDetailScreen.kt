@@ -40,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.ui.common.AppTopBar
@@ -74,13 +75,16 @@ fun WidgetDetailScreen(
     var offline by remember(type) { mutableStateOf<OfflineSummary?>(null) }
     var removed by remember { mutableStateOf(false) }
 
+    val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
+
     LaunchedEffect(type, period) {
         summary = null
         offline = null
-        if (type == WidgetType.OFFLINE) {
-            offline = runCatchingCancellable { loadFleetWeek().offline() }.getOrNull()
-        } else {
-            summary = runCatchingCancellable { loadWidgetSummary(type, period) }.getOrNull()
+        when (type) {
+            WidgetType.OFFLINE -> offline = runCatchingCancellable { loadFleetWeek().offline() }.getOrNull()
+            WidgetType.ALARMS -> Unit
+            WidgetType.OVERCONSUMERS -> summary = runCatchingCancellable { loadWidgetSummary(WidgetType.FUEL, period) }.getOrNull()
+            else -> summary = runCatchingCancellable { loadWidgetSummary(type, period) }.getOrNull()
         }
     }
 
@@ -89,7 +93,7 @@ fun WidgetDetailScreen(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            if (type != WidgetType.OFFLINE) {
+            if (type != WidgetType.OFFLINE && type != WidgetType.ALARMS) {
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     WidgetPeriod.entries.forEachIndexed { i, p ->
                         SegmentedButton(
@@ -108,7 +112,25 @@ fun WidgetDetailScreen(
                 Text("сейчас", style = MaterialTheme.typography.labelMedium, color = c.muted)
             }
 
-            if (type == WidgetType.OFFLINE) {
+            if (type == WidgetType.ALARMS) {
+                val decided = anomalies.filter {
+                    it.resolution == ru.petrovich.telemetry.anomaly.Resolution.CONFIRMED ||
+                        it.resolution == ru.petrovich.telemetry.anomaly.Resolution.FALSE_ALARM
+                }
+                val confirmed = decided.count { it.resolution == ru.petrovich.telemetry.anomaly.Resolution.CONFIRMED }
+                SurfaceCard(shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            if (decided.isEmpty()) "—" else "$confirmed из ${decided.size}",
+                            fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 36.sp,
+                        )
+                        Text(
+                            if (decided.isEmpty()) "Пока нет закрытых тревог" else "подтверждённых тревог",
+                            style = MaterialTheme.typography.bodyMedium, color = c.muted,
+                        )
+                    }
+                }
+            } else if (type == WidgetType.OFFLINE) {
                 val o = offline
                 if (o == null) Loading() else {
                     SurfaceCard(shape = RoundedCornerShape(20.dp)) {

@@ -31,7 +31,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,11 +39,10 @@ import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.anomaly.Severity
 import ru.petrovich.telemetry.ui.common.Pill
-import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SeverityStripe
-import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.color
+import ru.petrovich.telemetry.ui.common.headline
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.label
 import ru.petrovich.telemetry.ui.common.resolutionLabel
@@ -55,7 +53,7 @@ import ru.petrovich.telemetry.ui.theme.Petrovich
 import java.time.LocalDate
 
 /** Иконка по типу события — честно по тому же правилу, что завело аномалию (см. BaselineAnomalyDetector). */
-private fun Anomaly.icon(): ImageVector = when (kind) {
+fun Anomaly.kindIcon(): ImageVector = when (kind) {
     "drain", "drop" -> Icons.Outlined.LocalGasStation
     "power" -> Icons.Outlined.ElectricBolt
     "volt" -> Icons.Outlined.BatteryAlert
@@ -66,28 +64,21 @@ private fun Anomaly.icon(): ImageVector = when (kind) {
     else -> Icons.Outlined.ReportProblem
 }
 
-/** «X452 · сегодня, 03:40» — как в макете 3.5; без точного времени честно показываем сырое значение. */
-private fun Anomaly.timeLabel(): String {
+/** «сегодня, 03:40» / «вчера» — для строки важности и времени. */
+fun Anomaly.whenLabel(): String {
     val t = time ?: return eventTime
     val day = t.toLocalDate()
     val today = LocalDate.now()
-    val dayText = when (day) {
-        today -> "сегодня"
+    return when (day) {
+        today -> t.hhmm()
         today.minusDays(1) -> "вчера"
         else -> day.title()
     }
-    return "$dayText, ${t.hhmm()}"
 }
 
-/** Первая фраза длинного честного описания — для короткой «подробности» под заголовком карточки. */
+/** Первая фраза описания — короткий контекст под заголовком. */
 private fun String.oneLine(): String = substringBefore(" — ").substringBefore(". ").trimEnd('.')
 
-/**
- * Статус-метка по единому словарю макета (4. Общие элементы): «Срочно» — красная, «Внимание» — жёлтая,
- * «Закрыто» — зелёная, «В работе» и «Ложная тревога» — серые. «Подтверждено» в словаре нет — закрытая
- * подтверждённая аномалия — это «Закрыто». Молчащий датчик показываем как «В работе»: это не разовое
- * срочное событие, а продолжающаяся проблема, как и в макете карточки события.
- */
 @Composable
 private fun StatusPill(a: Anomaly, modifier: Modifier = Modifier) {
     val c = Petrovich.colors
@@ -104,37 +95,39 @@ private fun StatusPill(a: Anomaly, modifier: Modifier = Modifier) {
 }
 
 /**
- * Карточка неразобранной проблемы — 1:1 с макетом 3.5: иконка, машина и время, метка, вывод одной фразой,
- * подробность и кнопка на всю ширину («Разберись» для срочных, «Посмотреть» — для остальных).
- * Кликабельна целиком — открывает карточку события (3.6), как требует правило «Кликабельность».
+ * Карточка новой проблемы по карте экранов: «Срочно · 06:40», headline с цифрой, машина · контекст.
  */
 @Composable
 fun NewProblemCard(a: Anomaly, onOpen: () -> Unit, onAsk: () -> Unit, modifier: Modifier = Modifier) {
     val c = Petrovich.colors
-    val urgent = a.severity == Severity.CRITICAL
     SurfaceCard(modifier.fillMaxWidth(), onClick = onOpen, shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(38.dp).clip(CircleShape).background(a.severity.softColor()), contentAlignment = Alignment.Center) {
-                    Icon(a.icon(), null, Modifier.size(19.dp), tint = a.severity.color())
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("${a.vehicleName} · ${a.timeLabel()}", style = MaterialTheme.typography.labelMedium, color = c.muted)
-                    StatusPill(a)
-                }
+        Row(
+            Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(a.severity.softColor()), contentAlignment = Alignment.Center) {
+                Icon(a.kindIcon(), null, Modifier.size(20.dp), tint = a.severity.color())
             }
-            Text(a.title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                a.description.oneLine(), style = MaterialTheme.typography.bodyMedium, color = c.muted,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-            )
-            if (urgent) PrimaryButton("Разберись", onOpen, Modifier.fillMaxWidth())
-            else SoftButton("Посмотреть", onOpen, Modifier.fillMaxWidth())
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "${a.severity.label()} · ${a.whenLabel()}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = a.severity.color(),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(a.headline(), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    listOfNotNull(a.vehicleName, a.description.oneLine().takeIf { it.isNotBlank() && it != a.title }).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium, color = c.muted,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
 
-/** Строка для вкладок «В работе» и «Закрыты»: статус-точка, заголовок, кто/что решил. */
+/** Строка для вкладок «В работе» и «Закрыты». */
 @Composable
 fun ProblemRow(a: Anomaly, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = Petrovich.colors
@@ -143,17 +136,17 @@ fun ProblemRow(a: Anomaly, onClick: () -> Unit, modifier: Modifier = Modifier) {
         Row(Modifier.height(IntrinsicSize.Min).padding(end = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             SeverityStripe(a.severity.color(), Modifier.fillMaxHeight().width(5.dp))
             Column(Modifier.weight(1f).padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(a.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(a.headline(), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(a.vehicleName, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 when (a.resolution) {
-                    // «В работе» — серый текст, как «Передано механику · 27.09» во 2-й (вспомогательной) версии макета.
                     Resolution.IN_PROGRESS -> Text(
                         resolutionLabel(a) ?: "В работе", style = MaterialTheme.typography.labelSmall,
                         color = c.muted, fontWeight = FontWeight.SemiBold,
                     )
-                    // «Подтверждено» нет в словаре статусов макета (4. Общие элементы) — закрытая аномалия это «Закрыто», зелёным.
                     Resolution.CONFIRMED -> Pill("Закрыто", c.ok, c.okSoft)
-                    Resolution.FALSE_ALARM -> Pill("Ложная тревога" + (a.falseAlarmReason?.let { " · $it" } ?: ""), c.muted, c.surface2)
+                    Resolution.FALSE_ALARM -> Pill(
+                        "Ложная тревога" + (a.falseAlarmReason?.let { " · $it" } ?: ""), c.muted, c.surface2,
+                    )
                     null -> {}
                 }
             }

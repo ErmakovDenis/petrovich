@@ -121,7 +121,7 @@ class VehicleCheckerTest {
         assertEquals("rule|a", switching.check(vehicle, to, to).single().id)
         settings = settings.copy(serverUrl = "https://stand")
         assertEquals("rule|b", switching.check(vehicle, to, to).single().id)
-        settings = settings.copy(demoMode = true) // демо-режим: новые пути не действуют
+        settings = AppSettings(serverUrl = "")
         assertEquals("rule|a", switching.check(vehicle, to, to).single().id)
         assertEquals(3 to 1, local.calls to remote.calls)
         assertTrue(logged.isEmpty())
@@ -131,18 +131,16 @@ class VehicleCheckerTest {
     fun compareModeRunsBothLogsDifferencesAndReturnsChosen() = runTest {
         val local = Fake { listOf(anomaly("rule|same"), anomaly("rule|sev", Severity.WARNING), anomaly("rule|local")) }
         val remote = Fake { listOf(anomaly("rule|same"), anomaly("rule|sev", Severity.CRITICAL), anomaly("ml|x")) }
-        var settings = AppSettings(serverUrl = "https://stand", anomalyCompare = true)
+        val settings = AppSettings(serverUrl = "https://stand", anomalyCompare = true)
         val switching = SwitchingVehicleChecker({ settings }, local, remote, compareAllowed = true, log = { logged += it })
 
-        assertEquals(listOf("rule|same", "rule|sev", "rule|local"), switching.check(vehicle, to, to).map { it.id })
-        settings = settings.copy(anomaliesViaServer = true)
+        // Со стендом в приложении всегда выбран стенд; сравнение только пишет расхождения в лог.
         assertEquals(listOf("rule|same", "rule|sev", "ml|x"), switching.check(vehicle, to, to).map { it.id })
-        assertEquals(2 to 2, local.calls to remote.calls)
-        assertEquals(2, logged.size)
+        assertEquals(1 to 1, local.calls to remote.calls)
         assertEquals(
             "сравнение Урал NEXT А001АА: РАСХОЖДЕНИЕ — только на устройстве [rule|local]; только на стенде [ml|x]; " +
                 "важность [rule|sev: WARNING ≠ CRITICAL]",
-            logged[0],
+            logged.single(),
         )
         // Отладка выключена в release-сборке.
         logged.clear()
@@ -157,11 +155,9 @@ class VehicleCheckerTest {
         val remote = Fake { throw StandException("Стенд недоступен") }
         val settings = AppSettings(serverUrl = "https://stand", anomalyCompare = true)
         val switching = SwitchingVehicleChecker({ settings }, local, remote, compareAllowed = true, log = { logged += it })
-        assertEquals("rule|a", switching.check(vehicle, to, to).single().id)
+        // Стенд выбран для пользователя — ошибка стенда видна; локальный результат только в логе сравнения.
+        assertFailsWith("Стенд недоступен") { switching.check(vehicle, to, to) }
         assertEquals("сравнение Урал NEXT А001АА: на стенде ошибка — Стенд недоступен", logged.single())
-        // Выбран стенд, и он недоступен — ошибка видна пользователю, как без сравнения.
-        val onServer = SwitchingVehicleChecker({ settings.copy(anomaliesViaServer = true) }, local, remote, true) {}
-        assertFailsWith("Стенд недоступен") { onServer.check(vehicle, to, to) }
     }
 
     private suspend fun assertFailsWith(message: String, block: suspend () -> Unit) {
