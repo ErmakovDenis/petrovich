@@ -99,6 +99,12 @@ data class AppSettings(
     val standPasswordRejected: String = "",
     /** Письма из чата: ассистент на стенде готовит черновик, письмо уходит после «Отправить» в чате. */
     val emailViaServer: Boolean = false,
+    /** Проверку аномалий выполняет API детекции (Petrovich AI), а не детектор на устройстве. */
+    val anomalyApiEnabled: Boolean = false,
+    /** Логин API детекции аномалий (HTTP Basic). */
+    val anomalyApiUser: String = "",
+    /** Пароль API детекции аномалий (HTTP Basic). */
+    val anomalyApiPassword: String = "",
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
@@ -115,6 +121,9 @@ data class AppSettings(
 
     /** Фоновая проверка на стенде — продолжение хранилища на стенде; выключенная «Фоновая проверка» выключает и её. */
     val backgroundOnServer: Boolean get() = anomalyStoreOnServer && backgroundViaServer && backgroundChecks
+
+    /** API детекции действует только с реальными данными, включённым переключателем и заданными логином/паролем. */
+    val anomaliesViaApi: Boolean get() = !demoMode && anomalyApiEnabled && anomalyApiUser.isNotBlank() && anomalyApiPassword.isNotBlank()
 
     /**
      * Местное [now] попадает в тихие часы. Как у Telegram-бота: некритичное в это время не присылается,
@@ -176,6 +185,10 @@ class SettingsRepository(private val context: Context) {
         val standScanIntervalMinutes = intPreferencesKey("stand_scan_interval_minutes")
         val standPasswordRejected = stringPreferencesKey("stand_password_rejected")
         val emailViaServer = booleanPreferencesKey("email_via_server")
+        val anomalyApiEnabled = booleanPreferencesKey("anomaly_api_enabled")
+        val anomalyApiUser = stringPreferencesKey("anomaly_api_user")
+        // TODO: для продакшена хранить пароль в зашифрованном виде (Android Keystore) — как у AutoGRAPH выше.
+        val anomalyApiPassword = stringPreferencesKey("anomaly_api_password")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -223,6 +236,9 @@ class SettingsRepository(private val context: Context) {
         standScanIntervalMinutes = this[Keys.standScanIntervalMinutes] ?: 15,
         standPasswordRejected = this[Keys.standPasswordRejected].orEmpty(),
         emailViaServer = this[Keys.emailViaServer] ?: false,
+        anomalyApiEnabled = this[Keys.anomalyApiEnabled] ?: false,
+        anomalyApiUser = this[Keys.anomalyApiUser].orEmpty(),
+        anomalyApiPassword = this[Keys.anomalyApiPassword].orEmpty(),
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -273,6 +289,9 @@ class SettingsRepository(private val context: Context) {
             p[Keys.standScanIntervalMinutes] = new.standScanIntervalMinutes
             p[Keys.standPasswordRejected] = new.standPasswordRejected
             p[Keys.emailViaServer] = new.emailViaServer
+            p[Keys.anomalyApiEnabled] = new.anomalyApiEnabled
+            p[Keys.anomalyApiUser] = new.anomalyApiUser
+            p[Keys.anomalyApiPassword] = new.anomalyApiPassword
         }
     }
 }

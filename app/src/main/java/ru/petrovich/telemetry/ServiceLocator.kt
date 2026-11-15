@@ -5,11 +5,15 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.anomaly.AnomalyDetector
 import ru.petrovich.telemetry.anomaly.AnomalyNotifier
 import ru.petrovich.telemetry.anomaly.AnomalyScanner
 import ru.petrovich.telemetry.anomaly.AnomalyStore
 import ru.petrovich.telemetry.anomaly.AnomalySync
+import ru.petrovich.telemetry.anomaly.ApiAnomalyChecker
+import ru.petrovich.telemetry.anomaly.ApiVehicleResolver
 import ru.petrovich.telemetry.anomaly.BackgroundAccess
 import ru.petrovich.telemetry.anomaly.BaselineAnomalyDetector
 import ru.petrovich.telemetry.anomaly.CompositeAnomalyDetector
@@ -37,6 +41,7 @@ import ru.petrovich.telemetry.data.StandTelegram
 import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
 import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.api.ApiFactory
+import ru.petrovich.telemetry.data.api.PetrovichAi
 import ru.petrovich.telemetry.data.settings.SettingsRepository
 import java.io.File
 
@@ -97,6 +102,21 @@ object ServiceLocator {
 
     val notifier by lazy { AnomalyNotifier(appContext) }
 
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Переключатель «Детекция аномалий через API»: доступ — логин/пароль из настроек (HTTP Basic).
+    // Креды кэшируем из настроек: перехватчик читает их синхронно на каждый запрос.
+    val petrovichAiApi by lazy {
+        val credentials = MutableStateFlow(Pair("", ""))
+        appScope.launch {
+            settings.settings.collect { s -> credentials.value = s.anomalyApiUser.trim() to s.anomalyApiPassword }
+        }
+        PetrovichAi.create(credentials = { credentials.value })
+    }
+
+    /** Сопоставление машин приложения с id API; общий на сверку, чтобы список машин API не тянуть на каждую. */
+    private val apiVehicleResolver by lazy { ApiVehicleResolver(petrovichAiApi) }
+
     // Переключатель «Аномалии со стенда»: выключен — детектор на устройстве, как раньше. Режим сравнения — только debug.
     val vehicleChecker: VehicleChecker by lazy {
         SwitchingVehicleChecker(
@@ -106,6 +126,7 @@ object ServiceLocator {
             compareAllowed = BuildConfig.DEBUG,
             log = { Log.w("AnomalyCompare", it) },
             stored = StoredVehicleChecker(standAnomalies),
+            api = ApiAnomalyChecker(petrovichAiApi, vehicleId = { v -> apiVehicleResolver.resolve(v) }),
         )
     }
 
@@ -119,8 +140,6 @@ object ServiceLocator {
         anomalySync.resetNotifyMark()
         settings.update { it.copy(lastScanAt = 0) }
     }
-
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Ассистент на стенде; тот же доступ к стенду, что у телеметрии. */
     val remoteChatAgent by lazy {

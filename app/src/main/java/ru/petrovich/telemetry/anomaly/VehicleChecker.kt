@@ -18,6 +18,13 @@ import java.time.LocalDateTime
  */
 interface VehicleChecker {
     suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly>
+
+    /**
+     * Лента событий парка одним запросом — для источников, которые отдают готовые аномалии целиком
+     * (лента событий API), без перебора машин приложения. null — источник умеет только по машинам,
+     * работаем через [check], как раньше.
+     */
+    suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly>? = null
 }
 
 /** Как раньше: телеметрия из [TelemetryRepository] (AutoGRAPH, стенд или демо) и детектор на устройстве. */
@@ -79,10 +86,11 @@ class ServerVehicleChecker(
 
 /**
  * Выбирает проверку на каждый вызов по настройкам: проверка с сохранением на стенде ([AppSettings.anomalyStoreOnServer],
- * [stored]), проверка на стенде ([AppSettings.anomaliesOnServer]) или устройство, как раньше.
+ * [stored]), API детекции ([AppSettings.anomaliesViaApi], [api]), проверка на стенде ([AppSettings.anomaliesOnServer])
+ * или устройство, как раньше.
  * Режим сравнения ([compareAllowed] — только отладочная сборка, и [AppSettings.anomalyCompare]; не при хранилище на
  * стенде — там другие id): считаются оба варианта, расхождения пишутся в [log], пользователю возвращается результат
- * по переключателю.
+ * по переключателю. На API не распространяется: там свои id и свой источник.
  */
 class SwitchingVehicleChecker(
     private val settings: suspend () -> AppSettings,
@@ -90,11 +98,13 @@ class SwitchingVehicleChecker(
     private val server: VehicleChecker,
     private val compareAllowed: Boolean,
     private val stored: VehicleChecker? = null,
+    private val api: VehicleChecker? = null,
     private val log: (String) -> Unit,
 ) : VehicleChecker {
     override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
         val s = settings()
         if (s.anomalyStoreOnServer && stored != null) return stored.check(vehicle, from, to)
+        if (s.anomaliesViaApi && api != null) return api.check(vehicle, from, to)
         val onServer = s.anomaliesOnServer
         val compare = compareAllowed && s.anomalyCompare && !s.demoMode && s.serverUrl.isNotBlank()
         if (!compare) return (if (onServer) server else local).check(vehicle, from, to)
@@ -107,6 +117,13 @@ class SwitchingVehicleChecker(
         }
         log(compareReport(vehicle, fromLocal, fromServer))
         return (if (onServer) fromServer else fromLocal).getOrThrow()
+    }
+
+    /** Ленту парка отдаёт только API; у хранилища стенда, стенда и устройства путь по машинам, как раньше. */
+    override suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly>? {
+        val s = settings()
+        if (s.anomalyStoreOnServer && stored != null) return null
+        return if (s.anomaliesViaApi && api != null) api.checkAll(from, to) else null
     }
 
     companion object {
