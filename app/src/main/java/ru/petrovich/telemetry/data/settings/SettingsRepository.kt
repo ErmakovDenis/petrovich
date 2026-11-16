@@ -105,6 +105,8 @@ data class AppSettings(
     val anomalyApiUser: String = "",
     /** Пароль API детекции аномалий (HTTP Basic). */
     val anomalyApiPassword: String = "",
+    /** API детекции был недоступен на последней проверке: в интерфейсе — отметка о резервной схеме. */
+    val anomalyApiDegraded: Boolean = false,
 ) {
     /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
     val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
@@ -189,6 +191,7 @@ class SettingsRepository(private val context: Context) {
         val anomalyApiUser = stringPreferencesKey("anomaly_api_user")
         // TODO: для продакшена хранить пароль в зашифрованном виде (Android Keystore) — как у AutoGRAPH выше.
         val anomalyApiPassword = stringPreferencesKey("anomaly_api_password")
+        val anomalyApiDegraded = booleanPreferencesKey("anomaly_api_degraded")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -239,6 +242,7 @@ class SettingsRepository(private val context: Context) {
         anomalyApiEnabled = this[Keys.anomalyApiEnabled] ?: false,
         anomalyApiUser = this[Keys.anomalyApiUser].orEmpty(),
         anomalyApiPassword = this[Keys.anomalyApiPassword].orEmpty(),
+        anomalyApiDegraded = this[Keys.anomalyApiDegraded] ?: false,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -292,6 +296,7 @@ class SettingsRepository(private val context: Context) {
             p[Keys.anomalyApiEnabled] = new.anomalyApiEnabled
             p[Keys.anomalyApiUser] = new.anomalyApiUser
             p[Keys.anomalyApiPassword] = new.anomalyApiPassword
+            p[Keys.anomalyApiDegraded] = new.anomalyApiDegraded
         }
     }
 }

@@ -10,6 +10,7 @@ import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.Duration
 import java.time.LocalDateTime
 
 /**
@@ -88,6 +89,10 @@ class ServerVehicleChecker(
  * Выбирает проверку на каждый вызов по настройкам: проверка с сохранением на стенде ([AppSettings.anomalyStoreOnServer],
  * [stored]), API детекции ([AppSettings.anomaliesViaApi], [api]), проверка на стенде ([AppSettings.anomaliesOnServer])
  * или устройство, как раньше.
+ * API недоступен (сеть, 5xx, отказ авторизации) — проверка автоматически уходит в старый путь без API:
+ * пороговые правила на устройстве или стенд по переключателю. Повторных обращений к упавшему API нет
+ * [API_RETRY_PAUSE]: иначе сверка по машинам уперлась бы в те же таймауты. О сбое и восстановлении
+ * сообщает [onApiDegraded] — отметка для интерфейса (резервная схема), только при смене состояния.
  * Режим сравнения ([compareAllowed] — только отладочная сборка, и [AppSettings.anomalyCompare]; не при хранилище на
  * стенде — там другие id): считаются оба варианта, расхождения пишутся в [log], пользователю возвращается результат
  * по переключателю. На API не распространяется: там свои id и свой источник.
@@ -99,12 +104,49 @@ class SwitchingVehicleChecker(
     private val compareAllowed: Boolean,
     private val stored: VehicleChecker? = null,
     private val api: VehicleChecker? = null,
+    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val onApiDegraded: (suspend (Boolean) -> Unit)? = null,
     private val log: (String) -> Unit,
 ) : VehicleChecker {
+    /** До этого момента API не отвечал: лента и точечные проверки к нему не обращаются. */
+    @Volatile
+    private var apiUnavailableUntil: Long = 0L
+
     override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
         val s = settings()
         if (s.anomalyStoreOnServer && stored != null) return stored.check(vehicle, from, to)
-        if (s.anomaliesViaApi && api != null) return api.check(vehicle, from, to)
+        if (s.anomaliesViaApi && api != null && clock() >= apiUnavailableUntil) {
+            val anomalies = runCatchingCancellable { api.check(vehicle, from, to) }
+                .getOrElse { e -> onApiFailure(e); null }
+            if (anomalies != null) {
+                onApiRecovered()
+                return anomalies
+            }
+        }
+        return checkLegacy(s, vehicle, from, to)
+    }
+
+    /**
+     * Ленту парка отдаёт только API; у хранилища стенда, стенда и устройства путь по машинам, как раньше.
+     * API включён, но лента не пришла — тоже null: проверка идёт дальше по машинам через [check]
+     * (пороговые правила или стенд), а не остаётся без результата.
+     */
+    override suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly>? {
+        val s = settings()
+        if (s.anomalyStoreOnServer && stored != null) return null
+        if (s.anomaliesViaApi && api != null && clock() >= apiUnavailableUntil) {
+            val feed = runCatchingCancellable { api.checkAll(from, to) }
+                .getOrElse { e -> onApiFailure(e); null }
+            if (feed != null) {
+                onApiRecovered()
+                return feed
+            }
+        }
+        return null
+    }
+
+    /** Старый путь без API: стенд или устройство по переключателю ([AppSettings.anomaliesOnServer]). */
+    private suspend fun checkLegacy(s: AppSettings, vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
         val onServer = s.anomaliesOnServer
         val compare = compareAllowed && s.anomalyCompare && !s.demoMode && s.serverUrl.isNotBlank()
         if (!compare) return (if (onServer) server else local).check(vehicle, from, to)
@@ -119,14 +161,22 @@ class SwitchingVehicleChecker(
         return (if (onServer) fromServer else fromLocal).getOrThrow()
     }
 
-    /** Ленту парка отдаёт только API; у хранилища стенда, стенда и устройства путь по машинам, как раньше. */
-    override suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly>? {
-        val s = settings()
-        if (s.anomalyStoreOnServer && stored != null) return null
-        return if (s.anomaliesViaApi && api != null) api.checkAll(from, to) else null
+    /** API не ответил: пауза повторных обращений и причина ухода в старый путь — в [log]. */
+    private suspend fun onApiFailure(e: Throwable) {
+        apiUnavailableUntil = clock() + API_RETRY_PAUSE.toMillis()
+        log("API детекции аномалий недоступен (${e.message ?: e.toString()}) — проверка пороговыми правилами, как раньше")
+        if (onApiDegraded != null && !settings().anomalyApiDegraded) onApiDegraded.invoke(true)
+    }
+
+    /** API снова отвечает — резервную отметку для интерфейса снимаем (если она была). */
+    private suspend fun onApiRecovered() {
+        if (onApiDegraded != null && settings().anomalyApiDegraded) onApiDegraded.invoke(false)
     }
 
     companion object {
+        /** Пауза повторных обращений к упавшему API; после неё API пробуется снова. */
+        val API_RETRY_PAUSE: Duration = Duration.ofMinutes(5)
+
         /** Расхождения по id и важности; detectedAt и описание не сравниваются. */
         fun compareReport(vehicle: Vehicle, local: Result<List<Anomaly>>, server: Result<List<Anomaly>>): String {
             val l = local.getOrNull() ?: return "сравнение ${vehicle.name}: на устройстве ошибка — ${local.exceptionOrNull()?.message}"

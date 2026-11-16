@@ -95,6 +95,11 @@ fun ProblemsScreen(
                     buildString {
                         append("Проверено машин: ${r.checkedVehicles}, новых аномалий: ${r.newAnomalies.size}")
                         if (r.errors.isNotEmpty()) append(". Ошибок: ${r.errors.size}")
+                        // Сработал резервный путь: проверка шла пороговыми правилами, а не API.
+                        val cur = ServiceLocator.settings.current()
+                        if (cur.anomaliesViaApi && cur.anomalyApiDegraded) {
+                            append(". API прогнозирования недоступен — проверка по пороговым правилам")
+                        }
                     }
                 },
                 onFailure = { "Ошибка проверки: ${it.message}" },

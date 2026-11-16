@@ -99,6 +99,9 @@ object TripTablesGolden {
         put("source", a.source)
     }
 
+    /** Текст эталона для сравнения: checkout с autocrlf отдаёт файлы с CRLF, а генерируемый JSON — с LF. */
+    fun readNormalized(file: File): String = file.readText().replace("\r\n", "\n")
+
     /** JSON с отступами, но массивы чисел и строк — в одну строку: эталон остаётся небольшим и читаемым в diff. */
     fun format(element: JsonElement, indent: String = ""): String {
         val inner = "$indent  "

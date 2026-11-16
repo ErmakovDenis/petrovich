@@ -258,6 +258,98 @@ class ApiAnomalyCheckerTest {
         assertEquals(1, api.calls)
     }
 
+    /** API, который падает на любом обращении и считает их: лента и точечная детекция. */
+    private class FailingApi : VehicleChecker {
+        var feedCalls = 0
+        var pointCalls = 0
+        override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
+            pointCalls++
+            throw StandException("API аномалий недоступен: проверьте сеть")
+        }
+        override suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
+            feedCalls++
+            throw StandException("API аномалий недоступен: проверьте сеть")
+        }
+    }
+
+    @Test
+    fun apiFailureFallsBackToThresholdRules() = runTest {
+        var now = 1_000_000L
+        val logs = mutableListOf<String>()
+        val api = FailingApi()
+        val local = Fake(listOf(anomaly("rule|a")))
+        val settings = AppSettings(anomalyApiEnabled = true, anomalyApiUser = "op", anomalyApiPassword = "secret")
+        val switching = SwitchingVehicleChecker(
+            { settings }, local, Fake(emptyList()), compareAllowed = false, api = api,
+            log = { logs += it }, clock = { now },
+        )
+
+        // Лента не пришла — сверка продолжается по машинам старым путём (пороговые правила).
+        assertEquals(null, switching.checkAll(to, to))
+        assertEquals(listOf("rule|a"), switching.check(vehicle, to, to).map { it.id })
+        // Повторных обращений к упавшему API нет: ни к ленте, ни к точечной детекции по машинам.
+        assertEquals(1, api.feedCalls)
+        assertEquals(0, api.pointCalls)
+        assertTrue(logs.single().contains("пороговыми правилами"))
+
+        // После паузы API пробуется снова.
+        now += SwitchingVehicleChecker.API_RETRY_PAUSE.toMillis() + 1
+        assertEquals(null, switching.checkAll(to, to))
+        assertEquals(2, api.feedCalls)
+    }
+
+    @Test
+    fun apiPointFailureFallsBackToLocalCheck() = runTest {
+        val api = FailingApi()
+        val local = Fake(listOf(anomaly("rule|a")))
+        val settings = AppSettings(anomalyApiEnabled = true, anomalyApiUser = "op", anomalyApiPassword = "secret")
+        val switching = SwitchingVehicleChecker(
+            { settings }, local, Fake(emptyList()), compareAllowed = false, api = api, log = {},
+        )
+
+        // Точечная детекция недоступна — машина проверяется пороговыми правилами на устройстве.
+        assertEquals(listOf("rule|a"), switching.check(vehicle, to, to).map { it.id })
+        assertEquals(1, api.pointCalls)
+        // Пауза после сбоя действует и на ленту: checkAll API не дёргает.
+        assertEquals(null, switching.checkAll(to, to))
+        assertEquals(0, api.feedCalls)
+    }
+
+    @Test
+    fun apiFailureMarksDegradedStateForTheUi() = runTest {
+        var now = 1_000_000L
+        var settings = AppSettings(anomalyApiEnabled = true, anomalyApiUser = "op", anomalyApiPassword = "secret")
+        val marks = mutableListOf<Boolean>()
+        var fail = true
+        val api = object : VehicleChecker {
+            override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> =
+                if (fail) throw StandException("API аномалий недоступен: проверьте сеть") else emptyList()
+            override suspend fun checkAll(from: LocalDateTime, to: LocalDateTime): List<Anomaly> =
+                if (fail) throw StandException("API аномалий недоступен: проверьте сеть") else emptyList()
+        }
+        val switching = SwitchingVehicleChecker(
+            { settings }, Fake(emptyList()), Fake(emptyList()), compareAllowed = false, api = api,
+            clock = { now }, onApiDegraded = { marks += it }, log = {},
+        )
+
+        // Сбой — отметка для интерфейса; проверка в паузу к API не идёт и отметку не дублирует.
+        assertEquals(null, switching.checkAll(to, to))
+        switching.check(vehicle, to, to)
+        assertEquals(listOf(true), marks)
+
+        // API восстановился — отметка снимается одним вызовом (после паузы повторного обращения).
+        settings = settings.copy(anomalyApiDegraded = true)
+        fail = false
+        now += SwitchingVehicleChecker.API_RETRY_PAUSE.toMillis() + 1
+        assertEquals(emptyList<Anomaly>(), switching.checkAll(to, to))
+        assertEquals(listOf(true, false), marks)
+
+        // Отметка уже снята — успешные проверки состояние не трогают.
+        settings = settings.copy(anomalyApiDegraded = false)
+        switching.checkAll(to, to)
+        assertEquals(listOf(true, false), marks)
+    }
+
     @Test
     fun storedCheckerKeepsPriorityOverApi() = runTest {
         val settings = AppSettings(

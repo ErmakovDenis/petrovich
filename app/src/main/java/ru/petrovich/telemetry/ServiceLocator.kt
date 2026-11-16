@@ -127,6 +127,8 @@ object ServiceLocator {
             log = { Log.w("AnomalyCompare", it) },
             stored = StoredVehicleChecker(standAnomalies),
             api = ApiAnomalyChecker(petrovichAiApi, vehicleId = { v -> apiVehicleResolver.resolve(v) }),
+            // Резервная схема видна в интерфейсе: «Главная» и «Проблемы» показывают, что API недоступен.
+            onApiDegraded = { degraded -> settings.update { it.copy(anomalyApiDegraded = degraded) } },
         )
     }
 

@@ -64,8 +64,9 @@ class AnomalyScanner(
         val errors = mutableListOf<String>()
 
         // Источник с готовой лентой (API детекции) отдаёт события парка одним запросом — машины по очереди
-        // не проверяем. null — источник по машинам, старый путь. Ошибка ленты: проверки не было вообще,
-        // перебирать машины нет смысла (тот же источник), но телеметрию для статуса парка тянем всё равно.
+        // не проверяем. null — источник по машинам, старый путь; при своём сбое API тоже отдаёт null
+        // и уходит в старый путь сам (SwitchingVehicleChecker). Ошибка, долетевшая сюда, — источник
+        // отказался совсем: проверки не было, но телеметрию для статуса парка тянем всё равно.
         var fleetFailed = false
         val fleet = runCatchingCancellable { checker.checkAll(from, to) }
             .onFailure { fleetFailed = true; synchronized(errors) { errors += it.message ?: it.toString() } }

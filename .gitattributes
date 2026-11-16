@@ -1,0 +1,3 @@
+# Эталоны сверяются с генерируемым текстом побайтово (golden-тесты Kotlin и Python):
+# держим LF независимо от core.autocrlf, иначе checkout на Windows отдаёт CRLF и тесты падают.
+testdata/**/*.json text eol=lf

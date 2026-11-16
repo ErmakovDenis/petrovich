@@ -338,6 +338,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
                     s.demoMode -> "Не действует в демо-режиме — проверяет устройство"
                     s.anomalyApiUser.isBlank() || s.anomalyApiPassword.isBlank() ->
                         "Сначала укажите логин и пароль API и нажмите «Сохранить и проверить»"
+                    s.anomalyApiEnabled && s.anomalyApiDegraded ->
+                        "API сейчас недоступен — проверка идёт пороговыми правилами на устройстве, как раньше"
                     else -> "Проверку выполняет API Petrovich AI; выключено — детектор на устройстве (пороговые правила, ML-модель)"
                 },
                 checked = s.anomalyApiEnabled,
