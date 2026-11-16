@@ -9,12 +9,16 @@
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from ..autograph.errors import AutoGraphUnavailable, SessionInvalid, TripTablesTooLarge
 from ..config import Settings
+from ..petrovich_ai.client import PetrovichAiClient
+from ..petrovich_ai.mapping import match_vehicle, to_anomaly
 from ..rules.check import AnomalyCheckService
+from ..schemas.contract import Anomaly, Vehicle
 from ..schemas.store import (
     ImportItem,
     ImportRequest,
@@ -29,6 +33,9 @@ from .repository import AnomalyRepository, Detection, to_local, to_utc
 log = logging.getLogger(__name__)
 
 _EPOCH = datetime(1970, 1, 1)
+
+# События ленты «Petrovich AI» по id машины: (аномалия, начало эпизода местное, конец эпизода местное).
+FeedEvents = dict[str, list[tuple[Anomaly, datetime, datetime]]]
 
 
 class ImportTooLarge(ValueError):
@@ -45,11 +52,14 @@ class _Window:
 
 class ScanService:
     def __init__(self, settings: Settings, telemetry: TelemetryService, checks: AnomalyCheckService,
-                 store: AnomalyRepository):
+                 store: AnomalyRepository, ai: PetrovichAiClient | None = None):
         self._settings = settings
         self._telemetry = telemetry
         self._checks = checks
         self._store = store
+        self._ai = ai
+        # Лента «Petrovich AI» не отвечала: до этого момента (monotonic) к ней не обращаемся.
+        self._ai_unavailable_until = 0.0
         self.bucket = timedelta(minutes=settings.scan_bucket_minutes)
 
     def canonical_period(self, from_: datetime, to: datetime, utc_offset_minutes: int) -> tuple[datetime, datetime]:
@@ -99,11 +109,37 @@ class ScanService:
         utc_offset_minutes: int,
     ) -> ScanResponse:
         """Проверка машин пользователя (или выбранных) с сохранением. Ошибка одной машины не прерывает остальные;
-        отметка последней проверки схемы двигается, только если ответила хотя бы одна машина."""
+        отметка последней проверки схемы двигается, только если ответила хотя бы одна машина.
+
+        Источник аномалий — как в приложении: лента «Petrovich AI», когда сервис настроен и отвечает; при его
+        недоступности — обычный путь (правила + аналитика), повторного обращения в паузу нет."""
         self._telemetry.check_period(from_, to)
         from_c, to_c = self.canonical_period(from_, to, utc_offset_minutes)
-        visible = {v.id for v in await self._telemetry.vehicles(session, schema_id)}
+        visible = {v.id: v for v in await self._telemetry.vehicles(session, schema_id)}
         ids = list(dict.fromkeys(vehicle_ids)) if vehicle_ids is not None else sorted(visible)
+        feed = await self.ai_events(from_c, to_c, utc_offset_minutes, list(visible.values()))
+        if feed is not None:
+            results = await self._scan_from_feed(schema_id, feed, ids, utc_offset_minutes)
+            source = "лента petrovich ai"
+        else:
+            results = await self._scan_vehicles(session, schema_id, ids, visible, from_c, to_c, utc_offset_minutes)
+            source = "правила и аналитика"
+        if not ids or any(r.ok for r in results):
+            await self._store.mark_scan(schema_id)
+        await self._store.purge_if_due(datetime.now(UTC).replace(tzinfo=None))
+        log.info(
+            "проверка с сохранением: схема %s, %s — %s, машин %d, с ошибкой %d, новых аномалий %d (%s)",
+            schema_id, from_c, to_c, len(results), sum(not r.ok for r in results),
+            sum(len(r.new_ids) for r in results), source,
+        )
+        return ScanResponse(
+            from_=from_c, to=to_c, results=results, last_scan_at=await self._store.last_scan(schema_id)
+        )
+
+    async def _scan_vehicles(
+        self, session: str, schema_id: str, ids: list[str], visible: dict[str, Vehicle], from_c: datetime,
+        to_c: datetime, utc_offset_minutes: int,
+    ) -> list[VehicleScan]:
         limit = asyncio.Semaphore(self._settings.scan_concurrency)
 
         async def one(vehicle_id: str) -> VehicleScan:
@@ -121,18 +157,67 @@ class ScanService:
         for o in outcomes:
             if isinstance(o, BaseException):
                 raise o
-        results: list[VehicleScan] = list(outcomes)  # type: ignore[arg-type]
-        if not ids or any(r.ok for r in results):
-            await self._store.mark_scan(schema_id)
-        await self._store.purge_if_due(datetime.now(UTC).replace(tzinfo=None))
-        log.info(
-            "проверка с сохранением: схема %s, %s — %s, машин %d, с ошибкой %d, новых аномалий %d",
-            schema_id, from_c, to_c, len(results), sum(not r.ok for r in results),
-            sum(len(r.new_ids) for r in results),
+        return list(outcomes)  # type: ignore[arg-type]
+
+    async def ai_events(
+        self, from_c: datetime, to_c: datetime, utc_offset_minutes: int, vehicles: list[Vehicle],
+    ) -> dict[str, list[tuple[Anomaly, datetime, datetime]]] | None:
+        """События ленты «Petrovich AI» за окно, по id машин схемы; None — лента недоступна (вызывающий уходит
+        в обычный путь). События с началом вне окна и машины, не найденные в схеме, пропускаются."""
+        if self._ai is None or not self._ai.enabled or time.monotonic() < self._ai_unavailable_until:
+            return None
+        events = await self._ai.events(from_c.date(), to_c.date())
+        if events is None:
+            self._ai_unavailable_until = time.monotonic() + self._settings.petrovich_ai_retry_pause_seconds
+            log.warning("проверка: лента «Petrovich AI» недоступна — машины проверяются правилами и аналитикой, как раньше")
+            return None
+        by_vehicle: dict[str, list[tuple[Anomaly, datetime, datetime]]] = {}
+        for raw in events:
+            vehicle = match_vehicle(str(raw.get("vehicle") or ""), vehicles)
+            if vehicle is None:
+                log.info("проверка: событие ленты %s (%s) не сопоставлено с машиной схемы — пропущено",
+                         raw.get("id"), raw.get("vehicle"))
+                continue
+            mapped = to_anomaly(raw, vehicle, utc_offset_minutes)
+            if mapped is None:
+                continue
+            _, start, _ = mapped
+            if not from_c <= start <= to_c:
+                continue
+            by_vehicle.setdefault(vehicle.id, []).append(mapped)
+        return by_vehicle
+
+    async def scan_vehicle_feed(
+        self, schema_id: str, vehicle_id: str, events: list[tuple[Anomaly, datetime, datetime]],
+        utc_offset_minutes: int,
+    ) -> VehicleScan:
+        """Сохранение событий ленты одной машины — как scan_vehicle, но без проверки по правилам и аналитике."""
+        detections = [
+            Detection(a, to_utc(start, utc_offset_minutes), to_utc(end, utc_offset_minutes))
+            for a, start, end in events
+        ]
+        saved = await self._store.save(schema_id, detections)
+        records = {r.id: r for r, _ in saved}
+        created = list(dict.fromkeys(r.id for r, new in saved if new))
+        return VehicleScan(
+            vehicle_id=vehicle_id,
+            ok=True,
+            anomalies=[r.to_api(utc_offset_minutes) for r in records.values()],
+            new_ids=created,
+            # Источник — лента, а не правила: «только по правилам» здесь не бывает.
+            models_ready=True,
         )
-        return ScanResponse(
-            from_=from_c, to=to_c, results=results, last_scan_at=await self._store.last_scan(schema_id)
-        )
+
+    async def _scan_from_feed(
+        self, schema_id: str, feed: dict[str, list[tuple[Anomaly, datetime, datetime]]], ids: list[str],
+        utc_offset_minutes: int,
+    ) -> list[VehicleScan]:
+        """Сохранение событий ленты по машинам; машины без событий — пустые результаты, чтобы ответ был как у
+        проверки по правилам."""
+        return [
+            await self.scan_vehicle_feed(schema_id, vehicle_id, feed.get(vehicle_id, []), utc_offset_minutes)
+            for vehicle_id in ids
+        ]
 
     # --- перенос решений с устройства ---
 

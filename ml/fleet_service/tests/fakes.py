@@ -80,6 +80,31 @@ FAKE_PA_KEY = "pa-key"
 # (предел нагрузки PA_MAX_CONCURRENCY).
 ANALYTICS_MODES = ("not_ready", "ready", "found", "down", "overloaded")
 
+FAKE_AI_USER = "ai"
+FAKE_AI_PASSWORD = "ai-pass"
+# События подставной ленты «Petrovich AI» (app.state.petrovich_ai_events): 16.09 — в окне фоновой проверки бота
+# (06:00–09:00 местных, UTC+5) и в окне ручного /v1/anomalies/scan тестов; «МАЗ неведомый» с парком не совпадает.
+PETROVICH_AI_EVENTS = [
+    {"id": 27913, "vehicle_id": 166, "vehicle": "FAW №1", "organization_id": 2, "organization": "Колонна 1",
+     "kind": "fuel_drain", "title": "fuel_drain", "severity": "high", "status": "new",
+     "started_at": "2026-09-16T01:10:00+00:00", "ended_at": "2026-09-16T01:40:00+00:00",
+     "volume_l": 42.5, "metric": 42.5, "metric_unit": "l",
+     "producer_name": "fuel_drain_rules", "producer_version": "prototype-v3", "is_synthetic": False},
+    {"id": 27914, "vehicle_id": 167, "vehicle": "Урал NEXT А001АА", "organization_id": 2, "organization": "Колонна 1",
+     "kind": "towing", "title": "towing", "severity": "med", "status": "new",
+     "started_at": "2026-09-16T02:20:00+00:00", "ended_at": None,
+     "volume_l": None, "metric": None, "metric_unit": None,
+     "producer_name": "towing_rules", "producer_version": "prototype-v3", "is_synthetic": False},
+    {"id": 27915, "vehicle_id": 999, "vehicle": "МАЗ неведомый", "organization_id": 3, "organization": "Другая",
+     "kind": "fuel_drain", "title": "fuel_drain", "severity": "low", "status": "new",
+     "started_at": "2026-09-16T03:00:00+00:00", "ended_at": None,
+     "volume_l": 10.0, "metric": 10.0, "metric_unit": "l",
+     "producer_name": "fuel_drain_rules", "producer_version": "prototype-v3", "is_synthetic": False},
+]
+# Режимы подставной ленты (app.state.petrovich_ai): empty — без событий, ok — app.state.petrovich_ai_events,
+# down — 500 (лента недоступна, проверка уходит в правила и аналитику).
+AI_MODES = ("empty", "ok", "down")
+
 DEVICES = {
     VALID_TOKEN: [
         {"ID": "veh-1", "ParentID": "g-1", "Name": "FAW №1", "Serial": 101, "Allowed": True},
@@ -514,6 +539,8 @@ def create_fakes() -> FastAPI:
     app.state.analytics = "not_ready"
     app.state.analytics_version = "fake-1"
     app.state.analytics_requests = []
+    app.state.petrovich_ai = "empty"
+    app.state.petrovich_ai_events = []
     app.state.trip_tables_down = set()
     app.state.expired = set()
     app.state.issued = {}
@@ -558,6 +585,21 @@ def create_fakes() -> FastAPI:
                 "source": "Антифрод (ML)",
             })
         return JSONResponse({"ready": True, "modelVersion": app.state.analytics_version, "anomalies": anomalies})
+
+    @app.get("/petrovich/api/v1/anomaly-events")
+    async def petrovich_ai_events(request: Request) -> JSONResponse:
+        """Как лента «Petrovich AI»: HTTP Basic (FS_PETROVICH_AI_USER/PASSWORD стенда), страницы limit/offset."""
+        app.state.calls["ai_events"] += 1
+        expected = "Basic " + base64.b64encode(f"{FAKE_AI_USER}:{FAKE_AI_PASSWORD}".encode()).decode()
+        if request.headers.get("authorization") != expected:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        mode = app.state.petrovich_ai
+        if mode == "down":
+            return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
+        items = list(app.state.petrovich_ai_events) if mode == "ok" else []
+        offset = int(request.query_params.get("offset", 0))
+        limit = int(request.query_params.get("limit", 200))
+        return JSONResponse({"total": len(items), "items": items[offset:offset + limit]})
 
     @app.post("/openrouter/api/v1/chat/completions")
     async def completions(request: Request) -> JSONResponse:

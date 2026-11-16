@@ -27,7 +27,7 @@ from ..config import Settings
 from ..limits import background_priority
 from ..schemas.contract import Vehicle
 from ..store.repository import AnomalyRepository, to_local
-from ..store.scan import ScanService, error_text
+from ..store.scan import FeedEvents, ScanService, error_text
 from ..telemetry.service import TelemetryService
 from ..telemetry.widgets import aggregate
 from .access import AccessRepository, Grant, now_ms
@@ -121,24 +121,33 @@ class BackgroundScanner:
         for g in sorted(grants, key=lambda g: g.refreshed_at, reverse=True):
             by_user.setdefault(g.user_key, []).append(g)
         owners: dict[str, _Owner] = {}
+        vehicles: dict[str, Vehicle] = {}
         used: list[str] = []
         for user_grants in by_user.values():
             for g in user_grants:
                 opened = await self._open(g)
                 if opened is None:
                     continue
-                session, vehicles = opened
+                session, opened_vehicles = opened
                 run.usable += 1
                 used.append(g.device_id)
-                for v in vehicles:
+                for v in opened_vehicles:
                     owners.setdefault(v.id, _Owner(g, session))
+                    vehicles.setdefault(v.id, v)
                 break
         if not used:
             run.errors.append("нет действующего доступа к AutoGRAPH")
             log.warning("фоновая проверка: схема %s — нет действующего доступа (доступов %d)", schema_id, len(grants))
             return run
 
-        results = await asyncio.gather(*(self._vehicle(schema_id, vid, o) for vid, o in owners.items()))
+        # Источник аномалий — как в приложении: лента «Petrovich AI» одним запросом на проход; при её
+        # недоступности каждая машина проверяется обычным путём (правила + аналитика).
+        offset = next(iter(o.grant.utc_offset_minutes for o in owners.values()))
+        to = to_local(self.clock(), offset)
+        f, t = self._scans.canonical_period(to - timedelta(hours=self._settings.background_window_hours), to, offset)
+        feed = await self._scans.ai_events(f, t, offset, list(vehicles.values()))
+
+        results = await asyncio.gather(*(self._vehicle(schema_id, vid, o, feed) for vid, o in owners.items()))
         run.vehicles = len(results)
         run.failed = sum(isinstance(r, str) for r in results)
         run.new = sum(r for r in results if isinstance(r, int))
@@ -187,15 +196,21 @@ class BackgroundScanner:
         await self._access.set_token(g.device_id, token)
         return token, vehicles
 
-    async def _vehicle(self, schema_id: str, vehicle_id: str, owner: _Owner) -> int | str:
-        """Новых аномалий машины или текст ошибки."""
+    async def _vehicle(self, schema_id: str, vehicle_id: str, owner: _Owner,
+                       feed: FeedEvents | None) -> int | str:
+        """Новых аномалий машины или текст ошибки. [feed] — события ленты «Petrovich AI» по машинам прохода:
+        не None — сохраняем их; None — обычная проверка (правила + аналитика)."""
         offset = owner.grant.utc_offset_minutes
         to = to_local(self.clock(), offset)
         from_ = to - timedelta(hours=self._settings.background_window_hours)
         async with self._limit:
             try:
-                f, t = self._scans.canonical_period(from_, to, offset)
-                result = await self._scans.scan_vehicle(owner.session, schema_id, vehicle_id, f, t, offset)
+                if feed is not None:
+                    result = await self._scans.scan_vehicle_feed(schema_id, vehicle_id, feed.get(vehicle_id, []),
+                                                                 offset)
+                else:
+                    f, t = self._scans.canonical_period(from_, to, offset)
+                    result = await self._scans.scan_vehicle(owner.session, schema_id, vehicle_id, f, t, offset)
                 await self._update_widget_stats(schema_id, vehicle_id, owner, to)
                 return len(result.new_ids)
             except SessionInvalid:
