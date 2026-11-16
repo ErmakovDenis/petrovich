@@ -20,3 +20,4 @@ keystore.properties
 
 # Локальные настройки Claude Code для ML-сессий
 /.claude-ml/
+/.claude/
