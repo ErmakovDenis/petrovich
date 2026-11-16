@@ -184,9 +184,9 @@ fun HomeScreen(
         if (s.backgroundOnServer && s.lastScanAt > 0 && now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L) {
             StaleScanCard(s.lastScanAt)
         }
-        // Статус уже на цветной плашке; ниже — только «ещё не проверял» с кнопкой скана.
-        if (data.tone == BriefTone.NEUTRAL) {
-            ProblemsOrOkCard(data, scanning, scanError, onScan = ::scan, onOpenCard, onOpenProblems)
+        // API детекции недоступен: сверка сейчас идёт пороговыми правилами (отметку ставит checker, снимает при восстановлении API).
+        if (s.anomaliesViaApi && s.anomalyApiDegraded) {
+            ApiDegradedCard()
         }
 
         WeekInNumbersHeader(homePeriod, onPeriod = { homePeriod = it })
@@ -386,6 +386,21 @@ private fun StaleScanCard(lastScanAt: Long) {
             Text("Стенд давно не проверял данные", style = MaterialTheme.typography.titleSmall, color = c.high)
             Text(
                 "Последняя проверка — ${at.toLocalDate().title()}, ${at.hhmm()}. AutoGRAPH или стенд недоступны, сведения ниже могут быть устаревшими.",
+                style = MaterialTheme.typography.bodySmall, color = c.muted,
+            )
+        }
+    }
+}
+
+/** API прогнозирования аномалий недоступен: сверка сейчас идёт пороговыми правилами на устройстве, как до включения API. */
+@Composable
+private fun ApiDegradedCard() {
+    val c = Petrovich.colors
+    SurfaceCard(Modifier.fillMaxWidth().border(2.dp, c.highSoft, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Прогнозирование аномалий недоступно", style = MaterialTheme.typography.titleSmall, color = c.high)
+            Text(
+                "API детекции не отвечает — аномалии ищет устройство по пороговым правилам, как раньше. API будет проверен снова автоматически.",
                 style = MaterialTheme.typography.bodySmall, color = c.muted,
             )
         }

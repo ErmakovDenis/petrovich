@@ -74,7 +74,7 @@ class AnomalyGoldenTest {
             }
             val file = File(dir, "${case.name}.case.json")
             val text = TripTablesGolden.format(json) + "\n"
-            if (update) file.writeText(text) else if (!file.exists() || file.readText() != text) stale += file.name
+            if (update) file.writeText(text) else if (!file.exists() || TripTablesGolden.readNormalized(file) != text) stale += file.name
         }
         assertTrue("эталоны без аномалий проверяют немного", total > 20)
         assertEquals(

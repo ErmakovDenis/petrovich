@@ -47,6 +47,7 @@ import ru.petrovich.telemetry.anomaly.BackgroundState
 import ru.petrovich.telemetry.anomaly.ImportReport
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.Schema
+import ru.petrovich.telemetry.data.api.PetrovichAi
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.ThemeMode
 import ru.petrovich.telemetry.ui.common.AppTopBar
@@ -66,6 +67,10 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
 
     var user by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var apiUser by remember { mutableStateOf("") }
+    var apiPassword by remember { mutableStateOf("") }
+    var apiBusy by remember { mutableStateOf(false) }
+    var apiStatus by remember { mutableStateOf<String?>(null) }
     var schemas by remember { mutableStateOf<List<Schema>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -80,7 +85,9 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
     LaunchedEffect(settings) {
         val s = settings ?: return@LaunchedEffect
         if (!initialized) {
-            user = s.userName; password = s.password; serverUrl = s.serverUrl; initialized = true
+            user = s.userName; password = s.password; serverUrl = s.serverUrl
+            apiUser = s.anomalyApiUser; apiPassword = s.anomalyApiPassword
+            initialized = true
         }
     }
 
@@ -230,6 +237,56 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
             ) { Text("Сохранить адрес") }
             serverStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
+            Text("Детекция через API", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "API Petrovich AI (${BuildConfig.PETROVICH_AI_URL}) проверяет машины по данным, загруженным у себя, " +
+                    "— вместо детектора на устройстве. Доступ — по логину и паролю (HTTP Basic). Машины сопоставляются " +
+                    "со списком API по id, госномеру или модели — парк должен быть загружен в API (ingest или sync AutoGRAPH).",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = apiUser, onValueChange = { apiUser = it; apiStatus = null },
+                label = { Text("Логин API") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = apiPassword, onValueChange = { apiPassword = it; apiStatus = null },
+                label = { Text("Пароль API") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            )
+            Button(
+                enabled = !apiBusy && apiUser.isNotBlank() && apiPassword.isNotBlank(),
+                onClick = {
+                    apiBusy = true; apiStatus = null
+                    scope.launch {
+                        runCatchingCancellable {
+                            repo.update { it.copy(anomalyApiUser = apiUser.trim(), anomalyApiPassword = apiPassword) }
+                            // Разовый клиент с теми кредами, что только что сохранены: проверяем именно их, без гонки с кэшем.
+                            PetrovichAi.create(credentials = { apiUser.trim() to apiPassword }).health()
+                        }
+                            .onSuccess { apiStatus = "Соединение установлено — API принял логин и пароль" }
+                            .onFailure { apiStatus = "Ошибка: ${it.message ?: it}" }
+                        apiBusy = false
+                    }
+                },
+            ) {
+                if (apiBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                else Text("Сохранить и проверить")
+            }
+            apiStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            SwitchRow(
+                title = "Детекция аномалий через API",
+                subtitle = when {
+                    s.anomalyApiUser.isBlank() || s.anomalyApiPassword.isBlank() ->
+                        "Сначала укажите логин и пароль API и нажмите «Сохранить и проверить»"
+                    s.anomalyApiEnabled && s.anomalyApiDegraded ->
+                        "API сейчас недоступен — проверка идёт пороговыми правилами на устройстве, как раньше"
+                    else -> "Проверку выполняет API Petrovich AI; выключено — детектор на устройстве (пороговые правила, ML-модель)"
+                },
+                checked = s.anomalyApiEnabled,
+                // id аномалий у API свои: ленту не сбрасываем — старые записи просто не пополняются.
+                onChecked = { v -> save(reload = false) { it.copy(anomalyApiEnabled = v) } },
+            )
             if (s.backgroundOnServer) {
                 SwitchRow(
                     title = "Разрешить стенду входить самостоятельно",

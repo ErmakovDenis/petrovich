@@ -119,7 +119,7 @@ class TripTablesGoldenTest {
     private fun check(file: File, text: String, stale: MutableList<String>) {
         if (update) {
             file.writeText(text)
-        } else if (!file.exists() || file.readText() != text) {
+        } else if (!file.exists() || TripTablesGolden.readNormalized(file) != text) {
             stale += file.name
         }
     }

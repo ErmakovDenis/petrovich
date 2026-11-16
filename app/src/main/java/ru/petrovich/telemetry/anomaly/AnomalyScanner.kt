@@ -63,21 +63,33 @@ class AnomalyScanner(
         val limit = Semaphore(2)
         val errors = mutableListOf<String>()
 
+        // Источник с готовой лентой (API детекции) отдаёт события парка одним запросом — машины по очереди
+        // не проверяем. null — источник по машинам, старый путь; при своём сбое API тоже отдаёт null
+        // и уходит в старый путь сам (SwitchingVehicleChecker). Ошибка, долетевшая сюда, — источник
+        // отказался совсем: проверки не было, но телеметрию для статуса парка тянем всё равно.
+        var fleetFailed = false
+        val fleet = runCatchingCancellable { checker.checkAll(from, to) }
+            .onFailure { fleetFailed = true; synchronized(errors) { errors += it.message ?: it.toString() } }
+            .getOrNull()
+
         // Аномалии ищет [checker] (устройство или стенд). Телеметрию берём отдельно: она даёт честный статус
         // парка (едет / стоит / давно не на связи) для «Главной».
         val perVehicle = vehicles.map { v ->
             async {
                 limit.withPermit {
-                    val anomalies = runCatchingCancellable { checker.check(v, from, to) }
-                        .onFailure { synchronized(errors) { errors += "${v.name}: ${it.message}" } }
-                        .getOrDefault(emptyList())
+                    val anomalies = when {
+                        fleet != null || fleetFailed -> emptyList()
+                        else -> runCatchingCancellable { checker.check(v, from, to) }
+                            .onFailure { synchronized(errors) { errors += "${v.name}: ${it.message}" } }
+                            .getOrDefault(emptyList())
+                    }
                     val telemetry = runCatchingCancellable { repository.telemetry(v, from, to) }.getOrNull()
                     anomalies to telemetry
                 }
             }
         }.awaitAll()
 
-        val found = perVehicle.flatMap { it.first }
+        val found = fleet ?: perVehicle.flatMap { it.first }
 
         val fresh = if (onStand) {
             // Не вышло — кэш как был, новые придут со следующим обновлением (их время обнаружения позже отметки).
@@ -88,7 +100,8 @@ class AnomalyScanner(
         remember(fresh)
         // Если ни одна машина не ответила — проверкой это считать нельзя, иначе сводка скажет «всё в порядке».
         // При фоновой проверке на стенде время проверки — со стенда (его ставит обновление ленты).
-        if ((vehicles.isEmpty() || errors.size < vehicles.size) && !settings.current().backgroundOnServer) {
+        // Лента API не пришла — проверки не было, даже если телеметрия машин загрузилась.
+        if ((vehicles.isEmpty() || errors.size < vehicles.size) && !settings.current().backgroundOnServer && !fleetFailed) {
             settings.update { it.copy(lastScanAt = System.currentTimeMillis()) }
         }
         val telemetries = perVehicle.map { it.second }

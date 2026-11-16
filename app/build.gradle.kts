@@ -25,6 +25,7 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "API_BASE_URL", "\"https://web.tk-ekat.ru/ServiceJSON/\"")
+        buildConfigField("String", "PETROVICH_AI_URL", "\"https://petrovich-dev.duckdns.org/\"")
         // Адрес стенда по умолчанию: приложение всегда ходит за данными сюда, пока пользователь не сменит адрес в настройках.
         buildConfigField("String", "STAND_URL", "\"https://petrovichai.ru\"")
     }
