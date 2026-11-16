@@ -172,6 +172,15 @@ class Settings(BaseSettings):
     # Ключ X-API-Key сервиса (PA_API_KEY в его .env); пусто — заголовок не передаётся.
     predictive_api_key: SecretStr | None = None
     predictive_timeout_seconds: float = Field(30, gt=0)
+
+    # Внешний сервис детекции «Petrovich AI» (лента событий, как в приложении): когда задан адрес и оба креденшела,
+    # проверка с сохранением берёт аномалии из его ленты; при недоступности — обычный путь (правила + аналитика
+    # выше), повторного обращения в паузу нет. Пусто — выключено.
+    petrovich_ai_url: str = ""
+    petrovich_ai_user: str = ""
+    petrovich_ai_password: SecretStr | None = None
+    petrovich_ai_timeout_seconds: float = Field(10, gt=0)
+    petrovich_ai_retry_pause_seconds: float = Field(300, ge=0)
     # Кэш результатов аналитики (только status=ok) — по виду, схеме, машине, периоду и версии модели, с теми же
     # сроками, что телеметрия. Версии моделей стенд узнаёт из GET /ready аналитики и помнит столько секунд.
     analytics_cache_max_entries: int = Field(500, ge=1)

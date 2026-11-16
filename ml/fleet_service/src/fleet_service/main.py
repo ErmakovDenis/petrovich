@@ -42,6 +42,7 @@ from .metrics import Metrics
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
 from .mail.service import EmailService
+from .petrovich_ai import PetrovichAiClient
 from .rules.check import AnomalyCheckService
 from .store.db import create_db_engine
 from .store.migrate import upgrade
@@ -132,7 +133,8 @@ def create_app(
         checks = AnomalyCheckService(settings, telemetry, analytics)
         store = build_store(settings)
         access = AccessRepository(store, box)
-        scans = ScanService(settings, telemetry, checks, store)
+        ai = PetrovichAiClient(settings, client)
+        scans = ScanService(settings, telemetry, checks, store, ai)
         background = BackgroundScanner(settings, telemetry, autograph, scans, store, access)
         emails = EmailService(settings, recipients, SmtpSender(settings), store) if recipients is not None else None
         app.state.emails = emails
