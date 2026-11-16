@@ -95,7 +95,7 @@ class ChatViewModel(
     private val _state = MutableStateFlow(ChatUiState(listOf(greeting)))
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
-    /** false — локальный движок без внешней модели; следует за переключателем «Ассистент через стенд». */
+    /** false — стенд без модели или без адреса; в приложении чат всегда идёт через стенд. */
     val connected: StateFlow<Boolean> = (agent as? SwitchingChatAgent)?.connectedState ?: MutableStateFlow(agent.connected)
 
     fun send(text: String, contextAnomalyId: String?) {

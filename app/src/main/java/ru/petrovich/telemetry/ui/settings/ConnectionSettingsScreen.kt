@@ -20,6 +20,9 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,13 +49,10 @@ import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.data.Schema
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.ThemeMode
-import ru.petrovich.telemetry.ui.theme.Petrovich
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.title
+import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Instant
 import java.time.ZoneId
@@ -74,8 +74,6 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
     var serverStatus by remember { mutableStateOf<String?>(null) }
     /** Адрес, который можно сохранить, не отозвав доступ на прежнем стенде (тот не ответил). */
     var urlWithoutRevoke by remember { mutableStateOf<String?>(null) }
-    var storeStatus by remember { mutableStateOf<String?>(null) }
-    var storeBusy by remember { mutableStateOf(false) }
     val importReport by ServiceLocator.anomalySync.lastImport.collectAsStateWithLifecycle()
     val backgroundState by ServiceLocator.backgroundAccess.state.collectAsStateWithLifecycle()
 
@@ -86,7 +84,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
         }
     }
 
-    /** Сохраняет настройку; [reload] — если она меняет источник данных (демо/API, схема). */
+    /** Сохраняет настройку; [reload] — если она меняет схему или учётную запись. */
     fun save(reload: Boolean = true, transform: (AppSettings) -> AppSettings) = scope.launch {
         repo.update(transform)
         if (reload) {
@@ -124,15 +122,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
             }
             HorizontalDivider()
 
-            SwitchRow(
-                title = "Демо-режим",
-                subtitle = "Условные машины и аномалии без обращения к API — чтобы посмотреть, как всё выглядит",
-                checked = s.demoMode,
-                onChecked = { v -> save { it.copy(demoMode = v) } },
-            )
-            HorizontalDivider()
-
-            Text("AutoGRAPH API", style = MaterialTheme.typography.titleMedium)
+            Text("AutoGRAPH", style = MaterialTheme.typography.titleMedium)
             Text(BuildConfig.API_BASE_URL, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = user, onValueChange = { user = it },
@@ -192,17 +182,17 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
 
             Text("Стенд", style = MaterialTheme.typography.titleMedium)
             Text(
-                if (s.backgroundOnServer && s.standPasswordConsent) {
-                    "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH; пароль передан стенду с вашего " +
-                        "согласия для фоновой проверки (раздел «Аномалии»)."
-                } else {
-                    "Сервер «Петровича» с ассистентом. Доступ — по сессии AutoGRAPH, логин и пароль на стенд не передаются."
-                },
+                "Данные, проверка машин, чат и письма всегда идут через стенд. " +
+                    if (s.standPasswordConsent) {
+                        "Пароль AutoGRAPH передан стенду с вашего согласия для фоновой проверки."
+                    } else {
+                        "Доступ — по сессии AutoGRAPH; пароль на стенд не передаётся, пока вы не разрешите ниже."
+                    },
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedTextField(
                 value = serverUrl, onValueChange = { serverUrl = it; serverStatus = null },
-                label = { Text("Адрес стенда") }, placeholder = { Text("https://stand.example.ru") },
+                label = { Text("Адрес стенда") }, placeholder = { Text(BuildConfig.STAND_URL) },
                 singleLine = true, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             )
@@ -228,116 +218,18 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
                                 return@launch
                             }
                             urlWithoutRevoke = null
-                            // Доступ на новом стенде выдаётся заново (TelemetryApp следит за адресом).
-                            repo.update { it.copy(serverUrl = normalizedUrl, standAccessGranted = false) }
-                            // С «Данными через стенд» адрес решает, откуда грузятся данные: экраны перечитываем.
-                            if (s.telemetryViaServer && !s.demoMode) onChanged()
-                            serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда очищен" else "Адрес стенда сохранён"
+                            // Пустой адрес → снова адрес из сборки; доступ на новом стенде выдаётся заново.
+                            val saved = normalizedUrl.ifBlank { BuildConfig.STAND_URL }
+                            repo.update { it.copy(serverUrl = saved, standAccessGranted = false) }
+                            serverUrl = saved
+                            onChanged()
+                            serverStatus = if (normalizedUrl.isEmpty()) "Адрес стенда сброшен на ${BuildConfig.STAND_URL}" else "Адрес стенда сохранён"
                         }
                     }
                 },
             ) { Text("Сохранить адрес") }
             serverStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            SwitchRow(
-                title = "Ассистент через стенд",
-                subtitle = when {
-                    s.demoMode -> "Не действует в демо-режиме — отвечает заглушка"
-                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
-                    else -> "Чат «Петрович» отвечает моделью на стенде; выключено — заглушка"
-                },
-                checked = s.assistantViaServer,
-                onChecked = { v -> save(reload = false) { it.copy(assistantViaServer = v) } },
-            )
-            SwitchRow(
-                title = "Письма из чата",
-                subtitle = when {
-                    !s.assistantOnServer -> "Сначала включите «Ассистент через стенд»"
-                    else -> "Петрович может подготовить письмо получателям из списка стенда; письмо уходит, только когда вы " +
-                        "нажмёте «Отправить» в чате"
-                },
-                checked = s.emailViaServer,
-                enabled = s.assistantOnServer,
-                onChecked = { v -> save(reload = false) { it.copy(emailViaServer = v) } },
-            )
-            SwitchRow(
-                title = "Данные через стенд",
-                subtitle = when {
-                    s.demoMode -> "Не действует в демо-режиме — данные демо"
-                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
-                    else -> "Таблицы, графики и проверка аномалий берут данные со стенда; выключено — из AutoGRAPH напрямую"
-                },
-                checked = s.telemetryViaServer,
-                // Машины те же (id AutoGRAPH), поэтому найденные аномалии не сбрасываем — только перезагружаем данные.
-                onChecked = { v ->
-                    scope.launch {
-                        repo.update { it.copy(telemetryViaServer = v) }
-                        onChanged()
-                    }
-                },
-            )
-            HorizontalDivider()
 
-            Text("Аномалии", style = MaterialTheme.typography.titleMedium)
-            Text(
-                if (s.anomaliesOnServer) {
-                    "Проверку выполняет стенд: правила и сервис аналитики. Если модели аналитики не загружены, проверка идёт только по правилам."
-                } else {
-                    "Детектор: ${ServiceLocator.anomalyDetector.name}. " +
-                        if (ServiceLocator.mlDetector.isReady) "ML-модель загружена." else "ML-модель не найдена (assets/models/anomaly.tflite)."
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-            SwitchRow(
-                title = "Аномалии со стенда",
-                subtitle = when {
-                    s.demoMode -> "Не действует в демо-режиме — проверяет устройство"
-                    s.serverUrl.isBlank() -> "Сначала укажите адрес стенда"
-                    else -> "Проверка машин — на стенде; лента, уведомления и решения остаются в приложении. Выключено — проверяет устройство"
-                },
-                checked = s.anomaliesViaServer,
-                // id аномалий у стенда и устройства одинаковые (тот же алгоритм), поэтому ленту не сбрасываем.
-                onChecked = { v -> save(reload = false) { it.copy(anomaliesViaServer = v) } },
-            )
-            SwitchRow(
-                title = "Хранить аномалии на стенде",
-                subtitle = when {
-                    !s.anomaliesOnServer -> "Сначала включите «Аномалии со стенда»"
-                    else -> "Лента и решения — на стенде, общие для всех пользователей схемы; в приложении — копия для " +
-                        "показа без сети. При включении история с устройства переносится на стенд. Выключено — всё на устройстве"
-                },
-                checked = s.anomalyStoreViaServer,
-                enabled = s.anomaliesOnServer && !storeBusy,
-                onChecked = { v ->
-                    storeStatus = null
-                    scope.launch {
-                        repo.update { it.copy(anomalyStoreViaServer = v) }
-                        // Выключено: записи стенда уходят из копии ленты — у проверки на устройстве другие id.
-                        if (!v) runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
-                        if (v) {
-                            storeBusy = true
-                            storeStatus = "Переносим историю на стенд и загружаем ленту…"
-                            storeStatus = runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
-                                .fold({ "Лента загружена со стенда" }, { "Не получилось: ${it.message}. Повторим при следующем обновлении ленты" })
-                            storeBusy = false
-                        }
-                    }
-                },
-            )
-            storeStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            importReport?.let { ImportReportText(it) }
-            SwitchRow(
-                title = "Фоновая проверка на стенде",
-                subtitle = when {
-                    !s.anomalyStoreOnServer -> "Сначала включите «Хранить аномалии на стенде»"
-                    !s.backgroundChecks -> "Фоновые проверки на телефоне выключены"
-                    else -> "Стенд сам проверяет машины по расписанию, даже когда телефон выключен; приложение в фоне " +
-                        "только забирает новые аномалии. Стенд работает по вашей сессии AutoGRAPH, пока она действует. " +
-                        "Выключено — проверяет телефон, доступ стенда отзывается"
-                },
-                checked = s.backgroundViaServer,
-                enabled = s.anomalyStoreOnServer && s.backgroundChecks,
-                onChecked = { v -> save(reload = false) { it.copy(backgroundViaServer = v) } },
-            )
             if (s.backgroundOnServer) {
                 SwitchRow(
                     title = "Разрешить стенду входить самостоятельно",
@@ -347,21 +239,19 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
                     onChecked = { v -> save(reload = false) { it.copy(standPasswordConsent = v) } },
                 )
                 BackgroundStatusText(backgroundState)
-                // Подключение и подписка — на отдельном экране (и из «Настроек»).
                 OutlinedButton(onClick = onOpenTelegram) { Text("Telegram-бот: подключить и настроить") }
             }
+            importReport?.let { ImportReportText(it) }
             if (BuildConfig.DEBUG) {
                 SwitchRow(
                     title = "Сравнивать с устройством (отладка)",
-                    subtitle = "Проверка идёт и на устройстве, и на стенде; расхождения — в logcat (AnomalyCompare). " +
-                        "В ленту попадает результат по переключателю выше",
+                    subtitle = "Проверка идёт и на устройстве, и на стенде; расхождения — в logcat (AnomalyCompare)",
                     checked = s.anomalyCompare,
                     onChecked = { v -> save(reload = false) { it.copy(anomalyCompare = v) } },
                 )
             }
             OutlinedButton(onClick = { scope.launch { ServiceLocator.anomalyStore.clear() } }) {
-                // С хранилищем на стенде очищается только копия на устройстве: лента вернётся при обновлении.
-                Text(if (s.anomalyStoreOnServer) "Очистить копию ленты на устройстве" else "Очистить историю аномалий")
+                Text("Очистить копию ленты на устройстве")
             }
         }
     }

@@ -1,5 +1,7 @@
 package ru.petrovich.telemetry.ui.problems
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,14 +35,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Resolution
-import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
@@ -59,6 +61,7 @@ fun ProblemsScreen(
     onTab: (ProblemsTab) -> Unit,
     onOpenCard: (String) -> Unit,
     onAsk: (String) -> Unit,
+    onTriage: () -> Unit = {},
 ) {
     val store = ServiceLocator.anomalyStore
     val all by store.anomalies.collectAsStateWithLifecycle()
@@ -93,7 +96,7 @@ fun ProblemsScreen(
             val msg = runCatchingCancellable { ServiceLocator.anomalyScanner.scan(lookbackHours = 24) }.fold(
                 onSuccess = { r ->
                     buildString {
-                        append("Проверено машин: ${r.checkedVehicles}, новых аномалий: ${r.newAnomalies.size}")
+                        append("Проверено машин: ${r.checkedVehicles}, новых проблем: ${r.newAnomalies.size}")
                         if (r.errors.isNotEmpty()) append(". Ошибок: ${r.errors.size}")
                     }
                 },
@@ -116,21 +119,14 @@ fun ProblemsScreen(
                     else Icon(Icons.Filled.Search, "Проверить сейчас")
                 }
             }
-            LazyRow(
-                Modifier.padding(top = 8.dp, bottom = 4.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                items(ProblemsTab.entries) { t ->
-                    // Как в макете 3.5: «Новые 2», «Закрыты 0» — счётчик через пробел, без разделителя.
-                    val count = when (t) {
-                        ProblemsTab.NEW -> newCount
-                        ProblemsTab.IN_PROGRESS -> progressCount
-                        ProblemsTab.CLOSED -> closedCount
-                    }
-                    PChip("${t.title} $count", selected = tab == t, onClick = { onTab(t) })
-                }
-            }
+            ProblemsTabBar(
+                tab = tab,
+                newCount = newCount,
+                progressCount = progressCount,
+                closedCount = closedCount,
+                onTab = onTab,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
             // На вкладке «Новые» дополнительно видно, что уже передано в работу — чтобы не потерялось из виду.
             val teaser = if (tab == ProblemsTab.NEW) inProgress else emptyList()
             if (shown.isEmpty() && teaser.isEmpty()) {
@@ -140,6 +136,15 @@ fun ProblemsScreen(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    if (tab == ProblemsTab.NEW && newCount > 0) {
+                        item(key = "triage") {
+                            PrimaryButton(
+                                "Разобрать по порядку · $newCount ${pluralNew(newCount)}",
+                                onClick = onTriage,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
                     items(shown, key = { it.id }) { a ->
                         if (tab == ProblemsTab.NEW) NewProblemCard(a, onOpen = { onOpenCard(a.id) }, onAsk = { onAsk(a.id) })
                         else ProblemRow(a, onClick = { onOpenCard(a.id) })
@@ -149,6 +154,67 @@ fun ProblemsScreen(
                         items(teaser, key = { "teaser-${it.id}" }) { a -> ProblemRow(a, onClick = { onOpenCard(a.id) }) }
                     }
                 }
+            }
+        }
+    }
+}
+
+private fun pluralNew(n: Int): String {
+    val m = n % 10
+    val h = n % 100
+    return when {
+        m == 1 && h != 11 -> "новая"
+        m in 2..4 && h !in 12..14 -> "новых"
+        else -> "новых"
+    }
+}
+
+/**
+ * Переключатель как в карте экранов: серая «дорожка», выбранный сегмент — белая плашка,
+ * подпись «Новые · 5».
+ */
+@Composable
+private fun ProblemsTabBar(
+    tab: ProblemsTab,
+    newCount: Int,
+    progressCount: Int,
+    closedCount: Int,
+    onTab: (ProblemsTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = Petrovich.colors
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(c.surface2)
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        ProblemsTab.entries.forEach { t ->
+            val count = when (t) {
+                ProblemsTab.NEW -> newCount
+                ProblemsTab.IN_PROGRESS -> progressCount
+                ProblemsTab.CLOSED -> closedCount
+            }
+            val selected = tab == t
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(if (selected) c.surface else c.surface2)
+                    .clickable { onTab(t) }
+                    .padding(vertical = 10.dp, horizontal = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "${t.title} · $count",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) c.ink else c.muted,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
             }
         }
     }

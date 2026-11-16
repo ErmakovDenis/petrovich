@@ -65,6 +65,7 @@ import ru.petrovich.telemetry.ui.park.VehicleCardScreen
 import ru.petrovich.telemetry.ui.park.VehicleMapScreen
 import ru.petrovich.telemetry.ui.problems.ProblemsScreen
 import ru.petrovich.telemetry.ui.problems.ProblemsTab
+import ru.petrovich.telemetry.ui.problems.TriageScreen
 import ru.petrovich.telemetry.ui.report.ReportScreen
 import ru.petrovich.telemetry.ui.resolution.ResolutionScreen
 import ru.petrovich.telemetry.ui.settings.ConnectionSettingsScreen
@@ -76,6 +77,7 @@ import ru.petrovich.telemetry.ui.theme.Petrovich
 private const val HOME = "home"
 private const val CHAT = "chat?anomaly={anomaly}"
 private const val PROBLEMS = "problems"
+private const val TRIAGE = "triage"
 private const val SETTINGS = "settings"
 private const val CARD = "card/{id}"
 private const val ACTION = "action/{id}"
@@ -240,7 +242,16 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
             }
             composable(NOTIFICATIONS) { NotificationsScreen(onBack = { nav.popBackStack() }, onOpenCard = ::openCard) }
             composable(PROBLEMS) {
-                ProblemsScreen(problemsTab, onTab = { problemsTab = it }, onOpenCard = ::openCard, onAsk = { openChat(it) })
+                ProblemsScreen(
+                    problemsTab,
+                    onTab = { problemsTab = it },
+                    onOpenCard = ::openCard,
+                    onAsk = { openChat(it) },
+                    onTriage = { push(TRIAGE) },
+                )
+            }
+            composable(TRIAGE) {
+                TriageScreen(onDone = { nav.popBackStack() })
             }
             composable(
                 CHAT,

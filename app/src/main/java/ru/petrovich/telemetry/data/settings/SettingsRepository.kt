@@ -73,20 +73,22 @@ data class AppSettings(
     val fleetIdle: Int = 0,
     val fleetOffline: Int = 0,
     val fleetUpdatedAt: Long = 0,
-    /** Адрес стенда fleet_service, например `https://stand.example.ru`; пусто — стенд не используется. */
+    /**
+     * Адрес стенда fleet_service. В приложении по умолчанию [BuildConfig.STAND_URL]; пусто только в тестах —
+     * тогда пути через стенд выключены.
+     */
     val serverUrl: String = "",
-    /** Чат «Петрович» отвечает через стенд (модель на стенде), а не заглушкой. */
-    val assistantViaServer: Boolean = false,
-    /** Телеметрия (таблицы, графики, сводка, проверка аномалий) загружается со стенда, а не из AutoGRAPH напрямую. */
-    val telemetryViaServer: Boolean = false,
-    /** Аномалии при проверке считает стенд (правила и аналитика), а не детектор на устройстве. */
-    val anomaliesViaServer: Boolean = false,
+    /**
+     * Устаревшие переключатели «через стенд»: в UI больше нет, в DataStore могут остаться.
+     * Маршрутизация смотрит только на [serverUrl] и [backgroundChecks] — см. геттеры ниже.
+     */
+    val assistantViaServer: Boolean = true,
+    val telemetryViaServer: Boolean = true,
+    val anomaliesViaServer: Boolean = true,
     /** Отладка: считать аномалии и на устройстве, и на стенде, расхождения — в лог (только debug-сборка). */
     val anomalyCompare: Boolean = false,
-    /** Аномалии и решения хранятся на стенде: лента — со стенда, решения — на стенд, проверка — с сохранением. */
-    val anomalyStoreViaServer: Boolean = false,
-    /** Фоновая проверка на стенде: стенд проверяет сам, приложение в фоне только забирает новые аномалии. */
-    val backgroundViaServer: Boolean = false,
+    val anomalyStoreViaServer: Boolean = true,
+    val backgroundViaServer: Boolean = true,
     /** Согласие хранить пароль на стенде (зашифрованным): стенд сам входит в AutoGRAPH, когда сессия истекла. */
     val standPasswordConsent: Boolean = false,
     /** Случайный id установки приложения: им стенд различает доступ устройств и отзывает его. */
@@ -97,24 +99,21 @@ data class AppSettings(
     val standScanIntervalMinutes: Int = 15,
     /** SHA-256 пароля, который стенд не принял: тот же пароль повторно не отправляется (не блокировать учётную запись). */
     val standPasswordRejected: String = "",
-    /** Письма из чата: ассистент на стенде готовит черновик, письмо уходит после «Отправить» в чате. */
-    val emailViaServer: Boolean = false,
+    val emailViaServer: Boolean = true,
 ) {
-    /** Новые пути через стенд действуют только с реальными данными и заданным адресом стенда. */
-    val assistantOnServer: Boolean get() = !demoMode && assistantViaServer && serverUrl.isNotBlank()
+    /** Стенд задан — чат, письма, телеметрия и аномалии всегда через него (без демо и локальных заглушек). */
+    val assistantOnServer: Boolean get() = serverUrl.isNotBlank()
 
-    /** Письма — продолжение ассистента на стенде: без него не действуют. */
-    val emailsOnServer: Boolean get() = assistantOnServer && emailViaServer
+    val emailsOnServer: Boolean get() = assistantOnServer
 
-    val telemetryOnServer: Boolean get() = !demoMode && telemetryViaServer && serverUrl.isNotBlank()
+    val telemetryOnServer: Boolean get() = serverUrl.isNotBlank()
 
-    val anomaliesOnServer: Boolean get() = !demoMode && anomaliesViaServer && serverUrl.isNotBlank()
+    val anomaliesOnServer: Boolean get() = serverUrl.isNotBlank()
 
-    /** Хранилище на стенде — продолжение «Аномалий со стенда»: без него не действует. */
-    val anomalyStoreOnServer: Boolean get() = anomaliesOnServer && anomalyStoreViaServer
+    val anomalyStoreOnServer: Boolean get() = serverUrl.isNotBlank()
 
-    /** Фоновая проверка на стенде — продолжение хранилища на стенде; выключенная «Фоновая проверка» выключает и её. */
-    val backgroundOnServer: Boolean get() = anomalyStoreOnServer && backgroundViaServer && backgroundChecks
+    /** Фоновая проверка на стенде; выключенная «Фоновая проверка» на телефоне выключает и её. */
+    val backgroundOnServer: Boolean get() = serverUrl.isNotBlank() && backgroundChecks
 
     /**
      * Местное [now] попадает в тихие часы. Как у Telegram-бота: некритичное в это время не присылается,
@@ -179,7 +178,8 @@ class SettingsRepository(private val context: Context) {
     }
 
     private fun Preferences.toSettings() = AppSettings(
-        demoMode = this[Keys.demo] ?: false,
+        // Демо и локальные обходы больше не предлагаем: данные и ассистент — со стенда.
+        demoMode = false,
         userName = this[Keys.user].orEmpty(),
         password = this[Keys.password].orEmpty(),
         schemaId = this[Keys.schemaId].orEmpty(),
@@ -209,20 +209,19 @@ class SettingsRepository(private val context: Context) {
         fleetIdle = this[Keys.fleetIdle] ?: 0,
         fleetOffline = this[Keys.fleetOffline] ?: 0,
         fleetUpdatedAt = this[Keys.fleetUpdatedAt] ?: 0,
-        serverUrl = this[Keys.serverUrl].takeUnless { it.isNullOrBlank() }
-            ?: if (BuildConfig.DEBUG) "http://10.0.2.2:8080" else "",
-        assistantViaServer = this[Keys.assistantViaServer] ?: false,
-        telemetryViaServer = if (BuildConfig.DEBUG) true else this[Keys.telemetryViaServer] ?: false,
-        anomaliesViaServer = if (BuildConfig.DEBUG) true else this[Keys.anomaliesViaServer] ?: false,
+        serverUrl = this[Keys.serverUrl].takeUnless { it.isNullOrBlank() } ?: BuildConfig.STAND_URL,
+        assistantViaServer = true,
+        telemetryViaServer = true,
+        anomaliesViaServer = true,
         anomalyCompare = this[Keys.anomalyCompare] ?: false,
-        anomalyStoreViaServer = if (BuildConfig.DEBUG) true else this[Keys.anomalyStoreViaServer] ?: false,
-        backgroundViaServer = if (BuildConfig.DEBUG) true else this[Keys.backgroundViaServer] ?: false,
+        anomalyStoreViaServer = true,
+        backgroundViaServer = true,
         standPasswordConsent = this[Keys.standPasswordConsent] ?: false,
         deviceId = this[Keys.deviceId].orEmpty(),
         standAccessGranted = this[Keys.standAccessGranted] ?: false,
         standScanIntervalMinutes = this[Keys.standScanIntervalMinutes] ?: 15,
         standPasswordRejected = this[Keys.standPasswordRejected].orEmpty(),
-        emailViaServer = this[Keys.emailViaServer] ?: false,
+        emailViaServer = true,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }

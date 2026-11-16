@@ -31,9 +31,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,15 +42,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Severity
 import ru.petrovich.telemetry.anomaly.VehicleActivity
-import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.MessageBox
@@ -88,37 +83,23 @@ private data class ParkRow(val vehicle: Vehicle, val stats: VehicleStats?) {
 @Composable
 fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
     val c = Petrovich.colors
+    val scope = rememberCoroutineScope()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val visibleAnomalies = remember(anomalies, settings?.mutedKinds) { anomalies.shown(settings?.mutedKinds.orEmpty()) }
-    var vehicles by remember { mutableStateOf<List<Vehicle>>(emptyList()) }
-    var statsById by remember { mutableStateOf<Map<String, VehicleStats?>>(emptyMap()) }
-    var loading by remember { mutableStateOf(true) }
-    var refreshing by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var refreshKey by remember { mutableIntStateOf(0) }
+    val fleet by ServiceLocator.fleetCache.state.collectAsStateWithLifecycle()
+    val vehicles = fleet.vehicles
+    val statsById = fleet.statsById
+    val loading = fleet.loading && vehicles.isEmpty()
+    val refreshing = fleet.loading && vehicles.isNotEmpty()
+    val error = fleet.error
     var query by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(ParkStatusFilter.ALL) }
     var baseFilter by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(refreshKey) {
-        if (vehicles.isEmpty()) loading = true else refreshing = true
-        error = null
-        runCatchingCancellable {
-            val repo = ServiceLocator.telemetry
-            val list = repo.vehicles()
-            val stats = loadParkStats(list, repo)
-            list to stats
-        }.onSuccess { (list, stats) ->
-            vehicles = list
-            statsById = stats
-            loading = false
-            refreshing = false
-        }.onFailure { e ->
-            error = e.message ?: e.toString()
-            loading = false
-            refreshing = false
-        }
+    // Кэш общий: повторный заход на вкладку не ждёт сеть, если снимок ещё свежий.
+    LaunchedEffect(Unit) {
+        runCatchingCancellable { ServiceLocator.fleetCache.ensureFresh() }
     }
 
     val pendingSeverity = remember(visibleAnomalies) {
@@ -147,7 +128,7 @@ fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
             AppTopBar(
                 title = "Парк",
                 subtitle = if (vehicles.isNotEmpty()) "${vehicles.size} ${plural(vehicles.size, "машина", "машины", "машин")}" else null,
-                onRefresh = { refreshKey++ },
+                onRefresh = { scope.launch { runCatchingCancellable { ServiceLocator.fleetCache.refresh() } } },
             )
         },
         containerColor = c.bg,
@@ -159,7 +140,9 @@ fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
         }
         if (error != null && vehicles.isEmpty()) {
             Box(Modifier.padding(padding).fillMaxSize()) {
-                MessageBox("Не удалось загрузить парк: $error", actionLabel = "Повторить") { refreshKey++ }
+                MessageBox("Не удалось загрузить парк: $error", actionLabel = "Повторить") {
+                    scope.launch { runCatchingCancellable { ServiceLocator.fleetCache.refresh() } }
+                }
             }
             return@Scaffold
         }
@@ -226,20 +209,6 @@ private val LookAlike: Map<Char, Char> = mapOf(
     'X' to 'Х', 'A' to 'А', 'B' to 'В', 'C' to 'С', 'E' to 'Е', 'H' to 'Н',
     'K' to 'К', 'M' to 'М', 'O' to 'О', 'P' to 'Р', 'T' to 'Т', 'Y' to 'У',
 )
-
-private suspend fun loadParkStats(vehicles: List<Vehicle>, repo: TelemetryRepository): Map<String, VehicleStats?> = coroutineScope {
-    val now = LocalDateTime.now()
-    val from = now.toLocalDate().atStartOfDay()
-    val limit = Semaphore(3)
-    vehicles.map { v ->
-        async {
-            val stats = limit.withPermit {
-                runCatchingCancellable { repo.telemetry(v, from, now) }.getOrNull()?.let { computeVehicleStats(it, now) }
-            }
-            v.id to stats
-        }
-    }.awaitAll().toMap()
-}
 
 @Composable
 private fun ParkVehicleRow(row: ParkRow, onClick: () -> Unit) {

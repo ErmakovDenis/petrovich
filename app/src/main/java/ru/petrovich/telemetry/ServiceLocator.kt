@@ -38,6 +38,7 @@ import ru.petrovich.telemetry.data.SwitchingTelemetryRepository
 import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.SettingsRepository
+import ru.petrovich.telemetry.ui.park.FleetCache
 import java.io.File
 
 /** Простейший DI-контейнер. */
@@ -66,6 +67,9 @@ object ServiceLocator {
     val telemetry: TelemetryRepository by lazy {
         SwitchingTelemetryRepository({ settings.current() }, DemoTelemetryRepository(), autoGraph, ServerTelemetryRepository(stand))
     }
+
+    /** Снимок парка для Главной и Парка: не сбрасывается при смене вкладки. */
+    val fleetCache by lazy { FleetCache(telemetry, settings) }
 
     val mlDetector by lazy { MlAnomalyDetector(appContext) }
 
@@ -113,11 +117,14 @@ object ServiceLocator {
         AnomalyScanner(telemetry, vehicleChecker, anomalyStore, notifier, settings, notificationStore, anomalySync, backgroundAccess)
     }
 
-    /** Источник данных сменился (демо ↔ API, другая схема): старые аномалии относятся к другим машинам. */
+    /** Источник данных сменился (схема / учётная запись): старые аномалии и снимок парка — от других машин. */
     suspend fun onDataSourceChanged() {
         anomalyStore.clear()
         anomalySync.resetNotifyMark()
-        settings.update { it.copy(lastScanAt = 0) }
+        fleetCache.clear()
+        settings.update {
+            it.copy(lastScanAt = 0, fleetUpdatedAt = 0, fleetOnline = 0, fleetIdle = 0, fleetOffline = 0)
+        }
     }
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

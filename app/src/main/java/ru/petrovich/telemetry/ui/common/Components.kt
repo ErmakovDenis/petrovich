@@ -171,7 +171,7 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
     }
 }
 
-/** Вторичная кнопка на светлой карточке. */
+/** Вторичная кнопка на светлой карточке. [border] — цвет обводки (по умолчанию линия темы). */
 @Composable
 fun SoftButton(
     text: String,
@@ -180,6 +180,7 @@ fun SoftButton(
     enabled: Boolean = true,
     container: Color = Petrovich.colors.surface,
     content: Color = Petrovich.colors.ink,
+    border: Color = Petrovich.colors.line,
     leading: ImageVector? = null,
 ) {
     Button(
@@ -188,7 +189,7 @@ fun SoftButton(
         modifier = modifier.height(52.dp),
         shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.buttonColors(containerColor = container, contentColor = content),
-        border = BorderStroke(1.dp, Petrovich.colors.line),
+        border = BorderStroke(1.dp, border),
     ) {
         if (leading != null) { Icon(leading, null, Modifier.size(18.dp)); Spacer(Modifier.size(8.dp)) }
         Text(text, style = MaterialTheme.typography.labelLarge)

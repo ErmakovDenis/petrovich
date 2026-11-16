@@ -1,6 +1,7 @@
 package ru.petrovich.telemetry.ui.detail
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,26 +20,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
-import androidx.compose.material.icons.outlined.BatteryAlert
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Compress
-import androidx.compose.material.icons.outlined.ElectricBolt
-import androidx.compose.material.icons.outlined.LocalGasStation
 import androidx.compose.material.icons.outlined.Memory
-import androidx.compose.material.icons.outlined.OilBarrel
-import androidx.compose.material.icons.outlined.ReportProblem
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Sensors
-import androidx.compose.material.icons.outlined.Thermostat
-import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -52,8 +50,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -61,6 +59,7 @@ import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Resolution
+import ru.petrovich.telemetry.anomaly.Severity
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.VehicleTelemetry
 import ru.petrovich.telemetry.ui.charts.ChartMarker
@@ -75,6 +74,7 @@ import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.common.advice
 import ru.petrovich.telemetry.ui.common.color
 import ru.petrovich.telemetry.ui.common.formatValue
+import ru.petrovich.telemetry.ui.common.headline
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.isNew
 import ru.petrovich.telemetry.ui.common.label
@@ -84,6 +84,7 @@ import ru.petrovich.telemetry.ui.common.softColor
 import ru.petrovich.telemetry.ui.common.time
 import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.theme.Petrovich
+import ru.petrovich.telemetry.util.MailIntent
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
 import java.time.LocalDate
@@ -109,6 +110,9 @@ fun AnomalyDetailScreen(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var reasons by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val c = Petrovich.colors
 
     // Состояние графика поднято наверх экрана: его честные цифры нужны и крупному заголовку (3.6 «Главное
@@ -132,10 +136,78 @@ fun AnomalyDetailScreen(
         if (a.timeline.none { it.text == "Вы открыли событие" }) store.appendStep(a.id, "Вы открыли событие")
     }
 
+    fun reopenWithUndo(a: Anomaly) {
+        scope.launch {
+            val previous = a.resolution
+            val reason = a.falseAlarmReason
+            val assigned = a.assignedTo
+            runCatchingCancellable { sync.reopen(a.id) }
+                .onSuccess {
+                    val result = snackbar.showSnackbar("Вернули в новые", actionLabel = "Отменить")
+                    if (result == SnackbarResult.ActionPerformed && previous != null) {
+                        runCatchingCancellable {
+                            when (previous) {
+                                Resolution.IN_PROGRESS -> store.markInProgress(a.id, assigned ?: "в работе")
+                                Resolution.CONFIRMED, Resolution.FALSE_ALARM ->
+                                    sync.resolve(a.id, previous, reason)
+                            }
+                        }
+                    }
+                }
+                .onFailure { snackbar.showSnackbar("Решение не изменено: ${it.message}") }
+        }
+    }
+
+    fun reportToSecurity(a: Anomaly) {
+        scope.launch {
+            val contacts = settings?.contacts.orEmpty()
+            val sb = contacts.firstOrNull { c ->
+                val r = c.role.lowercase()
+                "сб" in r || "безопас" in r || "охрана" in r
+            }
+            if (sb == null) {
+                snackbar.showSnackbar("Добавьте сотрудника СБ в настройках")
+                return@launch
+            }
+            val body = "${a.headline()}\n${a.vehicleName}\n${a.description}"
+            when {
+                sb.phone.isNotBlank() && MailIntent.dial(context, sb.phone) ->
+                    store.appendStep(a.id, "Сообщили в СБ: ${sb.name}")
+                sb.email.isNotBlank() -> {
+                    MailIntent.send(context, sb.email, "Срочно: ${a.headline()}", body)
+                    store.appendStep(a.id, "Сообщили в СБ: ${sb.name}")
+                }
+                else -> snackbar.showSnackbar("У сотрудника СБ нет телефона или почты")
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
-            // Метка статуса — в шапке рядом с «назад», как в макете 3.6, а не в теле карточки.
-            AppTopBar(title = "", onBack = onBack, actions = { if (anomaly != null) StatusPill(anomaly, Modifier.padding(end = 12.dp)) })
+            AppTopBar(
+                title = "",
+                onBack = onBack,
+                actions = {
+                    // Статус («Срочно» и др.) — только в шапке контента, не дублируем в TopBar.
+                    if (anomaly != null && !anomaly.isNew) {
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(Icons.Outlined.MoreVert, "Ещё", tint = Petrovich.colors.ink)
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Вернуть") },
+                                    onClick = { menuOpen = false; reopenWithUndo(anomaly) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Ход разбора") },
+                                    onClick = { menuOpen = false; onOpenResolution(anomaly.id) },
+                                )
+                            }
+                        }
+                    }
+                },
+            )
         },
         snackbarHost = { SnackbarHost(snackbar) },
         containerColor = c.bg,
@@ -145,12 +217,7 @@ fun AnomalyDetailScreen(
                 anomaly = anomaly,
                 onAct = { onAct(anomaly.id) },
                 onFalseAlarm = { reasons = true },
-                onReopen = {
-                    scope.launch {
-                        runCatchingCancellable { sync.reopen(anomaly.id) }
-                            .onFailure { snackbar.showSnackbar("Решение не изменено: ${it.message}") }
-                    }
-                },
+                onReportSecurity = { reportToSecurity(anomaly) },
                 onCharts = { onOpenCharts(anomaly.vehicleId) },
                 onRemindMechanic = {
                     scope.launch {
@@ -163,7 +230,7 @@ fun AnomalyDetailScreen(
         },
     ) { padding ->
         if (anomaly == null) {
-            Box(Modifier.padding(padding)) { MessageBox("Эта аномалия больше не хранится в истории") }
+            Box(Modifier.padding(padding)) { MessageBox("Эта проблема больше не хранится в истории") }
             return@Scaffold
         }
         Column(
@@ -178,14 +245,7 @@ fun AnomalyDetailScreen(
 
             anomalies.previousOccurrence(anomaly)?.let { prev -> RecallCard(prev) }
 
-            TextBlock("Что случилось", anomaly.description)
-            Column(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.accentSoft).padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("ЧТО ДЕЛАТЬ", style = MaterialTheme.typography.labelSmall, color = c.muted, fontWeight = FontWeight.SemiBold)
-                Text(anomaly.advice(), style = MaterialTheme.typography.bodyMedium)
-            }
+            WhatToCheckBlock(anomaly)
             Spacer(Modifier.height(4.dp))
         }
     }
@@ -203,18 +263,6 @@ fun AnomalyDetailScreen(
             },
         )
     }
-}
-
-/** Иконка по типу события — тот же словарь, что и в списке «Проблемы» (ProblemRow.kt). */
-private fun Anomaly.icon(): ImageVector = when (kind) {
-    "drain", "drop" -> Icons.Outlined.LocalGasStation
-    "power" -> Icons.Outlined.ElectricBolt
-    "volt" -> Icons.Outlined.BatteryAlert
-    "overheat" -> Icons.Outlined.Thermostat
-    "oil" -> Icons.Outlined.OilBarrel
-    "brake" -> Icons.Outlined.Compress
-    "nodata" -> Icons.Outlined.WifiOff
-    else -> Icons.Outlined.ReportProblem
 }
 
 /**
@@ -255,18 +303,33 @@ private fun Anomaly.unitLabel(): String? = when (kind) {
 @Composable
 private fun Headline(a: Anomaly) {
     val c = Petrovich.colors
-    val nodata = a.kind == "nodata"
-    val color = if (nodata) c.muted else a.severity.color()
-    val unit = a.unitLabel()
-    val big = when {
-        nodata -> "Нет данных"
-        a.value != null && unit != null -> "${if (a.kind == "drain") "−" else ""}${a.value.formatValue()} $unit"
-        else -> a.title
+    Column(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        horizontalAlignment = Alignment.Start,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        StatusPill(a)
+        Text(a.headline(), style = MaterialTheme.typography.headlineSmall, color = c.ink, fontWeight = FontWeight.Bold)
     }
-    Column(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Icon(a.icon(), null, Modifier.size(30.dp), tint = color)
-        Text(big, style = MaterialTheme.typography.headlineMedium, color = color, textAlign = TextAlign.Center)
-        if (big != a.title) Text(a.title, style = MaterialTheme.typography.bodyMedium, color = c.muted, textAlign = TextAlign.Center)
+}
+
+@Composable
+private fun WhatToCheckBlock(a: Anomaly) {
+    val c = Petrovich.colors
+    val points = a.advice().split(Regex("(?<=[.!?])\\s+")).map { it.trim() }.filter { it.isNotEmpty() }.take(3)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.surface)
+            .border(1.dp, c.line, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Что проверить", style = MaterialTheme.typography.titleSmall)
+        points.forEachIndexed { i, point ->
+            Text("${i + 1}. $point", style = MaterialTheme.typography.bodyMedium, color = c.ink)
+        }
     }
 }
 
@@ -283,7 +346,7 @@ private fun VehicleTimeLink(a: Anomaly, onClick: () -> Unit) {
     } else a.eventTime
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick),
-        horizontalArrangement = Arrangement.Center,
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("${a.vehicleName} · $whenText", style = MaterialTheme.typography.labelLarge, color = c.accent)
@@ -311,7 +374,10 @@ private fun Fact(icon: ImageVector, label: String, value: String) {
 @Composable
 private fun DetailsCard(a: Anomaly, state: EvidenceState) {
     val c = Petrovich.colors
-    SurfaceCard(shape = RoundedCornerShape(18.dp)) {
+    SurfaceCard(
+        modifier = Modifier.border(1.dp, c.line, RoundedCornerShape(18.dp)),
+        shape = RoundedCornerShape(18.dp),
+    ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
             val time = a.time
             Fact(Icons.Outlined.AccessTime, "Когда", time?.let { "${it.toLocalDate().title()}, ${it.hhmm()}" } ?: a.eventTime)
@@ -323,7 +389,7 @@ private fun DetailsCard(a: Anomaly, state: EvidenceState) {
             if (checks.isNotEmpty()) {
                 HorizontalDivider(color = c.line)
                 Column(Modifier.fillMaxWidth().padding(vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("ПРОВЕРЕНО ПЕТРОВИЧЕМ", style = MaterialTheme.typography.labelSmall, color = c.muted, fontWeight = FontWeight.SemiBold)
+                    Text("Проверено повторно", style = MaterialTheme.typography.labelSmall, color = c.muted, fontWeight = FontWeight.SemiBold)
                     checks.forEach { check ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.CheckCircle, null, Modifier.size(18.dp), tint = c.ok)
@@ -434,59 +500,76 @@ private fun buildChecks(t: VehicleTelemetry, at: LocalDateTime, a: Anomaly): Lis
     }
     if (a.category != MetricCategory.POWER) {
         valueNear(MetricCategory.POWER, "DIgnition", "DIgnitionCAN")?.let { ignition ->
-            checks += if (ignition < 0.5) "Зажигание было выключено" else "Зажигание было включено"
+            checks += if (ignition < 0.5) "Зажигание выключено, машина стояла" else "Зажигание было включено"
+        }
+    }
+    val table = t.tables[a.category]
+    val column = table?.columns?.firstOrNull { it.parameter.name == a.parameterName }
+    if (table != null && column != null && table.timestamps.isNotEmpty()) {
+        val idx = table.timestamps.indices.minByOrNull { Duration.between(table.timestamps[it], at).abs() }
+        if (idx != null) {
+            val from = (idx - 2).coerceAtLeast(0)
+            val to = (idx + 2).coerceAtMost(column.values.lastIndex)
+            val window = (from..to).map { column.values[it] }
+            checks += if (window.any { it == null }) "Рядом с событием есть пропуски в данных"
+            else "В момент события данные без пропусков"
         }
     }
     return checks
 }
 
 /**
- * Нижняя панель — три честных варианта по макету 3.6, ровно по две кнопки в каждом (своей третьей
- * «Графики машины» в макете нет — к машине теперь ведёт кликабельная ссылка «машина · время» сверху):
- * новая («Ложная»/«Разберись»), молчит датчик («Машина»/«Напомнить механику» — независимо от статуса),
- * в работе («Вернуть»/«Ход разбора»), закрыта (итог/«Ход разбора»/«Изменить»).
+ * Нижняя панель по карте экранов: одна главная кнопка по статусу + «Ложная тревога» /
+ * «Сообщить в СБ» для срочных сливов. «Вернуть» — в меню ⋮.
  */
 @Composable
 private fun ActionsBar(
     anomaly: Anomaly,
     onAct: () -> Unit,
     onFalseAlarm: () -> Unit,
-    onReopen: () -> Unit,
+    onReportSecurity: () -> Unit,
     onCharts: () -> Unit,
     onRemindMechanic: () -> Unit,
     onOpenResolution: () -> Unit,
 ) {
     val c = Petrovich.colors
+    val urgentDrain = anomaly.isNew && anomaly.severity == Severity.CRITICAL && anomaly.kind in setOf("drain", "drop")
     Column(
         Modifier.fillMaxWidth().background(c.bg).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         when {
-            anomaly.isNew && anomaly.kind == "nodata" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SoftButton("Машина", onCharts, Modifier.weight(1f))
-                PrimaryButton("Напомнить механику", onRemindMechanic, Modifier.weight(1f))
+            anomaly.isNew && anomaly.kind == "nodata" -> {
+                PrimaryButton("Напомнить механику", onRemindMechanic, Modifier.fillMaxWidth())
+                SoftButton("Машина", onCharts, Modifier.fillMaxWidth())
             }
-            anomaly.isNew -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Точная подпись макета 3.6 — короткая «Ложная» в нижней панели (не путать с «Ложная тревога» в статус-метке).
-                SoftButton("Ложная", onFalseAlarm, Modifier.weight(1f))
-                PrimaryButton("Разберись", onAct, Modifier.weight(1f))
+            anomaly.isNew -> {
+                PrimaryButton("Разобраться с Петровичем", onAct, Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (urgentDrain) {
+                        SoftButton(
+                            "Сообщить в СБ",
+                            onReportSecurity,
+                            Modifier.weight(1f),
+                            content = c.high,
+                            border = c.high,
+                        )
+                    }
+                    SoftButton("Ложная тревога", onFalseAlarm, Modifier.weight(1f))
+                }
             }
-            anomaly.resolution == Resolution.IN_PROGRESS -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SoftButton("Вернуть", onReopen, Modifier.weight(1f))
-                PrimaryButton("Ход разбора", onOpenResolution, Modifier.weight(1f))
+            anomaly.resolution == Resolution.IN_PROGRESS -> {
+                PrimaryButton("Закрыть разбор", onOpenResolution, Modifier.fillMaxWidth())
             }
             else -> SurfaceCard(shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 4.dp, bottom = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f).clickable(onClick = onOpenResolution), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        // «Закрыто» — статус по словарю макета; «Подтверждено» в нём нет (см. StatusPill выше).
                         val label = anomaly.outcomeDetail
                             ?: if (anomaly.resolution == Resolution.CONFIRMED) "Закрыто" else resolutionLabel(anomaly) ?: ""
                         Pill(label, if (anomaly.resolution == Resolution.CONFIRMED) c.ok else c.muted, if (anomaly.resolution == Resolution.CONFIRMED) c.okSoft else c.surface2)
-                        // Хранилище на стенде: решение общее для схемы — видно, кто и когда его принял.
                         decidedBy(anomaly)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = c.muted) }
                     }
                     TextButton(onClick = onOpenResolution) { Text("Ход разбора", color = c.accent, fontWeight = FontWeight.SemiBold) }
-                    TextButton(onClick = onReopen) { Text("Изменить", color = c.accent, fontWeight = FontWeight.SemiBold) }
                 }
             }
         }

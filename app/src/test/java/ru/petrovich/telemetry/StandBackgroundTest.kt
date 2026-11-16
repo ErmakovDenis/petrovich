@@ -105,15 +105,13 @@ class StandBackgroundTest {
     @Test
     fun turnedOffAccessIsRevokedOnceAndNotWhenNeverGranted() = runTest {
         // Не выдавали — отзывать нечего, на стенд не ходим.
-        settings = on.copy(backgroundViaServer = false)
+        settings = on.copy(backgroundChecks = false)
         assertNull(access().sync())
         assertEquals(0, server.requestCount)
 
         for (off in listOf(
-            on.copy(backgroundViaServer = false),
-            on.copy(demoMode = true),
             on.copy(backgroundChecks = false),
-            on.copy(anomalyStoreViaServer = false),
+            on.copy(serverUrl = ""),
         )) {
             settings = off.copy(standAccessGranted = true)
             server.enqueue(ok("""{"enabled":true,"registered":false,"intervalMinutes":15.0,"windowHours":3}"""))
@@ -127,7 +125,7 @@ class StandBackgroundTest {
 
     @Test
     fun failedRevokeIsRetriedLater() = runTest {
-        settings = on.copy(backgroundViaServer = false, standAccessGranted = true)
+        settings = on.copy(backgroundChecks = false, standAccessGranted = true)
         server.enqueue(MockResponse().setResponseCode(503).setBody("""{"detail":"Стенд перегружен"}"""))
         val access = access()
         assertTrue(runCatching { access.sync() }.isFailure)
@@ -166,7 +164,7 @@ class StandBackgroundTest {
         server.enqueue(MockResponse().setResponseCode(500))
         assertEquals(found, access().claim(found))
         // Без фоновой проверки на стенде — как раньше, без запросов.
-        settings = on.copy(backgroundViaServer = false)
+        settings = on.copy(backgroundChecks = false)
         assertEquals(found, access().claim(found))
         assertEquals(2, server.requestCount)
     }
@@ -188,7 +186,7 @@ class StandBackgroundTest {
         sync.refresh()
         server.enqueue(ok("""{"total":0,"items":[]}"""))
         sync.refresh()
-        settings = on.copy(backgroundViaServer = false)
+        settings = on.copy(backgroundChecks = false)
         server.enqueue(ok("""{"total":0,"items":[],"lastScanAt":1}"""))
         sync.refresh()
         assertEquals(listOf(1789535700000L, null), seen)

@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -118,10 +119,30 @@ fun LineChart(
                     val lineStroke = Stroke(width = 2.dp.toPx())
                     val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
 
+                    // Серые полосы на участках без данных — не рисуем линию в ноль.
+                    val gapColor = Color(0xFF9AA3AF).copy(alpha = 0.22f)
+                    val gaps = mutableListOf<IntRange>()
+                    var gapStart: Int? = null
+                    for (i in values.indices) {
+                        if (values[i] == null) {
+                            if (gapStart == null) gapStart = i
+                        } else if (gapStart != null) {
+                            gaps += gapStart until i
+                            gapStart = null
+                        }
+                    }
+                    if (gapStart != null) gaps += gapStart..values.lastIndex
+
                     onDrawBehind {
                         yLabels.forEach { (yy, text) ->
                             drawLine(gridColor, Offset(left, yy), Offset(size.width, yy), strokeWidth = 1f)
                             drawText(text, topLeft = Offset(left - text.size.width - 4.dp.toPx(), yy - text.size.height / 2f))
+                        }
+                        gaps.forEach { range ->
+                            if (range.first > range.last) return@forEach
+                            val x0 = x(range.first)
+                            val x1 = x(range.last)
+                            drawRect(gapColor, topLeft = Offset(x0, top), size = Size((x1 - x0).coerceAtLeast(2.dp.toPx()), h))
                         }
                         xLabels.forEach { (xx, text) ->
                             val tx = (xx - text.size.width / 2f).coerceIn(left, size.width - text.size.width)
