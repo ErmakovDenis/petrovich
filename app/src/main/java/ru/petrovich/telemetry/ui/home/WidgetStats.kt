@@ -61,11 +61,10 @@ data class OfflineSummary(val count: Int, val silent: List<OfflineEntry>)
 fun formatCount(v: Double): String = "%,d".format(RuLocale, Math.round(v)).replace(',', ' ')
 
 fun unitFor(type: WidgetType): String = when (type) {
-    WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> "л"
+    WidgetType.FUEL, WidgetType.FUEL_TRUCKS, WidgetType.OVERCONSUMERS -> "л"
     WidgetType.IDLE -> "ч"
     WidgetType.MILEAGE -> "км"
-    WidgetType.REFUELS -> ""
-    WidgetType.OFFLINE -> ""
+    WidgetType.REFUELS, WidgetType.OFFLINE, WidgetType.ALARMS -> ""
 }
 
 private val truckHint = Regex("камаз|\\bмаз\\b|scania|volvo fh|actros|\\bman\\b|урал|газон|грузов", RegexOption.IGNORE_CASE)
@@ -120,7 +119,7 @@ private fun accumulate(type: WidgetType, t: VehicleTelemetry, bucketStart: Local
                 if (ign >= 0.5 && v < IDLE_SPEED_KMH) put(motion.timestamps[i], secs / 3600.0)
             }
         }
-        WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> {
+        WidgetType.FUEL, WidgetType.FUEL_TRUCKS, WidgetType.OVERCONSUMERS -> {
             val table = t.tables[MetricCategory.FUEL] ?: return result
             val level = fuelColumn(table) ?: return result
             val drain = drainColumn(table); val up = upColumn(table)
@@ -134,7 +133,7 @@ private fun accumulate(type: WidgetType, t: VehicleTelemetry, bucketStart: Local
             val up = upColumn(table) ?: return result
             table.timestamps.forEachIndexed { i, time -> if ((up.values.getOrNull(i) ?: 0.0) > REFUEL_THRESHOLD_L) put(time, 1.0) }
         }
-        WidgetType.OFFLINE -> Unit // отдельная логика, см. offline()
+        WidgetType.OFFLINE, WidgetType.ALARMS -> Unit // см. offline() / AlarmsWidget на Главной
     }
     return result
 }
@@ -214,11 +213,11 @@ private fun buildDailySummary(
     bucketCount: Int,
 ): WidgetSummary {
     fun value(item: ru.petrovich.telemetry.data.DailyVehicleStats): Double = when (type) {
-        WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> item.fuel
+        WidgetType.FUEL, WidgetType.FUEL_TRUCKS, WidgetType.OVERCONSUMERS -> item.fuel
         WidgetType.IDLE -> item.idle
         WidgetType.MILEAGE -> item.mileage
         WidgetType.REFUELS -> item.refuels.toDouble()
-        WidgetType.OFFLINE -> 0.0
+        WidgetType.OFFLINE, WidgetType.ALARMS -> 0.0
     }
     val filtered = if (type == WidgetType.FUEL_TRUCKS) items.filter { truckHint.containsMatchIn(it.vehicle.name) } else items
     val currentFrom = from.plusDays(bucketCount.toLong())
@@ -240,45 +239,57 @@ private fun buildDailySummary(
         points, leaders)
 }
 
-/** Общие для «Главной» 14 суток телеметрии по всему парку — одна загрузка на все виджеты сразу (без повторных запросов на каждую карточку). */
+/** Общие для «Главной» телеметрия по парку — одна загрузка на все виджеты (неделя или месяц). */
 data class FleetWeek(
     val data: List<Pair<Vehicle, VehicleTelemetry?>>, val from: LocalDateTime, val to: LocalDateTime,
     val serverItems: List<ru.petrovich.telemetry.data.DailyVehicleStats> = emptyList(),
+    val period: WidgetPeriod = WidgetPeriod.WEEK,
 )
 
-suspend fun loadFleetWeek(): FleetWeek = coroutineScope {
+suspend fun loadFleetWeek(): FleetWeek = loadFleetPeriod(WidgetPeriod.WEEK)
+
+suspend fun loadFleetPeriod(period: WidgetPeriod): FleetWeek = coroutineScope {
+    val bucketDays = if (period == WidgetPeriod.MONTH) 30 else 7
     val settings = ServiceLocator.settings.current()
     if (settings.telemetryOnServer) {
         val to = LocalDateTime.now()
-        val fromDay = to.toLocalDate().minusDays(13)
+        val fromDay = to.toLocalDate().minusDays((bucketDays * 2 - 1).toLong())
         val response = ServiceLocator.widgetStats.load(fromDay.toString(), to.toLocalDate().toString())
-        return@coroutineScope FleetWeek(emptyList(), fromDay.atStartOfDay(), to, response.items)
+        return@coroutineScope FleetWeek(emptyList(), fromDay.atStartOfDay(), to, response.items, period)
     }
     val repo = ServiceLocator.telemetry
     val vehicles = repo.vehicles()
     val to = LocalDateTime.now()
-    val from = to.toLocalDate().minusDays(13).atStartOfDay()
+    val from = to.toLocalDate().minusDays((bucketDays * 2 - 1).toLong()).atStartOfDay()
     val limit = Semaphore(4)
     val data = vehicles.map { v -> async { limit.withPermit { v to runCatching { repo.telemetry(v, from, to) }.getOrNull() } } }.awaitAll()
-    FleetWeek(data, from, to)
+    FleetWeek(data, from, to, period = period)
 }
 
-/** Сводка виджета за неделю из уже загруженных [FleetWeek] — без обращений к серверу. */
+/** Сводка виджета из уже загруженных [FleetWeek] — без обращений к серверу. */
 fun FleetWeek.summary(type: WidgetType): WidgetSummary {
+    val bucketCount = if (period == WidgetPeriod.MONTH) 30 else 7
     if (serverItems.isNotEmpty()) {
         val days = serverItems.groupBy { it.day }.toSortedMap()
         val orderedDays = days.keys.toList()
-        val currentDays = orderedDays.takeLast(7).toSet()
-        val previousDays = orderedDays.dropLast(7).takeLast(7).toSet()
+        val currentDays = orderedDays.takeLast(bucketCount).toSet()
+        val previousDays = orderedDays.dropLast(bucketCount).takeLast(bucketCount).toSet()
         fun value(item: ru.petrovich.telemetry.data.DailyVehicleStats): Double = when (type) {
-            WidgetType.FUEL, WidgetType.FUEL_TRUCKS -> item.fuel
+            WidgetType.FUEL, WidgetType.FUEL_TRUCKS, WidgetType.OVERCONSUMERS -> item.fuel
             WidgetType.IDLE -> item.idle
             WidgetType.MILEAGE -> item.mileage
             WidgetType.REFUELS -> item.refuels.toDouble()
-            WidgetType.OFFLINE -> 0.0
+            WidgetType.OFFLINE, WidgetType.ALARMS -> 0.0
         }
         val filtered = if (type == WidgetType.FUEL_TRUCKS) serverItems.filter { it.vehicle.name.contains(truckHint) } else serverItems
-        val points = currentDays.map { day -> WidgetPoint(day.takeLast(2), filtered.filter { it.day == day }.sumOf(::value)) }
+        val points = currentDays.sorted().map { day ->
+            val label = runCatching {
+                java.time.LocalDate.parse(day).format(
+                    DateTimeFormatter.ofPattern(if (period == WidgetPeriod.WEEK) "EEE" else "d.MM", RuLocale),
+                )
+            }.getOrDefault(day.takeLast(2))
+            WidgetPoint(label, filtered.filter { it.day == day }.sumOf(::value))
+        }
         val current = filtered.filter { it.day in currentDays }.groupBy { it.vehicle.id }
         val leaders = current.entries.map { (id, items) -> WidgetLeader(id, items.first().vehicle.name, items.sumOf(::value)) }
             .filter { it.value > 0 }.sortedByDescending { it.value }.take(3)
@@ -288,9 +299,25 @@ fun FleetWeek.summary(type: WidgetType): WidgetSummary {
             points, leaders)
     }
     val filtered = if (type == WidgetType.FUEL_TRUCKS) data.filter { it.first.isTruck() } else data
-    return buildSummary(type, filtered, from, ChronoUnit.DAYS, 7) { i ->
-        from.plusDays((7 + i).toLong()).dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
+    return buildSummary(type, filtered, from, ChronoUnit.DAYS, bucketCount) { i ->
+        from.plusDays((bucketCount + i).toLong()).let { t ->
+            if (period == WidgetPeriod.WEEK) {
+                t.dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
+            } else {
+                t.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
+            }
+        }
     }
+}
+
+/** Средний дневной расход прошлого периода — линия «обычно» на графике расхода. */
+fun WidgetSummary.usualDaily(): Double? {
+    val change = changePercent ?: return null
+    if (points.isEmpty()) return null
+    // total = usual * (1 + change/100) → usualDaily = total / n / (1 + change/100)
+    val factor = 1.0 + change / 100.0
+    if (factor <= 0.01) return null
+    return (total / factor) / points.size
 }
 
 /** «Без связи»: честно смотрим, когда от машины в последний раз была хоть одна точка данных в загруженном окне. */

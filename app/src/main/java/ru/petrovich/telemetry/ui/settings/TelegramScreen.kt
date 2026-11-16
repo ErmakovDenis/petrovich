@@ -145,8 +145,8 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
             )
             if (!ready) {
                 Text(
-                    if (!s.backgroundOnServer) "Сначала включите «Фоновая проверка на стенде» в разделе «Подключение и данные»: " +
-                        "бот работает по её доступу к AutoGRAPH"
+                    if (!s.backgroundOnServer) "Сначала включите «Фоновая проверка» в настройках уведомлений: " +
+                        "бот работает по доступу стенда к AutoGRAPH"
                     else "Ждём, пока стенд получит доступ фоновой проверки, — обычно это занимает несколько секунд",
                     style = MaterialTheme.typography.bodyMedium,
                 )

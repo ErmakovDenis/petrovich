@@ -200,14 +200,11 @@ class RemoteChatAgentTest {
         val switching = SwitchingChatAgent(settings, stub, remote, backgroundScope) { id -> anomaly.takeIf { it.id == id } }
 
         assertEquals("заглушка", switching.reply(history, anomaly.id).text)
-        settings.value = AppSettings(assistantViaServer = true, serverUrl = "https://stand")
+        settings.value = AppSettings(serverUrl = "https://stand")
         assertEquals("стенд", switching.reply(history, anomaly.id).text)
-        // Демо-режим: новые пути не действуют.
-        settings.value = settings.value.copy(demoMode = true)
-        assertEquals("заглушка", switching.reply(history, anomaly.id).text)
-        settings.value = settings.value.copy(demoMode = false, serverUrl = "")
+        settings.value = AppSettings(serverUrl = "")
         assertEquals("заглушка", switching.reply(history).text)
-        assertEquals(listOf("заглушка", "стенд:${anomaly.id}", "заглушка", "заглушка"), calls)
+        assertEquals(listOf("заглушка", "стенд:${anomaly.id}", "заглушка"), calls)
     }
 
     private suspend fun assertFailsWith(message: String, block: suspend () -> Unit) {

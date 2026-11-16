@@ -21,11 +21,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.LocalShipping
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SignalWifiOff
-import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,7 +30,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -54,47 +48,30 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import retrofit2.HttpException
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
-import ru.petrovich.telemetry.anomaly.Severity
-import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.SurfaceCard
-import ru.petrovich.telemetry.ui.common.label
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.MailIntent
 import ru.petrovich.telemetry.util.runCatchingCancellable
-import java.time.LocalDateTime
 
 /** Шаги мастера первого запуска (3.1 «Первый запуск и ошибка подключения»). */
-private enum class Step { WELCOME, FLEET, FINDINGS }
+private enum class Step { WELCOME, SETUP }
 
 private val ReportTimeOptions = listOf("07:00", "08:00", "09:00", "10:00")
-
-/** Честный результат проверки парка сразу после подключения — не выдумываем то, что не проверяли. */
-private data class FleetCheck(
-    val totalVehicles: Int,
-    val connectedVehicles: Int,
-    val lookbackDays: Int,
-    val silentVehicles: List<String>,
-    val noFuelVehicles: List<String>,
-)
 
 /** Что сказать владельцу при ошибке подключения — настоящий код ошибки, без выдумывания. */
 private data class ConnectError(val message: String, val supportCode: String?)
 
 /**
- * Первый запуск: знакомство → подключение к AutoGRAPH → проверка парка → первые находки.
+ * Первый запуск: знакомство → подключение к AutoGRAPH → время доклада.
+ * Парк и находки не ждём здесь: после входа в приложение Home сам запускает первую проверку,
+ * а список машин и телеметрия подгружаются по экранам, пока пользователь уже может ходить по приложению.
  * Контракт с AppRoot не меняется: один колбэк [onConnected], вызывается один раз, когда мастер завершён.
  */
 @Composable
@@ -104,7 +81,7 @@ fun OnboardingScreen(onConnected: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     var stepOrdinal by rememberSaveable { mutableStateOf(0) }
-    val step = Step.entries[stepOrdinal]
+    val step = Step.entries.getOrElse(stepOrdinal) { Step.WELCOME }
 
     var showCredentials by rememberSaveable { mutableStateOf(false) }
     var user by rememberSaveable { mutableStateOf("") }
@@ -114,13 +91,6 @@ fun OnboardingScreen(onConnected: () -> Unit) {
 
     var connectError by remember { mutableStateOf<ConnectError?>(null) }
     var showError by remember { mutableStateOf(false) }
-
-    var fleetCheck by remember { mutableStateOf<FleetCheck?>(null) }
-    var fleetLoading by remember { mutableStateOf(false) }
-
-    var findingsChecked by remember { mutableStateOf(false) }
-    var findingsLoading by remember { mutableStateOf(false) }
-    val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
 
     var reportTime by rememberSaveable { mutableStateOf("08:00") }
 
@@ -140,7 +110,7 @@ fun OnboardingScreen(onConnected: () -> Unit) {
                             it.copy(userName = user.trim(), password = password, demoMode = false, schemaId = schema.id, schemaName = schema.name)
                         }
                         ServiceLocator.onDataSourceChanged()
-                        stepOrdinal = Step.FLEET.ordinal
+                        stepOrdinal = Step.SETUP.ordinal
                     }
                 }
                 .onFailure { e ->
@@ -154,70 +124,8 @@ fun OnboardingScreen(onConnected: () -> Unit) {
         }
     }
 
-    // Посмотреть приложение без логина в АвтоГРАФ — условные машины и аномалии (тот же демо-режим,
-    // что и в «Подключение и данные»), без него знакомство с приложением требовало бы настоящий аккаунт.
-    fun continueInDemoMode() {
-        scope.launch {
-            ServiceLocator.settings.update { it.copy(demoMode = true) }
-            ServiceLocator.onDataSourceChanged()
-            stepOrdinal = Step.FLEET.ordinal
-        }
-    }
-
-    suspend fun checkFleet(): FleetCheck = coroutineScope {
-        val lookbackDays = 7L
-        val to = LocalDateTime.now()
-        val from = to.minusDays(lookbackDays)
-        val vehicles = ServiceLocator.telemetry.vehicles()
-        val limit = Semaphore(3)
-        val perVehicle = vehicles.map { v ->
-            async {
-                limit.withPermit {
-                    runCatchingCancellable { ServiceLocator.telemetry.telemetry(v, from, to) }.getOrNull()
-                }
-            }
-        }.awaitAll()
-
-        fun hasAnyValue(t: ru.petrovich.telemetry.data.VehicleTelemetry?) =
-            t != null && t.tables.values.any { table -> table.columns.any { col -> col.values.any { it != null } } }
-
-        val silent = vehicles.filterIndexed { i, _ -> !hasAnyValue(perVehicle[i]) }
-        val silentIds = silent.mapTo(HashSet()) { it.id }
-        val noFuel = vehicles.filterIndexed { i, v ->
-            if (v.id in silentIds) return@filterIndexed false
-            val fuel = perVehicle[i]?.tables?.get(MetricCategory.FUEL)
-            fuel != null && fuel.columns.isNotEmpty() && fuel.columns.all { col -> col.values.all { it == null } }
-        }
-        FleetCheck(
-            totalVehicles = vehicles.size,
-            connectedVehicles = perVehicle.count { it != null },
-            lookbackDays = lookbackDays.toInt(),
-            silentVehicles = silent.map { it.name },
-            noFuelVehicles = noFuel.map { it.name },
-        )
-    }
-
-    LaunchedEffect(stepOrdinal) {
-        if (step == Step.FLEET && fleetCheck == null && !fleetLoading) {
-            fleetLoading = true
-            fleetCheck = runCatchingCancellable { checkFleet() }.getOrNull()
-            fleetLoading = false
-        }
-        if (step == Step.FINDINGS && !findingsChecked) {
-            findingsLoading = true
-            // Если проверка ещё не запускалась в фоне — честно смотрим последние 7 дней прямо сейчас.
-            if (ServiceLocator.anomalyStore.anomalies.value.isEmpty()) {
-                runCatchingCancellable { ServiceLocator.anomalyScanner.scan(lookbackHours = 24 * 7, notify = false) }
-            }
-            findingsLoading = false
-            findingsChecked = true
-        }
-    }
-
     fun finish() {
         scope.launch {
-            // demoMode не трогаем здесь: его уже честно выставили attemptLogin() (false) или
-            // continueInDemoMode() (true) — затирать его тут значило бы откатывать демо-режим на реальный API.
             // Порядок важен: после onboarded=true этот экран уходит из композиции и корутина отменяется.
             ServiceLocator.settings.update { it.copy(reportTime = reportTime) }
             onConnected()
@@ -258,17 +166,8 @@ fun OnboardingScreen(onConnected: () -> Unit) {
                 busy = busy, error = loginError,
                 onSubmit = ::attemptLogin,
                 onCantLogin = { showError = true },
-                onDemo = ::continueInDemoMode,
             )
-            Step.FLEET -> FleetStep(
-                loading = fleetLoading, check = fleetCheck,
-                onNext = { stepOrdinal = Step.FINDINGS.ordinal },
-            )
-            Step.FINDINGS -> FindingsStep(
-                loading = findingsLoading,
-                anomalyCount = anomalies.size,
-                criticalCount = anomalies.count { it.severity == Severity.CRITICAL },
-                topTitles = anomalies.sortedByDescending { it.severity }.take(2).map { "${it.vehicleName} — ${it.title}" },
+            Step.SETUP -> SetupStep(
                 reportTime = reportTime, onReportTimeChange = { reportTime = it },
                 onStart = ::finish,
             )
@@ -281,7 +180,7 @@ private fun StepProgress(step: Step) {
     val c = Petrovich.colors
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "Шаг ${step.ordinal + 1} из 3",
+            "Шаг ${step.ordinal + 1} из ${Step.entries.size}",
             style = MaterialTheme.typography.labelSmall,
             color = c.muted,
             fontWeight = FontWeight.SemiBold,
@@ -316,7 +215,6 @@ private fun WelcomeStep(
     busy: Boolean, error: String?,
     onSubmit: () -> Unit,
     onCantLogin: () -> Unit,
-    onDemo: () -> Unit,
 ) {
     val c = Petrovich.colors
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -337,10 +235,7 @@ private fun WelcomeStep(
             Promise(Icons.Filled.Call, "Позвоню и напишу сотрудникам по вашей просьбе")
         }
         if (!showCredentials) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                PrimaryButton("Войти через АвтоГРАФ", onClick = onShowCredentials, modifier = Modifier.fillMaxWidth())
-                SoftButton("Посмотреть на демо-данных", onClick = onDemo, modifier = Modifier.fillMaxWidth())
-            }
+            PrimaryButton("Войти через АвтоГРАФ", onClick = onShowCredentials, modifier = Modifier.fillMaxWidth())
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
@@ -399,112 +294,18 @@ private fun Promise(icon: androidx.compose.ui.graphics.vector.ImageVector, text:
 }
 
 @Composable
-private fun FleetStep(loading: Boolean, check: FleetCheck?, onNext: () -> Unit) {
-    val c = Petrovich.colors
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Проверил ваш парк", style = MaterialTheme.typography.headlineSmall)
-        if (loading || check == null) {
-            Row(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent)
-                Spacer(Modifier.size(10.dp))
-                Text("Проверяю машины и данные…", style = MaterialTheme.typography.bodyLarge)
-            }
-        } else {
-            SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Icon(Icons.Filled.LocalShipping, null, tint = c.accent)
-                        Column {
-                            Text("${check.totalVehicles} машин", style = MaterialTheme.typography.titleMedium)
-                            Text("подключено к АвтоГРАФ", style = MaterialTheme.typography.bodySmall, color = c.muted)
-                        }
-                    }
-                    FleetFact(
-                        Icons.Filled.CheckCircle, c.ok,
-                        "Машины на связи", "${check.connectedVehicles} из ${check.totalVehicles}",
-                    )
-                    FleetFact(
-                        Icons.Filled.CheckCircle, c.ok,
-                        "История загружена", "за последние ${check.lookbackDays} дней",
-                    )
-                    if (check.silentVehicles.isNotEmpty()) {
-                        FleetFact(
-                            Icons.Filled.SignalWifiOff, c.med,
-                            "${check.silentVehicles.size} ${plural(check.silentVehicles.size, "машина без связи", "машины без связи", "машин без связи")}",
-                            check.silentVehicles.take(4).joinToString(", "),
-                        )
-                    }
-                    if (check.noFuelVehicles.isNotEmpty()) {
-                        FleetFact(
-                            Icons.Filled.WarningAmber, c.med,
-                            "${check.noFuelVehicles.size} ${plural(check.noFuelVehicles.size, "датчик топлива молчит", "датчика топлива молчат", "датчиков топлива молчат")}",
-                            check.noFuelVehicles.take(4).joinToString(", "),
-                        )
-                        Text(
-                            "По ${check.noFuelVehicles.first()} топливо считать не буду, пока не починят датчик. Остальные машины в порядке.",
-                            style = MaterialTheme.typography.bodySmall, color = c.muted,
-                        )
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.weight(1f, fill = false).height(8.dp))
-        PrimaryButton("Дальше", onClick = onNext, modifier = Modifier.fillMaxWidth(), enabled = !loading && check != null)
-    }
-}
-
-@Composable
-private fun FleetFact(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color, title: String, subtitle: String) {
-    val c = Petrovich.colors
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.muted)
-        }
-    }
-}
-
-@Composable
-private fun FindingsStep(
-    loading: Boolean,
-    anomalyCount: Int,
-    criticalCount: Int,
-    topTitles: List<String>,
+private fun SetupStep(
     reportTime: String, onReportTimeChange: (String) -> Unit,
     onStart: () -> Unit,
 ) {
     val c = Petrovich.colors
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Column {
-            Text("Первые находки", style = MaterialTheme.typography.headlineSmall)
-            Text("Петрович посмотрел последние 7 дней", style = MaterialTheme.typography.bodySmall, color = c.muted)
-        }
-        if (loading) {
-            Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent)
-                Spacer(Modifier.size(10.dp))
-                Text("Ищу первые находки…", style = MaterialTheme.typography.bodyLarge)
-            }
-        } else if (anomalyCount == 0) {
-            SurfaceCard(Modifier.fillMaxWidth(), color = c.okSoft, shape = RoundedCornerShape(18.dp)) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Filled.CheckCircle, null, tint = c.ok)
-                    Text("Пока всё в порядке. Я продолжу следить и предупрежу, если что-то найду.", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatTile(Modifier.weight(1f), "$anomalyCount", plural(anomalyCount, "находка", "находки", "находок"), c.ink)
-                StatTile(Modifier.weight(1f), "$criticalCount", plural(criticalCount, "срочная", "срочных", "срочных"), c.high)
-            }
-            if (topTitles.isNotEmpty()) {
-                SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        topTitles.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
-                    }
-                }
-            }
+            Text("Готово к работе", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Парк и первые находки подгрузятся уже в приложении — можно сразу ходить по экранам.",
+                style = MaterialTheme.typography.bodySmall, color = c.muted,
+            )
         }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Когда присылать утренний доклад?", style = MaterialTheme.typography.titleSmall)
@@ -514,26 +315,6 @@ private fun FindingsStep(
         }
         Spacer(Modifier.weight(1f, fill = false).height(8.dp))
         PrimaryButton("Начать работу", onClick = onStart, modifier = Modifier.fillMaxWidth())
-    }
-}
-
-@Composable
-private fun StatTile(modifier: Modifier, number: String, label: String, color: Color) {
-    SurfaceCard(modifier, shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(number, style = MaterialTheme.typography.headlineMedium, color = color)
-            Text(label, style = MaterialTheme.typography.bodySmall, color = Petrovich.colors.muted)
-        }
-    }
-}
-
-private fun plural(n: Int, one: String, few: String, many: String): String {
-    val m = n % 10
-    val h = n % 100
-    return when {
-        m == 1 && h != 11 -> one
-        m in 2..4 && h !in 12..14 -> few
-        else -> many
     }
 }
 

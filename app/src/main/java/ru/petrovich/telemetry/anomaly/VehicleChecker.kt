@@ -148,7 +148,7 @@ class SwitchingVehicleChecker(
     /** Старый путь без API: стенд или устройство по переключателю ([AppSettings.anomaliesOnServer]). */
     private suspend fun checkLegacy(s: AppSettings, vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> {
         val onServer = s.anomaliesOnServer
-        val compare = compareAllowed && s.anomalyCompare && !s.demoMode && s.serverUrl.isNotBlank()
+        val compare = compareAllowed && s.anomalyCompare && s.serverUrl.isNotBlank()
         if (!compare) return (if (onServer) server else local).check(vehicle, from, to)
 
         // Оба варианта параллельно: время проверки машины не удваивается.

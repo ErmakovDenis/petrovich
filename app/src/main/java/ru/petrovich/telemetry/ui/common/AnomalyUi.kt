@@ -17,7 +17,7 @@ import java.util.Locale
 fun Severity.label(): String = when (this) {
     Severity.CRITICAL -> "Срочно"
     Severity.WARNING -> "Внимание"
-    Severity.INFO -> "Мелочь"
+    Severity.INFO -> "К сведению"
 }
 
 @Composable
@@ -83,10 +83,38 @@ fun dayHeader(day: LocalDate, today: LocalDate = LocalDate.now()): String = when
 
 fun resolutionLabel(a: Anomaly): String? = when (a.resolution) {
     Resolution.CONFIRMED -> "Подтверждено"
-    Resolution.FALSE_ALARM -> "Ложная"
+    Resolution.FALSE_ALARM -> "Ложная тревога"
     Resolution.IN_PROGRESS -> "В работе" + (a.assignedTo?.let { " · $it" } ?: "")
     null -> null
 }
+
+/**
+ * Заголовок для владельца с цифрой, как в карте экранов: «Вероятный слив: −60 л за 15 мин».
+ * Без известных цифр — честный [Anomaly.title], ничего не выдумываем.
+ */
+fun Anomaly.headline(): String {
+    val v = value
+    val n = v?.formatValue()
+    return when (kind) {
+        "drain" -> if (n != null) "Вероятный слив: −$n л" else "Вероятный слив топлива"
+        "drop" -> if (n != null) {
+            // В value у drop — уровень после падения; объём слива берём из описания «(−N)», иначе показываем уровень.
+            val drop = Regex("""[−\-](\d+[.,]?\d*)""").find(description)?.groupValues?.getOrNull(1)?.replace(',', '.')
+            if (drop != null) "Вероятный слив: −${drop.formatValueSafe()} л за 15 мин"
+            else "Вероятный слив: уровень $n л"
+        } else "Вероятный слив топлива"
+        "overheat" -> if (n != null) "Перегрев двигателя: $n °C" else title
+        "volt" -> if (n != null) "Напряжение вне нормы: $n В" else title
+        "oil" -> if (n != null) "Низкое давление масла: $n кПа" else title
+        "brake" -> if (n != null) "Низкое давление тормозов: $n кПа" else title
+        "power" -> title
+        "nodata" -> "Нет связи с датчиком"
+        else -> if (n != null) "$title: $n" else title
+    }
+}
+
+private fun String.formatValueSafe(): String =
+    toDoubleOrNull()?.formatValue() ?: this
 
 /** Что делать — по типу события (id правила). Для неизвестных типов — общий совет. */
 fun Anomaly.advice(): String = when (kind) {

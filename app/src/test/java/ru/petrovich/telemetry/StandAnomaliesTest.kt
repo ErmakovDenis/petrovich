@@ -154,7 +154,7 @@ class StandAnomaliesTest {
     fun withoutStoreOnStandDecisionsStayOnDevice() = runTest {
         val store = AnomalyStore(File(tmp.root, "a.json"))
         store.addAll(listOf(local("rule|overheat|42|TemperatureCOOL|2026-09-16T10:30", "2026-09-16T10:30")))
-        val sync = sync({ standOn.copy(anomalyStoreViaServer = false) }, store)
+        val sync = sync({ standOn.copy(serverUrl = "") }, store)
 
         assertNull(sync.refresh())
         sync.resolve("rule|overheat|42|TemperatureCOOL|2026-09-16T10:30", Resolution.CONFIRMED)
@@ -246,7 +246,7 @@ class StandAnomaliesTest {
         val sync = sync({ settings }, store)
         sync.refresh()
         store.addAll(listOf(local("rule|power|42|Power|2026-09-16T08:12", "2026-09-16T08:12")))
-        settings = standOn.copy(anomalyStoreViaServer = false)
+        settings = standOn.copy(serverUrl = "")
         assertNull(sync.refresh())
         assertEquals(listOf("rule|power|42|Power|2026-09-16T08:12"), store.anomalies.value.map { it.id })
     }
@@ -288,15 +288,14 @@ class StandAnomaliesTest {
         fun fake(name: String) = object : VehicleChecker {
             override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime) = emptyList<Anomaly>().also { calls += name }
         }
-        var settings = standOn.copy(anomaliesViaServer = false)
+        var settings = AppSettings() // без адреса стенда — проверка на устройстве
         val switching = SwitchingVehicleChecker({ settings }, fake("local"), fake("server"), compareAllowed = true, stored = fake("stored")) {}
         switching.check(vehicle, to, to)
         settings = standOn
         switching.check(vehicle, to, to)
-        settings = standOn.copy(anomalyStoreViaServer = false)
-        switching.check(vehicle, to, to)
-        assertEquals(listOf("local", "stored", "server"), calls)
-        assertFalse(standOn.copy(demoMode = true).anomalyStoreOnServer)
+        assertEquals(listOf("local", "stored"), calls)
+        assertTrue(standOn.anomalyStoreOnServer)
+        assertFalse(AppSettings().anomalyStoreOnServer)
     }
 
     private suspend fun assertFailsWith(message: String, block: suspend () -> Unit) {
