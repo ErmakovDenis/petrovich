@@ -43,15 +43,20 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.anomaly.FeedSource
 import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.isNew
 import ru.petrovich.telemetry.ui.common.shown
+import ru.petrovich.telemetry.ui.common.title
 import ru.petrovich.telemetry.ui.home.AnomalyOrder
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.Instant
+import java.time.ZoneId
 
 enum class ProblemsTab(val title: String) { NEW("Новые"), IN_PROGRESS("В работе"), CLOSED("Закрыты") }
 
@@ -98,10 +103,10 @@ fun ProblemsScreen(
                     buildString {
                         append("Проверено машин: ${r.checkedVehicles}, новых проблем: ${r.newAnomalies.size}")
                         if (r.errors.isNotEmpty()) append(". Ошибок: ${r.errors.size}")
-                        // Сработал резервный путь: проверка шла пороговыми правилами, а не API.
-                        val cur = ServiceLocator.settings.current()
-                        if (cur.anomaliesViaApi && cur.anomalyApiDegraded) {
-                            append(". API прогнозирования недоступен — проверка по пороговым правилам")
+                        when (ServiceLocator.settings.current().anomalyFeedSource) {
+                            FeedSource.RULES -> append(". Антифрод недоступен — показаны общие правила")
+                            FeedSource.API_CACHE -> append(". Антифрод недоступен — показан последний снимок")
+                            FeedSource.UNAVAILABLE -> append(". Антифрод недоступен")
                         }
                     }
                 },
@@ -131,6 +136,11 @@ fun ProblemsScreen(
                 closedCount = closedCount,
                 onTab = onTab,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+            FeedDisclaimer(
+                feedSource = settings?.anomalyFeedSource.orEmpty(),
+                apiUpdatedAt = settings?.anomalyApiUpdatedAt ?: 0L,
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
             // На вкладке «Новые» дополнительно видно, что уже передано в работу — чтобы не потерялось из виду.
             val teaser = if (tab == ProblemsTab.NEW) inProgress else emptyList()
@@ -172,6 +182,40 @@ private fun pluralNew(n: Int): String {
         m in 2..4 && h !in 12..14 -> "новых"
         else -> "новых"
     }
+}
+
+/** Дисклеймер, когда антифрод (API Антифрод) не в живой выдаче. */
+@Composable
+fun FeedDisclaimer(feedSource: String, apiUpdatedAt: Long, modifier: Modifier = Modifier) {
+    val text = when (feedSource) {
+        FeedSource.RULES ->
+            "Антифрод сейчас не работает — показаны проблемы по общим правилам. " +
+                "Чувствительность оценки может быть выше, чем у антифрода."
+        FeedSource.API_CACHE -> {
+            val whenText = if (apiUpdatedAt > 0) {
+                val at = Instant.ofEpochMilli(apiUpdatedAt).atZone(ZoneId.systemDefault()).toLocalDateTime()
+                "последнее обновление ${at.toLocalDate().title()}, ${at.hhmm()}"
+            } else {
+                "время последнего обновления неизвестно"
+            }
+            "Антифрод сейчас недоступен — показан последний снимок ($whenText). " +
+                "Если список устарел, обратитесь к разработчикам или в поддержку."
+        }
+        FeedSource.UNAVAILABLE ->
+            "Антифрод сейчас недоступен, кэша ещё нет. Обратитесь к разработчикам или в поддержку."
+        else -> null
+    } ?: return
+    val c = Petrovich.colors
+    Text(
+        text,
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.highSoft)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = c.high,
+    )
 }
 
 /**

@@ -119,7 +119,12 @@ class _Ctx:
         return Anomaly(
             id=f"rule|{kind}|{self.t.vehicle.id}|{p.name}|{event_time}",
             vehicle_id=self.t.vehicle.id,
-            vehicle_name=self.t.vehicle.name,
+            vehicle_name=(
+                f"{self.t.vehicle.name} {self.t.vehicle.plate}"
+                if self.t.vehicle.plate and self.t.vehicle.plate.replace(" ", "").lower()
+                not in self.t.vehicle.name.replace(" ", "").lower()
+                else self.t.vehicle.name
+            ),
             category=p.category,
             parameter_name=p.name,
             parameter_caption=p.caption,

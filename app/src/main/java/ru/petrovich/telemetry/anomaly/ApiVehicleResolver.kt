@@ -29,11 +29,15 @@ class ApiVehicleResolver(
             throw StandException("в API аномалий нет машин — на стороне API не загружены данные (нужен ingest файла или sync AutoGRAPH)")
         }
         val name = normalize(vehicle.name)
+        val plate = vehicle.plate?.let(::normalize).orEmpty()
         vehicles.firstOrNull { it.id.toString() == vehicle.id }?.let { return it.id }
+        if (plate.isNotBlank()) {
+            vehicles.firstOrNull { normalize(it.plate) == plate }?.let { return it.id }
+        }
         vehicles.firstOrNull { normalize(it.plate) == name }?.let { return it.id }
         vehicles.firstOrNull { normalize(it.plate).isNotBlank() && normalize(it.plate) in name }?.let { return it.id }
         vehicles.firstOrNull { normalize(it.model).isNotBlank() && normalize(it.model) in name }?.let { return it.id }
-        throw StandException("${vehicle.name}: машина не найдена в API аномалий")
+        throw StandException("${vehicle.label}: машина не найдена в API аномалий")
     }
 
     private suspend fun cached(): List<VehicleOut> {

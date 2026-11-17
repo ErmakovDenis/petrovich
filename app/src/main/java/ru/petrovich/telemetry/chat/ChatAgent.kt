@@ -168,20 +168,20 @@ class PetrovichAgent : ChatAgent {
                 val since = silentSensor.time?.toLocalDate()?.title() ?: silentSensor.eventTime
                 val mechanicNote = if (silentSensor.assignedTo != null) " Механик уже в курсе." else ""
                 return ChatReply(
-                    "Не могу сказать: датчик на ${vehicle.name} молчит с $since.$mechanicNote",
+                    "Не могу сказать: датчик на ${vehicle.label} молчит с $since.$mechanicNote",
                     openAnomalyId = silentSensor.id,
-                    actionLabel = "Разобраться с ${vehicle.name}",
+                    actionLabel = "Разобраться с ${vehicle.shortLabel}",
                 )
             }
             val target = anomalies.filter { it.vehicleId == vehicle.id && it.isNew }.sortedWith(AnomalyOrder).firstOrNull()
             return if (target != null) {
                 ChatReply(
-                    "${vehicle.name}: ${target.title.lowercase(Locale("ru"))}. Открываю карточку.",
+                    "${vehicle.label}: ${target.title.lowercase(Locale("ru"))}. Открываю карточку.",
                     openAnomalyId = target.id,
-                    actionLabel = "Разобраться с ${vehicle.name}",
+                    actionLabel = "Разобраться с ${vehicle.shortLabel}",
                 )
             } else {
-                ChatReply("У «${vehicle.name}» сейчас нет неразобранных случаев.")
+                ChatReply("У «${vehicle.label}» сейчас нет неразобранных случаев.")
             }
         }
 
@@ -272,7 +272,11 @@ class PetrovichAgent : ChatAgent {
     private suspend fun vehicleMentioned(q: String): Vehicle? {
         if (q.length < 3) return null
         val vehicles = runCatchingCancellable { ServiceLocator.telemetry.vehicles() }.getOrDefault(emptyList())
-        return vehicles.firstOrNull { v -> v.name.split(" ", "-").any { token -> token.length >= 3 && q.contains(token.lowercase(Locale("ru"))) } }
+        val lower = q.lowercase(Locale("ru"))
+        return vehicles.firstOrNull { v ->
+            v.plate?.let { lower.contains(it.lowercase(Locale("ru"))) } == true ||
+                v.label.split(" ", "-").any { token -> token.length >= 3 && lower.contains(token.lowercase(Locale("ru"))) }
+        }
     }
 
     private fun weekAnomalies(anomalies: List<Anomaly>, today: LocalDate = LocalDate.now()): List<Anomaly> =

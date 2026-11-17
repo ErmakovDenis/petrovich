@@ -29,6 +29,8 @@ class Vehicle(CamelModel):
     id: str
     name: str
     group: str | None = None
+    # Гос. номер из AutoGRAPH Properties или из name; None — неизвестен.
+    plate: str | None = None
 
 
 class ParameterInfo(CamelModel):

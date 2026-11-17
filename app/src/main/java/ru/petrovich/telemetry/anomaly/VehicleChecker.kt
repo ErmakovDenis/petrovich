@@ -75,7 +75,7 @@ class ServerVehicleChecker(
                 .joinToString("; ") { it.detail ?: it.status })
         }
         // Название машины — как в приложении (лента и уведомления совпадают с выбором машины и проверкой на устройстве).
-        return response.copy(anomalies = response.anomalies.map { it.copy(vehicleName = vehicle.name) })
+        return response.copy(anomalies = response.anomalies.map { it.copy(vehicleName = vehicle.label) })
     }
 
     /** Период без секунд, как у телеметрии: проверка попадает в тот же кэш телеметрии стенда. */

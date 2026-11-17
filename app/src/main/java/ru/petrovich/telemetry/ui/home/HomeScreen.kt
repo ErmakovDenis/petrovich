@@ -33,12 +33,8 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,10 +58,13 @@ import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Resolution
+import ru.petrovich.telemetry.ui.common.PeriodChips
+import ru.petrovich.telemetry.ui.common.PeriodPreset
 import ru.petrovich.telemetry.ui.common.Pill
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.dashedBorder
 import ru.petrovich.telemetry.ui.common.greeting
 import ru.petrovich.telemetry.ui.common.headline
@@ -85,6 +84,11 @@ import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.math.abs
+
+private val HomePeriodPresets = listOf(
+    PeriodPreset("week", "Неделя") { WidgetPeriod.WEEK.toRange() },
+    PeriodPreset("month", "Месяц") { WidgetPeriod.MONTH.toRange() },
+)
 
 @Composable
 fun HomeScreen(
@@ -140,13 +144,18 @@ fun HomeScreen(
     // Снимок парка для плиток «на линии / стоят / без связи» — общий с вкладкой «Парк», без ожидания скана аномалий.
     LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.fleetCache.ensureFresh() } }
 
-    // «Неделя в цифрах»: один запрос на период; при переключении на месяц — отдельная подгрузка.
-    var homePeriod by remember { mutableStateOf(WidgetPeriod.WEEK) }
+    // «Неделя в цифрах»: один запрос на период; при переключении / своём периоде — отдельная подгрузка.
+    var homePresetId by remember { mutableStateOf<String?>("week") }
+    var homeCustom by remember { mutableStateOf<TimeRange?>(null) }
     var fleetWeek by remember { mutableStateOf<FleetWeek?>(null) }
-    LaunchedEffect(s.telemetryOnServer, homePeriod) {
+    LaunchedEffect(s.telemetryOnServer, homePresetId, homeCustom) {
         fleetWeek = null
         do {
-            fleetWeek = runCatchingCancellable { loadFleetPeriod(homePeriod) }.getOrNull()
+            fleetWeek = runCatchingCancellable {
+                val custom = homeCustom?.takeIf { homePresetId == null }
+                if (custom != null) loadFleetRange(custom)
+                else loadFleetPeriod(if (homePresetId == "month") WidgetPeriod.MONTH else WidgetPeriod.WEEK)
+            }.getOrNull()
             if (!s.telemetryOnServer) break
             delay(15_000)
         } while (true)
@@ -184,23 +193,37 @@ fun HomeScreen(
         if (s.backgroundOnServer && s.lastScanAt > 0 && now - s.lastScanAt > STALE_INTERVALS * s.standScanIntervalMinutes * 60_000L) {
             StaleScanCard(s.lastScanAt)
         }
-        // API детекции недоступен: сверка сейчас идёт пороговыми правилами (отметку ставит checker, снимает при восстановлении API).
-        if (s.anomaliesViaApi && s.anomalyApiDegraded) {
-            ApiDegradedCard()
+        // Антифрод (API Антифрод) не в живой выдаче — тот же смысл, что дисклеймер на «Проблемах».
+        if (s.anomalyFeedSource == ru.petrovich.telemetry.anomaly.FeedSource.RULES ||
+            s.anomalyFeedSource == ru.petrovich.telemetry.anomaly.FeedSource.API_CACHE ||
+            s.anomalyFeedSource == ru.petrovich.telemetry.anomaly.FeedSource.UNAVAILABLE
+        ) {
+            ApiDegradedCard(s.anomalyFeedSource, s.anomalyApiUpdatedAt)
         }
 
-        WeekInNumbersHeader(homePeriod, onPeriod = { homePeriod = it })
+        WeekInNumbersHeader(
+            selectedPresetId = homePresetId,
+            customRange = homeCustom,
+            onSelectPreset = { homePresetId = it.id; homeCustom = null },
+            onSelectCustom = { homeCustom = it; homePresetId = null },
+        )
+        val periodLabel = when {
+            homePresetId == "month" -> "месяц"
+            homePresetId == "week" -> "неделя"
+            homeCustom != null -> homeCustom!!.shortLabel
+            else -> "неделя"
+        }
         if (layout.isEmpty()) {
             EmptyWidgets(onOpenWidgets)
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 widgetRows(layout).forEach { row ->
                     if (row.size == 1) {
-                        MetricWidgetCard(row[0].type, fleetWeek, homePeriod, anomalies, Modifier.fillMaxWidth(), onClick = { onOpenWidgetDetail(row[0].type) })
+                        MetricWidgetCard(row[0].type, fleetWeek, periodLabel, anomalies, Modifier.fillMaxWidth(), onClick = { onOpenWidgetDetail(row[0].type) })
                     } else {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             row.forEach { slot ->
-                                MetricWidgetCard(slot.type, fleetWeek, homePeriod, anomalies, Modifier.weight(1f), onClick = { onOpenWidgetDetail(slot.type) })
+                                MetricWidgetCard(slot.type, fleetWeek, periodLabel, anomalies, Modifier.weight(1f), onClick = { onOpenWidgetDetail(slot.type) })
                             }
                         }
                     }
@@ -392,17 +415,28 @@ private fun StaleScanCard(lastScanAt: Long) {
     }
 }
 
-/** API прогнозирования аномалий недоступен: сверка сейчас идёт пороговыми правилами на устройстве, как до включения API. */
+/** Антифрод (API Антифрод) недоступен: кэш или общие правила — по настройке на стенде. */
 @Composable
-private fun ApiDegradedCard() {
+private fun ApiDegradedCard(feedSource: String, apiUpdatedAt: Long) {
     val c = Petrovich.colors
+    val body = when (feedSource) {
+        ru.petrovich.telemetry.anomaly.FeedSource.RULES ->
+            "Антифрод не отвечает — сейчас используются общие правила. Чувствительность оценки может быть выше."
+        ru.petrovich.telemetry.anomaly.FeedSource.API_CACHE -> {
+            val whenText = if (apiUpdatedAt > 0) {
+                val at = java.time.Instant.ofEpochMilli(apiUpdatedAt).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime()
+                "${at.toLocalDate().title()}, ${at.hhmm()}"
+            } else {
+                "время неизвестно"
+            }
+            "Антифрод недоступен — показан последний снимок ($whenText). При необходимости обратитесь в поддержку."
+        }
+        else -> "Антифрод недоступен. Обратитесь к разработчикам или в поддержку."
+    }
     SurfaceCard(Modifier.fillMaxWidth().border(2.dp, c.highSoft, RoundedCornerShape(20.dp)), shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Прогнозирование аномалий недоступно", style = MaterialTheme.typography.titleSmall, color = c.high)
-            Text(
-                "API детекции не отвечает — аномалии ищет устройство по пороговым правилам, как раньше. API будет проверен снова автоматически.",
-                style = MaterialTheme.typography.bodySmall, color = c.muted,
-            )
+            Text("Антифрод недоступен", style = MaterialTheme.typography.titleSmall, color = c.high)
+            Text(body, style = MaterialTheme.typography.bodySmall, color = c.muted)
         }
     }
 }
@@ -480,7 +514,7 @@ private fun ProblemLine(a: Anomaly, onClick: () -> Unit) {
 private fun FleetTiles(settings: ru.petrovich.telemetry.data.settings.AppSettings, onOpenFleet: () -> Unit) {
     val c = Petrovich.colors
     val known = settings.fleetUpdatedAt > 0
-    val offlineValue = if (known) "${settings.fleetOffline}" else "нет данных"
+    val offlineValue = if (known) "${settings.fleetOffline}" else "—"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FleetTile(
             "На линии", if (known) "${settings.fleetOnline}" else "—",
@@ -575,26 +609,22 @@ private fun LinkCard(title: String, subtitle: String, icon: ImageVector, onClick
 
 // ---------- «Неделя в цифрах»: период, сетка широких/узких, карточки по макету ----------
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WeekInNumbersHeader(period: WidgetPeriod, onPeriod: (WidgetPeriod) -> Unit) {
-    val c = Petrovich.colors
-    val choices = listOf(WidgetPeriod.WEEK, WidgetPeriod.MONTH)
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Неделя в цифрах", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        SingleChoiceSegmentedButtonRow {
-            choices.forEachIndexed { i, p ->
-                SegmentedButton(
-                    selected = p == period,
-                    onClick = { onPeriod(p) },
-                    shape = SegmentedButtonDefaults.itemShape(i, choices.size),
-                    colors = SegmentedButtonDefaults.colors(
-                        activeContainerColor = c.surface, activeContentColor = c.ink, activeBorderColor = c.line,
-                        inactiveContainerColor = c.surface2, inactiveContentColor = c.muted, inactiveBorderColor = c.line,
-                    ),
-                ) { Text(p.title, style = MaterialTheme.typography.labelMedium) }
-            }
-        }
+private fun WeekInNumbersHeader(
+    selectedPresetId: String?,
+    customRange: TimeRange?,
+    onSelectPreset: (PeriodPreset) -> Unit,
+    onSelectCustom: (TimeRange) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Неделя в цифрах", style = MaterialTheme.typography.titleMedium)
+        PeriodChips(
+            presets = HomePeriodPresets,
+            selectedPresetId = selectedPresetId,
+            customRange = customRange,
+            onSelectPreset = onSelectPreset,
+            onSelectCustom = onSelectCustom,
+        )
     }
 }
 
@@ -602,14 +632,14 @@ private fun WeekInNumbersHeader(period: WidgetPeriod, onPeriod: (WidgetPeriod) -
 private fun MetricWidgetCard(
     type: WidgetType,
     fleetWeek: FleetWeek?,
-    period: WidgetPeriod,
+    selectedPeriodLabel: String,
     anomalies: List<Anomaly>,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     val periodLabel = when (type) {
         WidgetType.OFFLINE, WidgetType.ALARMS -> "сейчас"
-        else -> if (period == WidgetPeriod.MONTH) "месяц" else "неделя"
+        else -> selectedPeriodLabel
     }
     SurfaceCard(modifier, onClick = onClick, shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

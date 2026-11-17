@@ -158,8 +158,8 @@ class Settings(BaseSettings):
     telemetry_closed_cache_ttl_seconds: float = Field(21600, ge=0)
     telemetry_settle_minutes: int = Field(30, ge=0)
     telemetry_cache_max_entries: int = Field(200, ge=1)
-    # Самый длинный период одного запроса телеметрии (в приложении — 7 дней).
-    telemetry_max_period_hours: int = Field(168, ge=1)
+    # Самый длинный период одного запроса телеметрии / «свой период» в приложении (180 суток).
+    telemetry_max_period_hours: int = Field(4320, ge=1)
 
     # Tools ассистента: сколько машин отдаёт list_vehicles, сколько аномалий — check_vehicle, и предел размера
     # ответа одного tool в символах JSON.
@@ -173,9 +173,9 @@ class Settings(BaseSettings):
     predictive_api_key: SecretStr | None = None
     predictive_timeout_seconds: float = Field(30, gt=0)
 
-    # Внешний сервис детекции «Petrovich AI» (лента событий, как в приложении): когда задан адрес и оба креденшела,
-    # проверка с сохранением берёт аномалии из его ленты; при недоступности — обычный путь (правила + аналитика
-    # выше), повторного обращения в паузу нет. Пусто — выключено.
+    # API Антифрод «Petrovich AI» (лента событий): адрес и оба креденшела — только на стенде (FS_PETROVICH_AI_*).
+    # Проверка с сохранением берёт аномалии из ленты; при недоступности — кэш API или общие правила по
+    # fallbackRules клиента. Повторного обращения в паузу нет. Пусто — выключено (только правила + аналитика).
     petrovich_ai_url: str = ""
     petrovich_ai_user: str = ""
     petrovich_ai_password: SecretStr | None = None
@@ -326,6 +326,12 @@ class Settings(BaseSettings):
         """Бот включён: заданы имя бота и ключ бота; без фоновой проверки боту не по чему работать."""
         token = self.telegram_service_token.get_secret_value() if self.telegram_service_token else ""
         return bool(self.telegram_bot_username.strip() and token) and self.background_configured
+
+    @property
+    def petrovich_ai_configured(self) -> bool:
+        """Заданы адрес и креды API Антифрод — лента аномалий идёт через стенд."""
+        password = self.petrovich_ai_password.get_secret_value() if self.petrovich_ai_password else ""
+        return bool(self.petrovich_ai_url.strip() and self.petrovich_ai_user.strip() and password)
 
 
 @lru_cache

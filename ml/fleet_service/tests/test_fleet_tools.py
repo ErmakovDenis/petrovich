@@ -81,7 +81,7 @@ def test_summary_accepts_unique_name_and_defaults_to_last_24h(client):
 
 @pytest.mark.parametrize("args, fragment", [
     ({"vehicle_id": "veh-3"}, "не найдена"),
-    ({"vehicle_id": "veh-1", "from": "2026-09-01T00:00", "to": "2026-09-16T00:00"}, "длиннее 168 ч"),
+    ({"vehicle_id": "veh-1", "from": "2026-01-01T00:00", "to": "2026-09-01T00:00"}, "длиннее 4320 ч"),
     ({"vehicle_id": "veh-1", "from": "вчера"}, "ожидается время"),
     ({"vehicle_id": "veh-1", "to": "2026-09-16T00:00+05:00"}, "без часового пояса"),
     ({}, "не указан vehicle_id"),

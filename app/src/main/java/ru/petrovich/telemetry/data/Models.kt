@@ -18,7 +18,38 @@ data class Vehicle(
     val id: String,
     val name: String,
     val group: String? = null,
-)
+    /** Гос. номер, если есть в AutoGRAPH или удаётся вытащить из [name]. */
+    val plate: String? = null,
+) {
+    /** Для уведомлений и кнопок: гос. номер, иначе имя. */
+    val shortLabel: String get() = plate?.takeIf { it.isNotBlank() } ?: name
+
+    /** Подпись с номером: если номер уже в имени — само [name], иначе «имя + номер». */
+    val label: String
+        get() {
+            val p = plate?.takeIf { it.isNotBlank() } ?: return name
+            val compactName = name.replace(" ", "")
+            val compactPlate = p.replace(" ", "")
+            return if (compactPlate.contains(compactName, ignoreCase = true) ||
+                compactName.contains(compactPlate, ignoreCase = true)
+            ) name else "$name $p"
+        }
+
+    /** Имя без гос. номера — для подписи под крупным номером на карточке. */
+    val nameWithoutPlate: String
+        get() {
+            val p = plate?.takeIf { it.isNotBlank() } ?: return name
+            return name
+                .replace(Regex("""(?i)\(\s*гн\s*[:.\-]?\s*${Regex.escape(p)}\s*\)"""), "")
+                .replace(Regex("""(?i)(?:^|[\s])гн\s*[:.\-]?\s*${Regex.escape(p)}(?=$|[\s,;])"""), " ")
+                .replace(p, "", ignoreCase = true)
+                .replace(Regex("""\(\s*\)"""), "")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .trim('(', ')', '-', '—')
+                .ifBlank { name }
+        }
+}
 
 /** Разделы табличных данных / графиков. */
 @Serializable

@@ -6,6 +6,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import ru.petrovich.telemetry.data.TelemetryRepository
+import ru.petrovich.telemetry.data.VehiclePlate
 import ru.petrovich.telemetry.data.VehicleTelemetry
 import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.ui.common.label
@@ -143,7 +144,7 @@ class AnomalyScanner(
         notificationStore.addAll(visible.map {
             NotificationItem(
                 id = it.id,
-                title = "${it.severity.label()} · ${it.vehicleName}: ${it.title}",
+                title = "${it.severity.label()} · ${VehiclePlate.fromName(it.vehicleName) ?: it.vehicleName}: ${it.title}",
                 subtitle = it.description,
                 at = it.detectedAt,
                 targetAnomalyId = it.id,

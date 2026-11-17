@@ -12,6 +12,14 @@ import java.time.LocalDateTime
 // в [Anomaly] приложения: поля решения (resolution, falseAlarmReason, resolvedBy, resolvedAt) те же, лишние
 // поля стенда (episodeEnd, lastDetectedAt) не читаются.
 
+/** Чем стенд наполнил ленту (ml/fleet_service schemas/store.FeedSource). */
+object FeedSource {
+    const val API = "api"
+    const val API_CACHE = "api_cache"
+    const val RULES = "rules"
+    const val UNAVAILABLE = "unavailable"
+}
+
 /** Ответ `GET /v1/anomalies`. */
 @Serializable
 data class AnomalyListResponse(
@@ -19,6 +27,13 @@ data class AnomalyListResponse(
     val items: List<Anomaly>,
     /** Последняя успешная проверка с сохранением по схеме, epoch millis; null — проверок ещё не было. */
     val lastScanAt: Long? = null,
+    /**
+     * Источник выдачи — для дисклеймеров. Пусто, если стенд ещё не отдаёт поле
+     * (старый деплой): не показываем ложный «антифрод недоступен».
+     */
+    val feedSource: String = "",
+    /** Когда лента API Антифрод последний раз успешно обновилась, epoch millis. */
+    val apiUpdatedAt: Long? = null,
 )
 
 /** Тело `POST /v1/anomalies/{id}/resolve`; [resolution] = null — вернуть в «ждут решения». */
@@ -27,7 +42,14 @@ data class ResolveRequest(val resolution: Resolution?, val reason: String? = nul
 
 /** Тело `POST /v1/anomalies/scan`: проверка с сохранением. */
 @Serializable
-data class ScanRequest(val vehicleIds: List<String>, val from: String, val to: String, val utcOffsetMinutes: Int)
+data class ScanRequest(
+    val vehicleIds: List<String>,
+    val from: String,
+    val to: String,
+    val utcOffsetMinutes: Int,
+    /** При недоступности API Антифрод считать аномалии общими правилами стенда. */
+    val fallbackRules: Boolean = false,
+)
 
 @Serializable
 data class VehicleScan(
@@ -42,7 +64,15 @@ data class VehicleScan(
 )
 
 @Serializable
-data class ScanResponse(val from: String, val to: String, val results: List<VehicleScan>, val lastScanAt: Long? = null)
+data class ScanResponse(
+    val from: String,
+    val to: String,
+    val results: List<VehicleScan>,
+    val lastScanAt: Long? = null,
+    /** Пусто — стенд без поля feedSource; дисклеймер не показываем. */
+    val feedSource: String = "",
+    val apiUpdatedAt: Long? = null,
+)
 
 /** Запись локальной истории для разового переноса на стенд (`POST /v1/anomalies/import`). */
 @Serializable
@@ -99,17 +129,23 @@ class StandAnomalies(
     }
 
     /** Проверка машины с сохранением; машину не проверили — [StandException] с причиной от стенда. */
-    suspend fun scan(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): VehicleScan {
-        val body = ApiFactory.json.encodeToString(ScanRequest.serializer(), scanRequest(vehicle, from, to))
+    suspend fun scan(
+        vehicle: Vehicle,
+        from: LocalDateTime,
+        to: LocalDateTime,
+        fallbackRules: Boolean = false,
+    ): VehicleScan {
+        val body = ApiFactory.json.encodeToString(ScanRequest.serializer(), scanRequest(vehicle, from, to, fallbackRules))
         val text = stand.post("v1/anomalies/scan", body, readTimeoutSeconds = StandRequests.LONG_TIMEOUT_SECONDS)
-        val result = StandRequests.decode(ScanResponse.serializer(), text).results.firstOrNull { it.vehicleId == vehicle.id }
+        val response = StandRequests.decode(ScanResponse.serializer(), text)
+        val result = response.results.firstOrNull { it.vehicleId == vehicle.id }
             ?: throw StandException("Стенд не вернул результат проверки машины")
         if (!result.ok) throw StandException(result.error ?: "Стенд не проверил машину")
         return result
     }
 
-    fun scanRequest(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime) =
-        ScanRequest(listOf(vehicle.id), StandRequests.format(from), StandRequests.format(to), utcOffsetMinutes())
+    fun scanRequest(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime, fallbackRules: Boolean = false) =
+        ScanRequest(listOf(vehicle.id), StandRequests.format(from), StandRequests.format(to), utcOffsetMinutes(), fallbackRules)
 
     /** Решение по аномалии для всех пользователей схемы; null — вернуть в «ждут решения». */
     suspend fun resolve(id: String, resolution: Resolution?, reason: String?): Anomaly {
@@ -133,7 +169,10 @@ class StandAnomalies(
 }
 
 /** Проверка с сохранением на стенде: аномалии приходят с id и решениями хранилища. */
-class StoredVehicleChecker(private val stand: StandAnomalies) : VehicleChecker {
+class StoredVehicleChecker(
+    private val stand: StandAnomalies,
+    private val fallbackRules: suspend () -> Boolean = { false },
+) : VehicleChecker {
     override suspend fun check(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): List<Anomaly> =
-        stand.scan(vehicle, from, to).anomalies
+        stand.scan(vehicle, from, to, fallbackRules = fallbackRules()).anomalies
 }

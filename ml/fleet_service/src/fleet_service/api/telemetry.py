@@ -3,6 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from ..config import Settings, get_settings
 from ..schemas.contract import Vehicle, VehicleTelemetry
 from ..schemas.widgets import WidgetStatsResponse
 from ..store.repository import AnomalyRepository
@@ -15,6 +16,7 @@ router = APIRouter(prefix="/v1", tags=["telemetry"])
 Service = Annotated[TelemetryService, Depends(get_telemetry_service)]
 User = Annotated[UserSession, Depends(require_session)]
 Store = Annotated[AnomalyRepository, Depends(get_store)]
+Config = Annotated[Settings, Depends(get_settings)]
 
 
 @router.get("/vehicles", response_model=list[Vehicle], response_model_by_alias=True)
@@ -47,12 +49,18 @@ async def widget_stats(
     user: User,
     service: Service,
     store: Store,
+    settings: Config,
     from_: Annotated[date, Query(alias="from")],
     to: Annotated[date, Query()],
 ) -> WidgetStatsResponse:
-    """Готовые суточные суммы для главной; AutoGRAPH здесь не вызывается."""
-    if to < from_ or (to - from_).days > 62:
-        raise HTTPException(UNPROCESSABLE, "Период виджетов должен быть от 0 до 62 дней")
+    """Готовые суточные суммы для главной; AutoGRAPH здесь не вызывается.
+
+    Клиент для «своего периода» запрашивает текущее окно и такое же предыдущее (для %),
+    поэтому потолок — 2× макс. периода телеметрии в сутках.
+    """
+    max_days = max(1, (settings.telemetry_max_period_hours // 24) * 2)
+    if to < from_ or (to - from_).days > max_days:
+        raise HTTPException(UNPROCESSABLE, f"Период виджетов должен быть от 0 до {max_days} дней")
     visible = {v.id for v in await service.vehicles(user.session, user.schema_id)}
     items = [item for item in await store.widget_stats(user.schema_id, from_.isoformat(), to.isoformat())
              if item.vehicle.id in visible]

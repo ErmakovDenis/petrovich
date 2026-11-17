@@ -42,12 +42,40 @@ class Decision(CamelModel):
     origin: str
 
 
+class FeedSource(str, Enum):
+    """Чем стенд наполнил ленту для клиента."""
+
+    API = "api"  # свежий ответ API Антифрод
+    API_CACHE = "api_cache"  # API недоступен, отдан последний успешный снимок API
+    RULES = "rules"  # API недоступен, пользователь разрешил общие правила
+    UNAVAILABLE = "unavailable"  # API недоступен, кэша нет, правила не разрешены
+
+
+def feed_list_filters(feed_source: FeedSource) -> tuple[bool, str | None, str | None]:
+    """Одинаковая выдача для приложения, Telegram и ассистента.
+
+    Возвращает (пусто, id_prefix, exclude_id_prefix): при unavailable список пуст;
+    api/api_cache — только id `api|…`; rules — всё, кроме `api|…`.
+    """
+    if feed_source == FeedSource.UNAVAILABLE:
+        return True, None, None
+    if feed_source in (FeedSource.API, FeedSource.API_CACHE):
+        return False, "api|", None
+    if feed_source == FeedSource.RULES:
+        return False, None, "api|"
+    return False, None, None
+
+
 class AnomalyList(CamelModel):
     # Сколько записей подходит под фильтры (items может быть меньше — limit/offset).
     total: int
     items: list[StoredAnomaly]
     # Последняя успешная проверка с сохранением по схеме, epoch millis; None — проверок ещё не было.
     last_scan_at: int | None
+    # Источник текущей выдачи — для дисклеймеров в приложении.
+    feed_source: FeedSource = FeedSource.RULES
+    # Когда лента API последний раз успешно обновилась, epoch millis; None — ещё не было.
+    api_updated_at: int | None = None
 
 
 class ResolveRequest(CamelModel):
@@ -63,6 +91,8 @@ class ScanRequest(CamelModel):
     from_: datetime = Field(alias="from")
     to: datetime
     utc_offset_minutes: int = _OFFSET
+    # При недоступности API Антифрод считать аномалии общими правилами стенда (иначе — кэш API).
+    fallback_rules: bool = False
 
 
 class VehicleScan(CamelModel):
@@ -84,6 +114,8 @@ class ScanResponse(CamelModel):
     to: datetime
     results: list[VehicleScan]
     last_scan_at: int | None
+    feed_source: FeedSource = FeedSource.RULES
+    api_updated_at: int | None = None
 
 
 class ImportItem(CamelModel):

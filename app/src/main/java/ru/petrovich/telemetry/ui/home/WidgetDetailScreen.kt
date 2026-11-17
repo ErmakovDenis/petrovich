@@ -19,13 +19,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,14 +40,21 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.ui.common.PeriodChips
+import ru.petrovich.telemetry.ui.common.PeriodPreset
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SoftButton
 import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.plural
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import kotlin.math.abs
+
+private val DetailPeriodPresets = WidgetPeriod.entries.map { p ->
+    PeriodPreset(p.name.lowercase(), p.title) { p.toRange() }
+}
 
 /**
  * «Подробная сводка виджета» (3.15): раскрывает цифру с «Главной» — как менялась и за счёт каких машин.
@@ -60,7 +63,6 @@ import kotlin.math.abs
  * @param onOpenVehicle тап по машине-лидеру → карточка машины (3.13, ui/park/VehicleCardScreen — не мой файл);
  * по умолчанию ничего не делает, если вызывающий экран не передал реальный переход.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WidgetDetailScreen(
     type: WidgetType,
@@ -70,21 +72,33 @@ fun WidgetDetailScreen(
 ) {
     val c = Petrovich.colors
     val scope = rememberCoroutineScope()
-    var period by remember { mutableStateOf(WidgetPeriod.WEEK) }
+    var selectedPresetId by remember { mutableStateOf<String?>("week") }
+    var customRange by remember { mutableStateOf<TimeRange?>(null) }
     var summary by remember(type) { mutableStateOf<WidgetSummary?>(null) }
     var offline by remember(type) { mutableStateOf<OfflineSummary?>(null) }
     var removed by remember { mutableStateOf(false) }
 
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
 
-    LaunchedEffect(type, period) {
+    LaunchedEffect(type, selectedPresetId, customRange) {
         summary = null
         offline = null
         when (type) {
             WidgetType.OFFLINE -> offline = runCatchingCancellable { loadFleetWeek().offline() }.getOrNull()
             WidgetType.ALARMS -> Unit
-            WidgetType.OVERCONSUMERS -> summary = runCatchingCancellable { loadWidgetSummary(WidgetType.FUEL, period) }.getOrNull()
-            else -> summary = runCatchingCancellable { loadWidgetSummary(type, period) }.getOrNull()
+            else -> {
+                val metric = if (type == WidgetType.OVERCONSUMERS) WidgetType.FUEL else type
+                summary = runCatchingCancellable {
+                    val custom = customRange?.takeIf { selectedPresetId == null }
+                    if (custom != null) loadWidgetSummary(metric, custom)
+                    else {
+                        val period = WidgetPeriod.entries.firstOrNull {
+                            it.name.equals(selectedPresetId, ignoreCase = true)
+                        } ?: WidgetPeriod.WEEK
+                        loadWidgetSummary(metric, period)
+                    }
+                }.getOrNull()
+            }
         }
     }
 
@@ -94,20 +108,13 @@ fun WidgetDetailScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (type != WidgetType.OFFLINE && type != WidgetType.ALARMS) {
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    WidgetPeriod.entries.forEachIndexed { i, p ->
-                        SegmentedButton(
-                            selected = p == period,
-                            onClick = { period = p },
-                            shape = SegmentedButtonDefaults.itemShape(i, WidgetPeriod.entries.size),
-                            colors = SegmentedButtonDefaults.colors(
-                                activeContainerColor = c.surface, activeContentColor = c.ink, activeBorderColor = c.line,
-                                inactiveContainerColor = c.surface2, inactiveContentColor = c.muted, inactiveBorderColor = c.line,
-                            ),
-                            label = { Text(p.title) },
-                        )
-                    }
-                }
+                PeriodChips(
+                    presets = DetailPeriodPresets,
+                    selectedPresetId = selectedPresetId,
+                    customRange = customRange,
+                    onSelectPreset = { selectedPresetId = it.id; customRange = null },
+                    onSelectCustom = { customRange = it; selectedPresetId = null },
+                )
             } else {
                 Text("сейчас", style = MaterialTheme.typography.labelMedium, color = c.muted)
             }

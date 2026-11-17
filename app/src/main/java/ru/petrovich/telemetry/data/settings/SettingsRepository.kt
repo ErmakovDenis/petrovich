@@ -100,14 +100,23 @@ data class AppSettings(
     /** SHA-256 пароля, который стенд не принял: тот же пароль повторно не отправляется (не блокировать учётную запись). */
     val standPasswordRejected: String = "",
     val emailViaServer: Boolean = true,
-    /** Проверку аномалий выполняет API детекции (Petrovich AI), а не детектор на устройстве. */
+    /**
+     * Устарело: API Антифрод подключается на стенде (FS_PETROVICH_AI_*). Поля остаются в DataStore
+     * для совместимости; UI и маршрутизация на них не опираются при заданном адресе стенда.
+     */
     val anomalyApiEnabled: Boolean = false,
-    /** Логин API детекции аномалий (HTTP Basic). */
     val anomalyApiUser: String = "",
-    /** Пароль API детекции аномалий (HTTP Basic). */
     val anomalyApiPassword: String = "",
-    /** API детекции был недоступен на последней проверке: в интерфейсе — отметка о резервной схеме. */
     val anomalyApiDegraded: Boolean = false,
+    /**
+     * При недоступности антифрода (API Антифрод) стенд считает аномалии общими правилами.
+     * Выключено — последний кэш API; чувствительность правил может быть выше.
+     */
+    val anomalyFallbackRules: Boolean = false,
+    /** Последний источник ленты со стенда (api / api_cache / rules / unavailable) — для дисклеймеров. */
+    val anomalyFeedSource: String = "",
+    /** Когда лента API Антифрод последний раз успешно обновилась, epoch millis; 0 — ещё не было. */
+    val anomalyApiUpdatedAt: Long = 0,
 ) {
     /** Стенд задан — чат, письма, телеметрия и аномалии всегда через него (без демо и локальных заглушек). */
     val assistantOnServer: Boolean get() = serverUrl.isNotBlank()
@@ -137,6 +146,23 @@ data class AppSettings(
         val end = runCatching { LocalTime.parse(quietHoursEnd) }.getOrNull() ?: return false
         if (start == end) return false
         return if (start < end) !now.isBefore(start) && now.isBefore(end) else !now.isBefore(start) || now.isBefore(end)
+    }
+
+    /**
+     * Можно ли сейчас отправить утренний доклад (ещё не смотрим [lastReportDate] / день недели).
+     * Как LATE_HOURS у Telegram: только в первые [lateHours] после [reportTime] (окно может через
+     * полночь), и не в тихие часы — иначе «замечаний нет» улетало вечером, если утром тик не успел.
+     */
+    fun isDailyReportDueAt(now: LocalTime, lateHours: Long = 3): Boolean {
+        val slot = runCatching { LocalTime.parse(reportTime) }.getOrDefault(LocalTime.of(8, 0))
+        val deadline = slot.plusHours(lateHours)
+        val inWindow = if (deadline.isAfter(slot)) {
+            !now.isBefore(slot) && now.isBefore(deadline)
+        } else {
+            // 22:00 + 3ч → 01:00: [22:00, 24:00) ∪ [00:00, 01:00)
+            !now.isBefore(slot) || now.isBefore(deadline)
+        }
+        return inWindow && !isQuietAt(now)
     }
 }
 
@@ -191,6 +217,9 @@ class SettingsRepository(private val context: Context) {
         // TODO: для продакшена хранить пароль в зашифрованном виде (Android Keystore) — как у AutoGRAPH выше.
         val anomalyApiPassword = stringPreferencesKey("anomaly_api_password")
         val anomalyApiDegraded = booleanPreferencesKey("anomaly_api_degraded")
+        val anomalyFallbackRules = booleanPreferencesKey("anomaly_fallback_rules")
+        val anomalyFeedSource = stringPreferencesKey("anomaly_feed_source")
+        val anomalyApiUpdatedAt = longPreferencesKey("anomaly_api_updated_at")
     }
 
     private fun Preferences.toSettings() = AppSettings(
@@ -242,6 +271,9 @@ class SettingsRepository(private val context: Context) {
         anomalyApiUser = this[Keys.anomalyApiUser].orEmpty(),
         anomalyApiPassword = this[Keys.anomalyApiPassword].orEmpty(),
         anomalyApiDegraded = this[Keys.anomalyApiDegraded] ?: false,
+        anomalyFallbackRules = this[Keys.anomalyFallbackRules] ?: false,
+        anomalyFeedSource = this[Keys.anomalyFeedSource].orEmpty(),
+        anomalyApiUpdatedAt = this[Keys.anomalyApiUpdatedAt] ?: 0,
     )
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -296,6 +328,9 @@ class SettingsRepository(private val context: Context) {
             p[Keys.anomalyApiUser] = new.anomalyApiUser
             p[Keys.anomalyApiPassword] = new.anomalyApiPassword
             p[Keys.anomalyApiDegraded] = new.anomalyApiDegraded
+            p[Keys.anomalyFallbackRules] = new.anomalyFallbackRules
+            p[Keys.anomalyFeedSource] = new.anomalyFeedSource
+            p[Keys.anomalyApiUpdatedAt] = new.anomalyApiUpdatedAt
         }
     }
 }

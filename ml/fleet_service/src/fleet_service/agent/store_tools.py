@@ -10,6 +10,7 @@ from typing import Any
 
 from ..config import Settings
 from ..schemas.contract import Severity
+from ..schemas.store import feed_list_filters
 from ..store.repository import STATUSES, AnomalyFilter, AnomalyRepository, Record, to_utc
 from ..telemetry.service import TelemetryService
 from .fleet_tools import _TIME, find_vehicle_id, period_args
@@ -32,7 +33,7 @@ def _item(r: Record, ctx: ToolContext, full: bool = False) -> dict[str, Any]:
         "type": r.kind,
         "title": a.title,
         "severity": a.severity.value,
-        "vehicle": {"id": a.vehicle_id, "name": a.vehicle_name},
+        "vehicle": {"id": a.vehicle_id, "name": a.vehicle_name, "label": a.vehicle_name},
         "eventTime": a.event_time,
         "episodeEnd": a.episode_end,
         "parameter": a.parameter_caption,
@@ -62,13 +63,22 @@ def build_store_tools(settings: Settings, service: TelemetryService, store: Anom
         status = str(args.get("status") or "").strip() or None
         if status is not None and status not in STATUSES:
             raise ValueError(f"status: допустимо {', '.join(STATUSES)}")
+        feed_source, _, _ = await store.feed_state(ctx.schema_id)
+        empty, id_prefix, exclude_id_prefix = feed_list_filters(feed_source)
+        last_scan = await store.last_scan(ctx.schema_id)
+        if empty:
+            return {
+                "period": {"from": from_.strftime(_TIME), "to": to.strftime(_TIME)},
+                "total": 0, "anomalies": [], "truncated": False, "lastScanAt": _local(last_scan, ctx),
+                "message": "Антифрод сейчас недоступен, кэша ленты нет — список пуст.",
+            }
         f = AnomalyFilter(
             vehicle_ids=visible, from_utc=to_utc(from_, ctx.utc_offset_minutes),
             to_utc=to_utc(to, ctx.utc_offset_minutes), vehicle_id=vehicle_id, severities=severities, status=status,
+            id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
         )
         limit = settings.tool_max_anomalies
         total, records = await store.query(ctx.schema_id, f, limit)
-        last_scan = await store.last_scan(ctx.schema_id)
         result: dict[str, Any] = {
             "period": {"from": from_.strftime(_TIME), "to": to.strftime(_TIME)},
             "total": total,

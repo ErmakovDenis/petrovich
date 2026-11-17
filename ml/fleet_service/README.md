@@ -265,7 +265,7 @@ docker compose exec -e FS_EVAL_API_KEY=test fleet_service python -m fleet_servic
 
 | Метод | Путь | Описание |
 |---|---|---|
-| GET | `/health` | liveness; `llmProvider` — активный провайдер; `llmConfigured` — заданы ли его ключ и модель; `backgroundConfigured` — включена ли фоновая проверка; `emailConfigured` — настроены ли письма |
+| GET | `/health` | liveness; `llmProvider` — активный провайдер; `llmConfigured` — заданы ли его ключ и модель; `backgroundConfigured` — включена ли фоновая проверка; `emailConfigured` — настроены ли письма; `petrovichAiConfigured` — заданы ли `FS_PETROVICH_AI_*` |
 | POST | `/v1/chat` | ответ ассистента |
 | GET | `/v1/vehicles` | машины схемы, доступные пользователю (`EnumDevices`, без `Allowed=false`), по имени |
 | GET | `/v1/telemetry?vehicleId&from&to&utcOffsetMinutes` | `VehicleTelemetry` машины за период |
@@ -328,22 +328,24 @@ docker compose exec -e FS_EVAL_API_KEY=test fleet_service python -m fleet_servic
 сверяет `tests/test_rules_golden.py`): демо-машины, синтетика на каждое правило и границы длительностей, телеметрия
 из эталонов шага 2.
 
-### Детекция через «Petrovich AI» (лента событий)
+### Детекция через API Антифрод «Petrovich AI» (только на стенде)
 
-Та же логика, что в приложении: когда заданы `FS_PETROVICH_AI_URL`, `FS_PETROVICH_AI_USER` и
-`FS_PETROVICH_AI_PASSWORD`, проверка с сохранением (`/v1/anomalies/scan` и фоновая проверка, которая питает
-Telegram-бота) берёт аномалии из ленты `GET /api/v1/anomaly-events` внешнего сервиса — одним запросом на проход,
-со страницами по 200 (потолок 2000). События маппятся в общую модель: id `api|<тип>|<машина>|<параметр>|<время>`
-(канонический id строит хранилище), заголовки видов переведены («fuel_drain» → «Слив топлива»), важность
-`high/med/low` → `CRITICAL/WARNING/INFO`; машина ленты сопоставляется с парком схемы по имени.
+Подключение к API — на стенде через `FS_PETROVICH_AI_URL`, `FS_PETROVICH_AI_USER` и `FS_PETROVICH_AI_PASSWORD`
+(логин/пароль удобно править в `.env`; приложение к API напрямую не ходит). Проверка с сохранением
+(`/v1/anomalies/scan` и фоновая проверка для Telegram) берёт аномалии из ленты
+`GET /api/v1/anomaly-events` — одним запросом на проход, со страницами по 200 (потолок 2000). События маппятся
+в общую модель: id `api|<тип>|<машина>|<параметр>|<время>` (канонический id строит хранилище), заголовки видов
+переведены («fuel_drain» → «Слив топлива»), важность `high/med/low` → `CRITICAL/WARNING/INFO`; машина ленты
+сопоставляется с парком схемы по имени. Состояние выдачи — таблица `ai_feed_state` и поля `feedSource` /
+`apiUpdatedAt` в ответах `GET /v1/anomalies` и `POST /v1/anomalies/scan`.
 
-Когда лента недоступна (сеть, таймаут, 5xx, отказ авторизации) — проверка идёт обычным путём (правила +
-аналитика выше), повторного обращения к ленте в паузу `FS_PETROVICH_AI_RETRY_PAUSE_SECONDS` (300 по умолчанию)
-нет — иначе проверка по машинам уперлась бы в те же таймауты. Пустые адрес или креды — выключено. Клиент —
-`petrovich_ai/client.py`, маппинг — `petrovich_ai/mapping.py`, переключение — `store/scan.py` (`ai_events`,
-`scan_vehicle_feed`) и `background/scheduler.py` (лента раз на проход по схеме). Поведение держат
-`tests/test_petrovich_ai_scan.py`: лента основной источник, резервный путь при сбое и неверных кредах, пауза,
-дедупликация повторных проверок и выдача событий ленты боту через outbox.
+Когда лента недоступна (сеть, таймаут, 5xx, отказ авторизации): по умолчанию отдаётся последний кэш API
+(`feedSource=api_cache`, без перезаписи правилами); если в запросе `fallbackRules=true` (тумблер в приложении) —
+общие правила стенда (`feedSource=rules`). Повторного обращения к ленте в паузу
+`FS_PETROVICH_AI_RETRY_PAUSE_SECONDS` (300 по умолчанию) нет. Пустые адрес или креды — выключено (только правила).
+`/health` показывает `petrovichAiConfigured`. Клиент — `petrovich_ai/client.py`, маппинг —
+`petrovich_ai/mapping.py`, переключение — `store/scan.py` и `background/scheduler.py`. Поведение держат
+`tests/test_petrovich_ai_scan.py`.
 
 ### Хранилище аномалий и решений
 

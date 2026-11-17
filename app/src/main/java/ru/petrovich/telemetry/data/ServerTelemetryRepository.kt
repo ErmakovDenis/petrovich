@@ -14,6 +14,8 @@ class ServerTelemetryRepository(
 
     override suspend fun vehicles(): List<Vehicle> =
         StandRequests.decode(ListSerializer(Vehicle.serializer()), stand.get("v1/vehicles"))
+            // Стенд мог ещё не отдавать plate — вытаскиваем из имени («… (гн 8901)» / полный номер).
+            .map { v -> if (v.plate.isNullOrBlank()) v.copy(plate = VehiclePlate.fromName(v.name)) else v }
 
     override suspend fun telemetry(vehicle: Vehicle, from: LocalDateTime, to: LocalDateTime): VehicleTelemetry {
         val (f, t) = StandRequests.period(from, to)

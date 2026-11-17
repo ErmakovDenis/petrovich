@@ -57,7 +57,7 @@ class BaselineAnomalyDetector : AnomalyDetector {
                 out += Anomaly(
                     id = "rule|nodata|${telemetry.vehicle.id}|${c.parameter.name}|${LocalDate.now()}",
                     vehicleId = telemetry.vehicle.id,
-                    vehicleName = telemetry.vehicle.name,
+                    vehicleName = telemetry.vehicle.label,
                     category = c.parameter.category,
                     parameterName = c.parameter.name,
                     parameterCaption = c.parameter.caption,
@@ -197,7 +197,7 @@ class BaselineAnomalyDetector : AnomalyDetector {
             Anomaly(
                 id = "rule|$kind|${t.vehicle.id}|${c.parameter.name}|${times[i]}",
                 vehicleId = t.vehicle.id,
-                vehicleName = t.vehicle.name,
+                vehicleName = t.vehicle.label,
                 category = c.parameter.category,
                 parameterName = c.parameter.name,
                 parameterCaption = c.parameter.caption,

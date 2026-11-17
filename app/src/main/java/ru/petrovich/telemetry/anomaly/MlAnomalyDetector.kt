@@ -82,7 +82,7 @@ class MlAnomalyDetector(
             Anomaly(
                 id = "ml|${telemetry.vehicle.id}|$time",
                 vehicleId = telemetry.vehicle.id,
-                vehicleName = telemetry.vehicle.name,
+                vehicleName = telemetry.vehicle.label,
                 category = info?.category ?: MetricCategory.ENGINE,
                 parameterName = paramName,
                 parameterCaption = info?.caption ?: paramName,

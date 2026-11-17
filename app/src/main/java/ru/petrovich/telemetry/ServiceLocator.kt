@@ -96,6 +96,11 @@ object ServiceLocator {
             // Фоновая проверка на стенде: время последней проверки в сводке — со стенда (пока стенд не проверял —
             // остаётся прежнее).
             onStandLastScan = { at -> if (at != null) settings.update { it.copy(lastScanAt = at) } },
+            onFeedState = { source, apiAt ->
+                settings.update {
+                    it.copy(anomalyFeedSource = source, anomalyApiUpdatedAt = apiAt ?: 0L)
+                }
+            },
         )
     }
 
@@ -129,9 +134,9 @@ object ServiceLocator {
             server = ServerVehicleChecker(stand, log = { Log.i("AnomalyCheck", it) }),
             compareAllowed = BuildConfig.DEBUG,
             log = { Log.w("AnomalyCompare", it) },
-            stored = StoredVehicleChecker(standAnomalies),
+            stored = StoredVehicleChecker(standAnomalies, fallbackRules = { settings.current().anomalyFallbackRules }),
             api = ApiAnomalyChecker(petrovichAiApi, vehicleId = { v -> apiVehicleResolver.resolve(v) }),
-            // Резервная схема видна в интерфейсе: «Главная» и «Проблемы» показывают, что API недоступен.
+            // Устаревший прямой API на устройстве: отметка для тестов; при стенде лента идёт через StoredVehicleChecker.
             onApiDegraded = { degraded -> settings.update { it.copy(anomalyApiDegraded = degraded) } },
         )
     }
@@ -146,7 +151,10 @@ object ServiceLocator {
         anomalySync.resetNotifyMark()
         fleetCache.clear()
         settings.update {
-            it.copy(lastScanAt = 0, fleetUpdatedAt = 0, fleetOnline = 0, fleetIdle = 0, fleetOffline = 0)
+            it.copy(
+                lastScanAt = 0, fleetUpdatedAt = 0, fleetOnline = 0, fleetIdle = 0, fleetOffline = 0,
+                anomalyFeedSource = "", anomalyApiUpdatedAt = 0,
+            )
         }
     }
 

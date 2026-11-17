@@ -20,6 +20,7 @@ from ..petrovich_ai.mapping import match_vehicle, to_anomaly
 from ..rules.check import AnomalyCheckService
 from ..schemas.contract import Anomaly, Vehicle
 from ..schemas.store import (
+    FeedSource,
     ImportItem,
     ImportRequest,
     ImportResponse,
@@ -28,7 +29,7 @@ from ..schemas.store import (
     VehicleScan,
 )
 from ..telemetry.service import PeriodInvalid, TelemetryService, VehicleNotFound
-from .repository import AnomalyRepository, Detection, to_local, to_utc
+from .repository import AnomalyRepository, Detection, now_ms, to_local, to_utc
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,11 @@ class ScanService:
         # Лента «Petrovich AI» не отвечала: до этого момента (monotonic) к ней не обращаемся.
         self._ai_unavailable_until = 0.0
         self.bucket = timedelta(minutes=settings.scan_bucket_minutes)
+
+    @property
+    def ai_configured(self) -> bool:
+        """На стенде заданы адрес и креды API Антифрод."""
+        return self._ai is not None and self._ai.enabled
 
     def canonical_period(self, from_: datetime, to: datetime, utc_offset_minutes: int) -> tuple[datetime, datetime]:
         """Начало и конец периода (местное время), выровненные вниз по шагу сетки от начала эпохи в UTC."""
@@ -106,35 +112,87 @@ class ScanService:
 
     async def scan(
         self, session: str, schema_id: str, vehicle_ids: list[str] | None, from_: datetime, to: datetime,
-        utc_offset_minutes: int,
+        utc_offset_minutes: int, fallback_rules: bool = False,
     ) -> ScanResponse:
         """Проверка машин пользователя (или выбранных) с сохранением. Ошибка одной машины не прерывает остальные;
         отметка последней проверки схемы двигается, только если ответила хотя бы одна машина.
 
-        Источник аномалий — как в приложении: лента «Petrovich AI», когда сервис настроен и отвечает; при его
-        недоступности — обычный путь (правила + аналитика), повторного обращения в паузу нет."""
+        Источник — лента API Антифрод (Petrovich AI), когда сервис настроен и отвечает. При недоступности:
+        [fallback_rules]=true — общие правила стенда; иначе — последний кэш API (без перезаписи правилами)."""
         self._telemetry.check_period(from_, to)
         from_c, to_c = self.canonical_period(from_, to, utc_offset_minutes)
         visible = {v.id: v for v in await self._telemetry.vehicles(session, schema_id)}
         ids = list(dict.fromkeys(vehicle_ids)) if vehicle_ids is not None else sorted(visible)
         feed = await self.ai_events(from_c, to_c, utc_offset_minutes, list(visible.values()))
+        mark = True
         if feed is not None:
             results = await self._scan_from_feed(schema_id, feed, ids, utc_offset_minutes)
-            source = "лента petrovich ai"
+            feed_source = FeedSource.API
+            await self._store.set_feed_state(
+                schema_id, feed_source, api_updated_at=now_ms(), fallback_rules=fallback_rules,
+            )
+            source_label = "лента petrovich ai"
+        elif self._ai is not None and self._ai.enabled:
+            feed_source, results, mark, source_label = await self._when_ai_down(
+                session, schema_id, ids, visible, from_c, to_c, utc_offset_minutes, fallback_rules,
+            )
         else:
             results = await self._scan_vehicles(session, schema_id, ids, visible, from_c, to_c, utc_offset_minutes)
-            source = "правила и аналитика"
-        if not ids or any(r.ok for r in results):
+            feed_source = FeedSource.RULES
+            await self._store.set_feed_state(
+                schema_id, feed_source, fallback_rules=fallback_rules, keep_api_updated_at=True,
+            )
+            source_label = "правила и аналитика"
+        if mark and (not ids or any(r.ok for r in results)):
             await self._store.mark_scan(schema_id)
         await self._store.purge_if_due(datetime.now(UTC).replace(tzinfo=None))
+        _, api_updated_at, _ = await self._store.feed_state(schema_id)
         log.info(
-            "проверка с сохранением: схема %s, %s — %s, машин %d, с ошибкой %d, новых аномалий %d (%s)",
+            "проверка с сохранением: схема %s, %s — %s, машин %d, с ошибкой %d, новых аномалий %d (%s, %s)",
             schema_id, from_c, to_c, len(results), sum(not r.ok for r in results),
-            sum(len(r.new_ids) for r in results), source,
+            sum(len(r.new_ids) for r in results), source_label, feed_source.value,
         )
         return ScanResponse(
-            from_=from_c, to=to_c, results=results, last_scan_at=await self._store.last_scan(schema_id)
+            from_=from_c, to=to_c, results=results, last_scan_at=await self._store.last_scan(schema_id),
+            feed_source=feed_source, api_updated_at=api_updated_at,
         )
+
+    async def _when_ai_down(
+        self, session: str, schema_id: str, ids: list[str], visible: dict[str, Vehicle],
+        from_c: datetime, to_c: datetime, utc_offset_minutes: int, fallback_rules: bool,
+    ) -> tuple[FeedSource, list[VehicleScan], bool, str]:
+        """Лента API настроена, но не ответила: правила по тумблеру или кэш API без перезаписи."""
+        if fallback_rules:
+            results = await self._scan_vehicles(session, schema_id, ids, visible, from_c, to_c, utc_offset_minutes)
+            await self._store.set_feed_state(
+                schema_id, FeedSource.RULES, fallback_rules=True, keep_api_updated_at=True,
+            )
+            return FeedSource.RULES, results, True, "правила и аналитика (резерв)"
+        _, api_at, _ = await self._store.feed_state(schema_id)
+        if api_at is not None:
+            results = await self._results_from_api_cache(schema_id, ids, utc_offset_minutes)
+            await self._store.set_feed_state(
+                schema_id, FeedSource.API_CACHE, fallback_rules=False, keep_api_updated_at=True,
+            )
+            return FeedSource.API_CACHE, results, False, "кэш ленты petrovich ai"
+        results = [VehicleScan(vehicle_id=v, ok=True) for v in ids]
+        await self._store.set_feed_state(
+            schema_id, FeedSource.UNAVAILABLE, fallback_rules=False, keep_api_updated_at=True,
+        )
+        return FeedSource.UNAVAILABLE, results, False, "лента недоступна, кэша нет"
+
+    async def _results_from_api_cache(
+        self, schema_id: str, ids: list[str], utc_offset_minutes: int,
+    ) -> list[VehicleScan]:
+        """Последний снимок аномалий API по машинам — без новой проверки правилами."""
+        cached = await self._store.list_by_id_prefix(schema_id, "api|", ids, utc_offset_minutes)
+        by_vehicle: dict[str, list] = {}
+        for a in cached:
+            by_vehicle.setdefault(a.vehicle_id, []).append(a)
+        return [
+            VehicleScan(vehicle_id=v, ok=True, anomalies=by_vehicle.get(v, []), new_ids=[])
+            for v in ids
+        ]
 
     async def _scan_vehicles(
         self, session: str, schema_id: str, ids: list[str], visible: dict[str, Vehicle], from_c: datetime,
@@ -162,14 +220,15 @@ class ScanService:
     async def ai_events(
         self, from_c: datetime, to_c: datetime, utc_offset_minutes: int, vehicles: list[Vehicle],
     ) -> dict[str, list[tuple[Anomaly, datetime, datetime]]] | None:
-        """События ленты «Petrovich AI» за окно, по id машин схемы; None — лента недоступна (вызывающий уходит
-        в обычный путь). События с началом вне окна и машины, не найденные в схеме, пропускаются."""
+        """События ленты «Petrovich AI» за окно, по id машин схемы; None — лента недоступна (вызывающий
+        выбирает кэш API или правила по fallback_rules). События с началом вне окна и машины, не найденные
+        в схеме, пропускаются."""
         if self._ai is None or not self._ai.enabled or time.monotonic() < self._ai_unavailable_until:
             return None
         events = await self._ai.events(from_c.date(), to_c.date())
         if events is None:
             self._ai_unavailable_until = time.monotonic() + self._settings.petrovich_ai_retry_pause_seconds
-            log.warning("проверка: лента «Petrovich AI» недоступна — машины проверяются правилами и аналитикой, как раньше")
+            log.warning("проверка: лента «Petrovich AI» недоступна — кэш API или общие правила по настройке")
             return None
         by_vehicle: dict[str, list[tuple[Anomaly, datetime, datetime]]] = {}
         for raw in events:

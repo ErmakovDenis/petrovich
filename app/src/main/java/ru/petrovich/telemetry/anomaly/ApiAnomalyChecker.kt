@@ -148,7 +148,7 @@ fun AnomalyOut.toAnomaly(vehicle: Vehicle): Anomaly {
     return Anomaly(
         id = "api|$kind|$id",
         vehicleId = vehicle.id,
-        vehicleName = vehicle.name,
+        vehicleName = vehicle.label,
         category = MetricCategory.classify(kind, description) ?: MetricCategory.ENGINE,
         parameterName = kind,
         parameterCaption = kind,

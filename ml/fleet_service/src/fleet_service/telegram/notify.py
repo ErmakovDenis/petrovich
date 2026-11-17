@@ -23,6 +23,7 @@ from ..autograph.errors import AutoGraphUnavailable, SessionInvalid
 from ..config import Settings
 from ..rules.baseline import java_time
 from ..schemas.contract import Severity, Vehicle
+from ..schemas.store import feed_list_filters
 from ..schemas.telegram import ChatMessage, Notice, Outbox
 from ..store.repository import AnomalyFilter, AnomalyRepository, Record, to_local
 from ..telemetry.service import TelemetryService
@@ -142,8 +143,17 @@ class TelegramNotifier:
         if not ids:
             return
         since = max(link.linked_at, now - s.telegram_notify_max_age_hours * HOUR_MS)
+        # Та же выдача, что у приложения: только текущий источник ленты (api / кэш / правила).
+        feed_source, _, _ = await self._store.feed_state(link.schema_id)
+        empty, id_prefix, exclude_id_prefix = feed_list_filters(feed_source)
+        if empty:
+            return
         _, records = await self._store.query(
-            link.schema_id, AnomalyFilter(vehicle_ids=ids, status="open", detected_from_ms=since),
+            link.schema_id,
+            AnomalyFilter(
+                vehicle_ids=ids, status="open", detected_from_ms=since,
+                id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
+            ),
             s.anomalies_max_limit,
         )
         seen = await self._links.seen(link.chat_id, [r.id for r in records])
