@@ -40,14 +40,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.VehicleActivity
 import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.ui.common.MessageBox
-import ru.petrovich.telemetry.ui.common.PChip
+import ru.petrovich.telemetry.ui.common.PeriodChips
+import ru.petrovich.telemetry.ui.common.PeriodPreset
 import ru.petrovich.telemetry.ui.common.Pill
 import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.color
 import ru.petrovich.telemetry.ui.common.formatValue
 import ru.petrovich.telemetry.ui.common.hhmm
@@ -62,13 +67,16 @@ import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
 import java.time.LocalDateTime
+import androidx.compose.foundation.layout.PaddingValues
 
-private enum class CardPeriod(val title: String, val days: Long) {
-    TODAY("Сегодня", 1), WEEK("Неделя", 7), MONTH("Месяц", 30)
-}
+private val CardPresets = listOf(
+    PeriodPreset("today", "Сегодня") { TimeRange.today() },
+    PeriodPreset("week", "Неделя") { TimeRange.lastDays(7) },
+    PeriodPreset("month", "Месяц") { TimeRange.lastDays(30) },
+)
 
 /**
- * 3.13 «Карточка машины»: номер крупно, период Сегодня/Неделя/Месяц, три показателя (в баке,
+ * 3.13 «Карточка машины»: номер крупно, период (пресеты + свой), три показателя (в баке,
  * пробег, холостой ход — честно посчитаны из телеметрии), детали, текущая аномалия (если есть)
  * и «Петрович помнит». Кнопка «Показать на карте» скрыта: у AutoGRAPH нет GPS/маршрута.
  */
@@ -86,27 +94,74 @@ fun VehicleCardScreen(
     val anomalies = remember(allAnomalies, settings?.mutedKinds) { allAnomalies.shown(settings?.mutedKinds.orEmpty()) }
     var vehicle by remember(vehicleId) { mutableStateOf<Vehicle?>(null) }
     var vehicleLoaded by remember(vehicleId) { mutableStateOf(false) }
-    var period by remember { mutableStateOf(CardPeriod.TODAY) }
-    var stats by remember(vehicleId) { mutableStateOf<VehicleStats?>(null) }
-    var loadingStats by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var selectedPresetId by remember { mutableStateOf<String?>("today") }
+    var customRange by remember { mutableStateOf<TimeRange?>(null) }
+    fun activeRange(): TimeRange =
+        customRange?.takeIf { selectedPresetId == null }
+            ?: CardPresets.firstOrNull { it.id == selectedPresetId }?.range?.invoke()
+            ?: TimeRange.today()
+    // Пресеты сегодня/неделя/месяц — одним заходом при открытии карточки; переключение без повторных запросов.
+    var statsByPreset by remember(vehicleId) { mutableStateOf<Map<String, VehicleStats>>(emptyMap()) }
+    var presetErrors by remember(vehicleId) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var customStats by remember { mutableStateOf<VehicleStats?>(null) }
+    var customLoading by remember { mutableStateOf(false) }
+    var customError by remember { mutableStateOf<String?>(null) }
+    var vehicleError by remember { mutableStateOf<String?>(null) }
+    val stats = if (selectedPresetId != null) statsByPreset[selectedPresetId] else customStats
+    val loadingStats = if (selectedPresetId != null) {
+        stats == null && selectedPresetId !in presetErrors
+    } else {
+        customLoading && customStats == null
+    }
+    val error = if (selectedPresetId != null) presetErrors[selectedPresetId] else customError
 
     LaunchedEffect(vehicleId) {
         vehicleLoaded = false
+        vehicleError = null
         runCatchingCancellable { ServiceLocator.telemetry.vehicles().firstOrNull { it.id == vehicleId } }
             .onSuccess { vehicle = it; vehicleLoaded = true }
-            .onFailure { vehicleLoaded = true; error = it.message ?: it.toString() }
+            .onFailure { vehicleLoaded = true; vehicleError = it.message ?: it.toString() }
     }
 
-    LaunchedEffect(vehicleId, period, vehicle) {
+    LaunchedEffect(vehicleId, vehicle) {
         val v = vehicle ?: return@LaunchedEffect
-        loadingStats = true
-        error = null
-        val now = LocalDateTime.now()
-        val from = if (period == CardPeriod.TODAY) now.toLocalDate().atStartOfDay() else now.minusDays(period.days)
-        runCatchingCancellable { ServiceLocator.telemetry.telemetry(v, from, now) }
-            .onSuccess { t -> stats = computeVehicleStats(t, now); loadingStats = false }
-            .onFailure { e -> error = e.message ?: e.toString(); loadingStats = false }
+        statsByPreset = emptyMap()
+        presetErrors = emptyMap()
+        val lock = Mutex()
+        CardPresets.forEach { preset ->
+            launch {
+                val range = preset.range()
+                runCatchingCancellable {
+                    computeVehicleStats(
+                        ServiceLocator.telemetry.telemetry(v, range.from, range.to),
+                        range.to,
+                    )
+                }.onSuccess { ready ->
+                    lock.withLock { statsByPreset = statsByPreset + (preset.id to ready) }
+                }.onFailure { e ->
+                    lock.withLock {
+                        presetErrors = presetErrors + (preset.id to (e.message ?: e.toString()))
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(vehicleId, vehicle, selectedPresetId, customRange) {
+        val range = customRange?.takeIf { selectedPresetId == null }
+        if (range == null) {
+            customStats = null
+            customError = null
+            customLoading = false
+            return@LaunchedEffect
+        }
+        val v = vehicle ?: return@LaunchedEffect
+        customLoading = true
+        customStats = null
+        customError = null
+        runCatchingCancellable { ServiceLocator.telemetry.telemetry(v, range.from, range.to) }
+            .onSuccess { t -> customStats = computeVehicleStats(t, range.to); customLoading = false }
+            .onFailure { e -> customError = e.message ?: e.toString(); customLoading = false }
     }
 
     val worstPending = remember(anomalies, vehicleId) {
@@ -134,7 +189,7 @@ fun VehicleCardScreen(
             Box(Modifier.padding(padding).fillMaxSize()) {
                 Column {
                     Row(Modifier.statusBarsPadding().padding(8.dp)) { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") } }
-                    MessageBox(error?.let { "Не удалось загрузить машину: $it" } ?: "Эта машина не найдена")
+                    MessageBox(vehicleError?.let { "Не удалось загрузить машину: $it" } ?: "Эта машина не найдена")
                 }
             }
             return@Scaffold
@@ -152,13 +207,27 @@ fun VehicleCardScreen(
                 Box(Modifier.size(56.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.LocalShipping, null, tint = c.accent)
                 }
-                Text(v.name, Modifier.padding(top = 8.dp), fontFamily = Petrovich.display, fontWeight = FontWeight.Black, fontSize = 26.sp, maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                // Гос. номер крупно (карта экранов 3.13); если номера нет — имя машины.
+                Text(
+                    v.shortLabel,
+                    Modifier.padding(top = 8.dp),
+                    fontFamily = Petrovich.display, fontWeight = FontWeight.Black, fontSize = 26.sp,
+                    maxLines = 2, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+                if (v.plate != null && v.nameWithoutPlate != v.shortLabel) {
+                    Text(v.nameWithoutPlate, style = MaterialTheme.typography.bodyMedium, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 v.group?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted) }
             }
 
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CardPeriod.entries.forEach { p -> PChip(p.title, selected = period == p, onClick = { period = p }, modifier = Modifier.weight(1f)) }
-            }
+            PeriodChips(
+                presets = CardPresets,
+                selectedPresetId = selectedPresetId,
+                customRange = customRange,
+                onSelectPreset = { selectedPresetId = it.id; customRange = null },
+                onSelectCustom = { customRange = it; selectedPresetId = null },
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            )
 
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (loadingStats && stats == null) {
@@ -166,10 +235,11 @@ fun VehicleCardScreen(
                         CircularProgressIndicator(Modifier.size(22.dp).padding(vertical = 16.dp), strokeWidth = 2.dp, color = c.accent)
                     }
                 } else {
+                    val periodLabel = periodWord(selectedPresetId, activeRange())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatTile("в баке", stats?.fuelLevel.formatValue(), stats?.fuelUnit ?: "л", Modifier.weight(1f))
-                        StatTile("пробег", periodWord(period, "пробег"), stats?.mileageKm.formatValue(), "км", Modifier.weight(1f))
-                        StatTile("холостой ход", periodWord(period, "холостой"), stats?.idleHours?.let { "%.1f".format(it) } ?: "—", "ч", Modifier.weight(1f))
+                        StatTile("пробег", periodLabel, stats?.mileageKm.formatValue(), "км", Modifier.weight(1f))
+                        StatTile("холостой ход", periodLabel, stats?.idleHours?.let { "%.1f".format(it) } ?: "—", "ч", Modifier.weight(1f))
                     }
                     error?.let { Text("Не удалось обновить данные: $it", style = MaterialTheme.typography.bodySmall, color = c.med) }
 
@@ -191,7 +261,7 @@ fun VehicleCardScreen(
 
                     SurfaceCard(onClick = { onAsk(vehicleId) }, shape = RoundedCornerShape(16.dp), color = c.surface2) {
                         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.Center) {
-                            Text("Спросить Петровича про ${v.name}", color = c.accent, fontWeight = FontWeight.SemiBold)
+                            Text("Спросить Петровича про ${v.shortLabel}", color = c.accent, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
@@ -201,10 +271,11 @@ fun VehicleCardScreen(
     }
 }
 
-private fun periodWord(p: CardPeriod, @Suppress("UNUSED_PARAMETER") kind: String): String = when (p) {
-    CardPeriod.TODAY -> "сегодня"
-    CardPeriod.WEEK -> "за неделю"
-    CardPeriod.MONTH -> "за месяц"
+private fun periodWord(presetId: String?, range: TimeRange): String = when (presetId) {
+    "today" -> "сегодня"
+    "week" -> "за неделю"
+    "month" -> "за месяц"
+    else -> range.shortLabel
 }
 
 @Composable

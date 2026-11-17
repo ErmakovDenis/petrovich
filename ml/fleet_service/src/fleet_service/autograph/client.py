@@ -176,6 +176,8 @@ class AutoGraphClient:
         data = await self._json("EnumDevices", {"session": session, "schemaID": schema_id})
         if not isinstance(data, dict):
             raise SessionInvalid()
+        from ..telemetry.plates import from_device
+
         groups = {str(g.get("ID")): g.get("Name") for g in data.get("Groups") or [] if isinstance(g, dict)}
         vehicles = []
         for item in data.get("Items") or []:
@@ -188,8 +190,10 @@ class AutoGraphClient:
                 name = f"ТС {serial if serial is not None else vid[:8]}"
             parent = item.get("ParentID")
             group = groups.get(str(parent)) if parent is not None else None
-            vehicles.append(Vehicle(id=vid, name=str(name), group=group))
-        return sorted(vehicles, key=lambda v: v.name)
+            props = item.get("Properties") if isinstance(item.get("Properties"), list) else None
+            plate = from_device(str(name), props)
+            vehicles.append(Vehicle(id=vid, name=str(name), group=group, plate=plate))
+        return sorted(vehicles, key=lambda v: v.plate or v.name)
 
     async def enum_parameters(self, session: str, schema_id: str, vehicle_id: str) -> list[RParameter]:
         data = await self._json("EnumParameters", {"session": session, "schemaID": schema_id, "IDs": vehicle_id})

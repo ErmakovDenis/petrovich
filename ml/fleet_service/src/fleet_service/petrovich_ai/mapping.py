@@ -71,7 +71,11 @@ def to_anomaly(event: dict, vehicle: Vehicle, utc_offset_minutes: int) -> tuple[
         # Детерминированный ключ: повторная проверка не плодит дубликаты.
         id=f"api|{kind}|{event.get('id')}",
         vehicle_id=vehicle.id,
-        vehicle_name=vehicle.name,
+        vehicle_name=(
+            f"{vehicle.name} {vehicle.plate}"
+            if vehicle.plate and vehicle.plate.replace(" ", "").lower() not in vehicle.name.replace(" ", "").lower()
+            else vehicle.name
+        ),
         category=_KIND_CATEGORY.get(kind, MetricCategory.ENGINE),
         parameter_name=kind,
         parameter_caption=title,

@@ -42,6 +42,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -198,21 +202,43 @@ fun SoftButton(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PeriodSelector(selected: Period, onSelect: (Period) -> Unit, modifier: Modifier = Modifier) {
+fun PeriodSelector(
+    selected: Period,
+    customRange: TimeRange?,
+    onSelect: (Period) -> Unit,
+    onSelectCustom: (TimeRange) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val c = Petrovich.colors
-    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Period.entries.forEachIndexed { i, p ->
-            SegmentedButton(
-                selected = p == selected,
-                onClick = { onSelect(p) },
-                shape = SegmentedButtonDefaults.itemShape(i, Period.entries.size),
-                colors = SegmentedButtonDefaults.colors(
-                    activeContainerColor = c.surface, activeContentColor = c.ink, activeBorderColor = c.line,
-                    inactiveContainerColor = c.surface2, inactiveContentColor = c.muted, inactiveBorderColor = c.line,
-                ),
-                label = { Text(p.title) },
-            )
+    var dialog by remember { mutableStateOf(false) }
+    val customSelected = customRange != null
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            Period.entries.forEachIndexed { i, p ->
+                SegmentedButton(
+                    selected = !customSelected && p == selected,
+                    onClick = { onSelect(p) },
+                    shape = SegmentedButtonDefaults.itemShape(i, Period.entries.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = c.surface, activeContentColor = c.ink, activeBorderColor = c.line,
+                        inactiveContainerColor = c.surface2, inactiveContentColor = c.muted, inactiveBorderColor = c.line,
+                    ),
+                    label = { Text(p.title) },
+                )
+            }
         }
+        PChip(
+            label = if (customSelected) customRange!!.label else "Свой период",
+            selected = customSelected,
+            onClick = { dialog = true },
+        )
+    }
+    if (dialog) {
+        CustomPeriodDialog(
+            initial = defaultCustomDraft(customRange),
+            onConfirm = { onSelectCustom(it); dialog = false },
+            onDismiss = { dialog = false },
+        )
     }
 }
 
@@ -222,7 +248,7 @@ fun TelemetryHeader(state: TelemetryUiState, vm: TelemetryViewModel) {
     Column(Modifier.fillMaxWidth()) {
         VehiclePicker(state.vehicles, state.selectedVehicleId, vm::selectVehicle)
         Spacer(Modifier.height(8.dp))
-        PeriodSelector(state.period, vm::selectPeriod)
+        PeriodSelector(state.period, state.customRange, vm::selectPeriod, vm::selectCustomRange)
         Spacer(Modifier.height(8.dp))
         if (state.loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Petrovich.colors.accent) else Spacer(Modifier.height(4.dp))
     }

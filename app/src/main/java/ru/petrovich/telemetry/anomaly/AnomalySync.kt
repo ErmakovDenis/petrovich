@@ -45,6 +45,8 @@ class AnomalySync(
     private val now: () -> LocalDateTime = LocalDateTime::now,
     /** Время последней проверки схемы со стенда (null — не было) — при фоновой проверке на стенде оно идёт в сводку. */
     private val onStandLastScan: suspend (Long?) -> Unit = {},
+    /** Источник ленты и время последнего успешного API (для дисклеймеров). */
+    private val onFeedState: suspend (feedSource: String, apiUpdatedAt: Long?) -> Unit = { _, _ -> },
     /** Отметка уведомлений: самое позднее время обнаружения на стенде, о котором уже решали, уведомлять ли. */
     private val notifyMarkFile: File = File(reportFile.parentFile, "anomaly-notify-mark"),
 ) {
@@ -79,6 +81,12 @@ class AnomalySync(
         importLocal()
         val list = stand.list(MAX_ITEMS)
         val items = list.items
+        // Источник ленты и время последнего успешного ответа API Антифрод — для дисклеймеров на «Проблемах».
+        val cur = settings()
+        if (list.feedSource != cur.anomalyFeedSource || (list.apiUpdatedAt ?: 0L) != cur.anomalyApiUpdatedAt) {
+            // Обновление настроек через внешний репозиторий — вызывающий (ServiceLocator) передаёт onFeedState.
+            onFeedState(list.feedSource, list.apiUpdatedAt)
+        }
         if (settings().backgroundOnServer) onStandLastScan(list.lastScanAt)
         // Не перенесённые (стенд не ответил) записи с id устройства остаются в ленте до следующей попытки.
         store.replaceAll(items + store.anomalies.value.filterNot { it.isStandId })

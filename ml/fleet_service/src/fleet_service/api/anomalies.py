@@ -15,6 +15,7 @@ from ..schemas.store import (
     ScanRequest,
     ScanResponse,
     StoredAnomaly,
+    feed_list_filters,
 )
 from ..store.repository import AnomalyFilter, AnomalyRepository, to_utc
 from ..store.scan import ImportTooLarge, ScanService
@@ -75,11 +76,19 @@ async def list_anomalies(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> AnomalyList:
     """Сохранённые аномалии машин пользователя, сначала новые. Период — по пересечению с эпизодом события;
-    status: open — ждут решения, resolved — с решением, confirmed, false_alarm."""
+    status: open — ждут решения, resolved — с решением, confirmed, false_alarm.
+    Выдача фильтруется по текущему источнику ленты (api / кэш api / правила)."""
     for t in (from_, to):
         if t is not None and t.tzinfo is not None:
             raise HTTPException(UNPROCESSABLE, "Время передаётся без часового пояса — как местное время пользователя")
     visible = [v.id for v in await telemetry.vehicles(user.session, user.schema_id)]
+    feed_source, api_updated_at, _ = await store.feed_state(user.schema_id)
+    empty, id_prefix, exclude_id_prefix = feed_list_filters(feed_source)
+    if empty:
+        return AnomalyList(
+            total=0, items=[], last_scan_at=await store.last_scan(user.schema_id),
+            feed_source=feed_source, api_updated_at=api_updated_at,
+        )
     f = AnomalyFilter(
         vehicle_ids=visible,
         from_utc=to_utc(from_, utc_offset_minutes) if from_ else None,
@@ -87,22 +96,28 @@ async def list_anomalies(
         vehicle_id=vehicle_id,
         severities=[s.value for s in severity or []],
         status=status_,
+        id_prefix=id_prefix,
+        exclude_id_prefix=exclude_id_prefix,
     )
     total, records = await store.query(user.schema_id, f, min(limit, settings.anomalies_max_limit), offset)
     return AnomalyList(
         total=total,
         items=[r.to_api(utc_offset_minutes) for r in records],
         last_scan_at=await store.last_scan(user.schema_id),
+        feed_source=feed_source,
+        api_updated_at=api_updated_at,
     )
 
 
 @router.post("/scan", response_model=ScanResponse, response_model_by_alias=True)
 async def scan(request: ScanRequest, user: User, scans: Scans) -> ScanResponse:
     """Проверка с сохранением на канонической сетке: машины пользователя (или vehicleIds) за период. Ошибка одной
-    машины — в её результате (ok=false), остальные проверяются."""
+    машины — в её результате (ok=false), остальные проверяются. fallbackRules — при недоступности API Антифрод
+    считать аномалии общими правилами (иначе — последний кэш API)."""
     try:
         return await scans.scan(
-            user.session, user.schema_id, request.vehicle_ids, request.from_, request.to, request.utc_offset_minutes
+            user.session, user.schema_id, request.vehicle_ids, request.from_, request.to,
+            request.utc_offset_minutes, fallback_rules=request.fallback_rules,
         )
     except PeriodInvalid as e:
         raise HTTPException(UNPROCESSABLE, str(e)) from None

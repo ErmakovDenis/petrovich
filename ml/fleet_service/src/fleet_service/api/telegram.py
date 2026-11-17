@@ -7,6 +7,7 @@ from ..autograph.errors import AutoGraphUnavailable
 from ..background.access import AccessRepository, user_key
 from ..config import Settings, get_settings
 from ..schemas.contract import Severity
+from ..schemas.store import feed_list_filters
 from ..schemas.telegram import (
     ChatProblems,
     ConnectRequest,
@@ -227,10 +228,17 @@ async def problems(
     since = None
     if lists.period_hours is not None:
         since = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=lists.period_hours)
+    # Та же выдача по источнику ленты, что у приложения и outbox.
+    feed_source, _, _ = await store.feed_state(user.schema_id)
+    empty, id_prefix, exclude_id_prefix = feed_list_filters(feed_source)
+    if empty:
+        return ChatProblems(total=0, items=[], lists=lists)
     total, records = await store.query(
         user.schema_id,
-        AnomalyFilter(vehicle_ids=vehicles, status="open", from_utc=since, severities=_AT_LEAST[lists.min_severity],
-                      exclude_kinds=sub.muted_kinds),
+        AnomalyFilter(
+            vehicle_ids=vehicles, status="open", from_utc=since, severities=_AT_LEAST[lists.min_severity],
+            exclude_kinds=sub.muted_kinds, id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
+        ),
         limit or lists.page_size, offset, critical_first=lists.order == "severity",
     )
     return ChatProblems(total=total, items=[r.to_api(chat.utc_offset_minutes) for r in records], lists=lists)

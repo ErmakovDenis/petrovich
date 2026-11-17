@@ -26,6 +26,7 @@ from ..autograph.errors import AutoGraphUnavailable, LoginRejected, SessionInval
 from ..config import Settings
 from ..limits import background_priority
 from ..schemas.contract import Vehicle
+from ..schemas.store import FeedSource
 from ..store.repository import AnomalyRepository, to_local
 from ..store.scan import FeedEvents, ScanService, error_text
 from ..telemetry.service import TelemetryService
@@ -140,14 +141,36 @@ class BackgroundScanner:
             log.warning("фоновая проверка: схема %s — нет действующего доступа (доступов %d)", schema_id, len(grants))
             return run
 
-        # Источник аномалий — как в приложении: лента «Petrovich AI» одним запросом на проход; при её
-        # недоступности каждая машина проверяется обычным путём (правила + аналитика).
+        # Источник — лента API Антифрод одним запросом; при сбое — кэш API или правила по последнему
+        # предпочтению пользователя (fallback_rules в ai_feed_state).
         offset = next(iter(o.grant.utc_offset_minutes for o in owners.values()))
         to = to_local(self.clock(), offset)
         f, t = self._scans.canonical_period(to - timedelta(hours=self._settings.background_window_hours), to, offset)
         feed = await self._scans.ai_events(f, t, offset, list(vehicles.values()))
+        _, _, prefer_rules = await self._store.feed_state(schema_id)
+        ai_on = self._scans.ai_configured
+        use_rules = feed is None and (not ai_on or prefer_rules)
+        if feed is not None:
+            await self._store.set_feed_state(schema_id, FeedSource.API, api_updated_at=now_ms(),
+                                            fallback_rules=prefer_rules)
+        elif ai_on and prefer_rules:
+            await self._store.set_feed_state(schema_id, FeedSource.RULES, fallback_rules=True,
+                                            keep_api_updated_at=True)
+        elif ai_on:
+            _, api_at, _ = await self._store.feed_state(schema_id)
+            source = FeedSource.API_CACHE if api_at is not None else FeedSource.UNAVAILABLE
+            await self._store.set_feed_state(schema_id, source, fallback_rules=False, keep_api_updated_at=True)
+            await self._access.mark(used, ok=True)
+            log.info("фоновая проверка: схема %s — лента недоступна, %s (машин не перепроверяем правилами)",
+                     schema_id, source.value)
+            return run
+        else:
+            await self._store.set_feed_state(schema_id, FeedSource.RULES, fallback_rules=prefer_rules,
+                                            keep_api_updated_at=True)
 
-        results = await asyncio.gather(*(self._vehicle(schema_id, vid, o, feed) for vid, o in owners.items()))
+        results = await asyncio.gather(
+            *(self._vehicle(schema_id, vid, o, feed, use_rules=use_rules) for vid, o in owners.items())
+        )
         run.vehicles = len(results)
         run.failed = sum(isinstance(r, str) for r in results)
         run.new = sum(r for r in results if isinstance(r, int))
@@ -197,9 +220,9 @@ class BackgroundScanner:
         return token, vehicles
 
     async def _vehicle(self, schema_id: str, vehicle_id: str, owner: _Owner,
-                       feed: FeedEvents | None) -> int | str:
-        """Новых аномалий машины или текст ошибки. [feed] — события ленты «Petrovich AI» по машинам прохода:
-        не None — сохраняем их; None — обычная проверка (правила + аналитика)."""
+                       feed: FeedEvents | None, *, use_rules: bool) -> int | str:
+        """Новых аномалий машины или текст ошибки. [feed] — события ленты API; иначе при [use_rules] —
+        обычная проверка (правила + аналитика)."""
         offset = owner.grant.utc_offset_minutes
         to = to_local(self.clock(), offset)
         from_ = to - timedelta(hours=self._settings.background_window_hours)
@@ -208,9 +231,11 @@ class BackgroundScanner:
                 if feed is not None:
                     result = await self._scans.scan_vehicle_feed(schema_id, vehicle_id, feed.get(vehicle_id, []),
                                                                  offset)
-                else:
+                elif use_rules:
                     f, t = self._scans.canonical_period(from_, to, offset)
                     result = await self._scans.scan_vehicle(owner.session, schema_id, vehicle_id, f, t, offset)
+                else:
+                    return 0
                 await self._update_widget_stats(schema_id, vehicle_id, owner, to)
                 return len(result.new_ids)
             except SessionInvalid:
@@ -220,7 +245,8 @@ class BackgroundScanner:
 
     async def _update_widget_stats(self, schema_id: str, vehicle_id: str, owner: _Owner, now_local: datetime) -> None:
         today = now_local.date()
-        history_days = 60
+        # Как TimeRange.MAX_DAYS / FS_TELEMETRY_MAX_PERIOD_HOURS: чтобы «свой период» на главной имел данные.
+        history_days = max(1, self._settings.telemetry_max_period_hours // 24)
         first = today - timedelta(days=history_days - 1)
         existing = await self._store.widget_stats(schema_id, first.isoformat(), today.isoformat())
         known = {item.day for item in existing if item.vehicle.id == vehicle_id}

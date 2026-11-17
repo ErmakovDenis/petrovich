@@ -12,7 +12,6 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.ui.home.HomeData
 import ru.petrovich.telemetry.util.runCatchingCancellable
-import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 
 /**
@@ -39,16 +38,15 @@ class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     )
 
     /**
-     * Тик раз в 15 минут — доклад приходит не секунда в секунду, а в первом тике после назначенного
-     * времени (точность — до четверти часа), и только если сегодня его ещё не отправляли.
+     * Тик раз в 15 минут — доклад в первом тике после назначенного времени (точность — до четверти часа),
+     * только если сегодня ещё не отправляли. Окно и тихие часы — [AppSettings.isDailyReportDueAt].
      */
     private suspend fun maybeSendDailyReport() {
         val prefs = ServiceLocator.settings.current()
         val now = java.time.LocalDateTime.now()
         val today = now.toLocalDate()
         if (today.dayOfWeek !in prefs.reportDays || prefs.lastReportDate == today.toString()) return
-        val reportTime = runCatching { LocalTime.parse(prefs.reportTime) }.getOrDefault(LocalTime.of(8, 0))
-        if (now.toLocalTime().isBefore(reportTime)) return
+        if (!prefs.isDailyReportDueAt(now.toLocalTime())) return
         val anomalies = ServiceLocator.anomalyStore.anomalies.value.shown(prefs.mutedKinds)
         val vehicleCount = runCatching { ServiceLocator.telemetry.vehicles().size }.getOrNull()?.takeIf { it > 0 }
         ServiceLocator.notifier.notifyDailyReport(HomeData(anomalies, vehicleCount, scanned = true, today = today))

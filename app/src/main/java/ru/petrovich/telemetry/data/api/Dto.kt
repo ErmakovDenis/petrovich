@@ -2,6 +2,7 @@ package ru.petrovich.telemetry.data.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class RSchema(
@@ -28,6 +29,14 @@ data class RDeviceItem(
     @SerialName("Name") val name: String? = null,
     @SerialName("Serial") val serial: Int? = null,
     @SerialName("Allowed") val allowed: Boolean = true,
+    /** В т.ч. «Госномер» / RegNumber — откуда берём [ru.petrovich.telemetry.data.Vehicle.plate]. */
+    @SerialName("Properties") val properties: List<RProperty> = emptyList(),
+)
+
+@Serializable
+data class RProperty(
+    @SerialName("Name") val name: String? = null,
+    @SerialName("Value") val value: JsonElement? = null,
 )
 
 @Serializable

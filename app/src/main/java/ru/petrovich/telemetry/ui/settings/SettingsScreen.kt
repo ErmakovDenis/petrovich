@@ -62,6 +62,7 @@ import ru.petrovich.telemetry.data.TELEGRAM_CATEGORIES
 import ru.petrovich.telemetry.data.TELEGRAM_KINDS
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.Contact
+import ru.petrovich.telemetry.data.settings.ThemeMode
 import ru.petrovich.telemetry.ui.common.AppTopBar
 import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.SectionLabel
@@ -83,6 +84,7 @@ private val WeekdayOrder = listOf(
  * Вкладка «Настройки»: когда и как приходит доклад, какие push идут, кому звонить и писать, помощь.
  * [onRestartOnboarding] — «Пройти знакомство заново»; сам сброс делает вызывающая сторона.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit = {}, onOpenTelegram: () -> Unit = {}) {
     val repo = ServiceLocator.settings
@@ -104,6 +106,22 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            SectionLabel("Оформление")
+            Card {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ThemeMode.entries.forEach { mode ->
+                        PChip(
+                            mode.title,
+                            selected = s.themeMode == mode,
+                            onClick = { save { it.copy(themeMode = mode) } },
+                        )
+                    }
+                }
+            }
+
             SectionLabel("Доклад")
             Card {
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -201,7 +219,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Подключение и данные", style = MaterialTheme.typography.titleSmall)
-                        Text("AutoGRAPH, стенд, оформление", style = MaterialTheme.typography.bodySmall, color = c.muted)
+                        Text("AutoGRAPH, стенд, антифрод", style = MaterialTheme.typography.bodySmall, color = c.muted)
                     }
                     Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = c.muted)
                 }

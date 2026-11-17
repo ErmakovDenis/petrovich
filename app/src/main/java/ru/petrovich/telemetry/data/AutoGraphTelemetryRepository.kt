@@ -101,8 +101,16 @@ class AutoGraphTelemetryRepository(
         val groups = resp.groups.associateBy { it.id }
         val list = resp.items
             .filter { it.allowed }
-            .map { Vehicle(it.id, it.name ?: "ТС ${it.serial ?: it.id.take(8)}", it.parentId?.let { p -> groups[p]?.name }) }
-            .sortedBy { it.name }
+            .map { item ->
+                val name = item.name ?: "ТС ${item.serial ?: item.id.take(8)}"
+                Vehicle(
+                    id = item.id,
+                    name = name,
+                    group = item.parentId?.let { p -> groups[p]?.name },
+                    plate = VehiclePlate.from(name, item.properties),
+                )
+            }
+            .sortedBy { it.shortLabel }
         vehiclesCache = schemaId to list
         list
     }

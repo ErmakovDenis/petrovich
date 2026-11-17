@@ -16,18 +16,25 @@ import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.LocalDateTime
 
 enum class Period(val title: String, val hours: Long) {
-    H6("6 ч", 6), H24("24 ч", 24), D3("3 дня", 72), D7("7 дней", 168)
+    H6("6 ч", 6), H24("24 ч", 24), D3("3 дня", 72), D7("7 дней", 168);
+
+    fun toRange(now: LocalDateTime = LocalDateTime.now()): TimeRange = TimeRange.lastHours(hours, now)
 }
 
 data class TelemetryUiState(
     val vehicles: List<Vehicle> = emptyList(),
     val selectedVehicleId: String? = null,
     val period: Period = Period.H24,
+    /** Не null — грузим этот отрезок вместо пресета [period]. */
+    val customRange: TimeRange? = null,
     val telemetry: VehicleTelemetry? = null,
     val loading: Boolean = false,
     val error: String? = null,
 ) {
     val selectedVehicle: Vehicle? get() = vehicles.firstOrNull { it.id == selectedVehicleId }
+
+    fun activeRange(now: LocalDateTime = LocalDateTime.now()): TimeRange =
+        customRange ?: period.toRange(now)
 }
 
 class TelemetryViewModel(
@@ -64,8 +71,14 @@ class TelemetryViewModel(
     }
 
     fun selectPeriod(period: Period) {
-        if (period == _state.value.period) return
-        _state.update { it.copy(period = period) }
+        if (period == _state.value.period && _state.value.customRange == null) return
+        _state.update { it.copy(period = period, customRange = null) }
+        refresh()
+    }
+
+    fun selectCustomRange(range: TimeRange) {
+        if (range == _state.value.customRange) return
+        _state.update { it.copy(customRange = range) }
         refresh()
     }
 
@@ -82,8 +95,8 @@ class TelemetryViewModel(
             return
         }
         _state.update { it.copy(loading = true, error = null) }
-        val to = LocalDateTime.now()
-        runCatchingCancellable { repository.telemetry(vehicle, to.minusHours(s.period.hours), to) }
+        val range = s.activeRange()
+        runCatchingCancellable { repository.telemetry(vehicle, range.from, range.to) }
             .onSuccess { t -> _state.update { it.copy(telemetry = t, loading = false) } }
             .onFailure { e -> _state.update { it.copy(loading = false, error = e.message ?: e.toString()) } }
     }

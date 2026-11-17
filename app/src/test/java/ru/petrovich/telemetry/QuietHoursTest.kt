@@ -45,4 +45,23 @@ class QuietHoursTest {
         assertFalse(night.copy(quietHoursStart = "08:00", quietHoursEnd = "08:00").isQuietAt(LocalTime.of(8, 0)))
         assertFalse(night.copy(quietHoursStart = "не время").isQuietAt(LocalTime.of(23, 0)))
     }
+
+    @Test
+    fun dailyReportOnlyInLateWindowAndNotInQuiet() {
+        val s = night.copy(reportTime = "08:00")
+        assertFalse(s.isDailyReportDueAt(LocalTime.of(7, 59)))
+        assertTrue(s.isDailyReportDueAt(LocalTime.of(8, 0)))
+        assertTrue(s.isDailyReportDueAt(LocalTime.of(10, 59)))
+        assertFalse(s.isDailyReportDueAt(LocalTime.of(11, 0)))
+        // Раньше слали любой тик после 08:00 — отсюда «всё хорошо» в 22:40.
+        assertFalse(s.isDailyReportDueAt(LocalTime.of(22, 40)))
+    }
+
+    @Test
+    fun dailyReportSkippedWhenReportTimeFallsInQuietHours() {
+        val s = night.copy(reportTime = "22:00")
+        assertFalse(s.isDailyReportDueAt(LocalTime.of(22, 15)))
+        assertFalse(s.copy(quietHoursEnabled = false).isDailyReportDueAt(LocalTime.of(1, 0))) // уже > 3ч
+        assertTrue(s.copy(quietHoursEnabled = false).isDailyReportDueAt(LocalTime.of(23, 0)))
+    }
 }

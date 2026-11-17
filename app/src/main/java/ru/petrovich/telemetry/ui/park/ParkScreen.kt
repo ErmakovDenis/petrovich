@@ -119,8 +119,9 @@ fun ParkScreen(onOpenVehicle: (vehicleId: String) -> Unit) {
         rows.filter { row ->
             (statusFilter == ParkStatusFilter.ALL || row.bucket == statusFilter) &&
                 (baseFilter == null || row.vehicle.group == baseFilter) &&
-                (q.isEmpty() || normalize(row.vehicle.name).contains(q))
-        }.sortedWith(compareBy({ bucketOrder(it.bucket) }, { it.vehicle.name }))
+                (q.isEmpty() || normalize(row.vehicle.label).contains(q) ||
+                    row.vehicle.plate?.let { normalize(it).contains(q) } == true)
+        }.sortedWith(compareBy({ bucketOrder(it.bucket) }, { it.vehicle.shortLabel }))
     }
 
     Scaffold(
@@ -224,8 +225,8 @@ private fun ParkVehicleRow(row: ParkRow, onClick: () -> Unit) {
                 Icon(Icons.Filled.LocalShipping, null, tint = pillColor)
             }
             Column(Modifier.weight(1f)) {
-                Text(row.vehicle.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(secondLine(row), style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(row.vehicle.shortLabel, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(parkSubtitle(row), style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Pill(pillText, pillColor, pillBg)
         }
@@ -233,14 +234,14 @@ private fun ParkVehicleRow(row: ParkRow, onClick: () -> Unit) {
 }
 
 /**
- * «Где сейчас и пробег за сегодня (или время последней связи)» — честно из того, что знаем:
- * группу (базу), статус активности и посчитанный по телеметрии пробег. Названий улиц/объектов
- * у реального АвтоГРАФ здесь нет (см. отчёт агента), поэтому не выдумываем — координат нет совсем.
+ * Под заголовком-госномером: модель (если номер вынесен) и статус/пробег.
+ * Названий улиц у AutoGRAPH нет — не выдумываем.
  */
-private fun secondLine(row: ParkRow): String {
+private fun parkSubtitle(row: ParkRow): String {
+    val model = row.vehicle.takeIf { it.plate != null && it.nameWithoutPlate != it.shortLabel }?.nameWithoutPlate
     val s = row.stats
     val base = row.vehicle.group?.let { "База «$it»" }
-    return when {
+    val status = when {
         s == null || s.activity == VehicleActivity.OFFLINE -> s?.lastContact?.let { "связь: ${relativeAgo(it)}" } ?: "нет данных сегодня"
         s.activity == VehicleActivity.ON_LINE -> {
             val km = s.mileageKm?.let { " · ${it.toInt()} км сегодня" } ?: ""
@@ -248,6 +249,7 @@ private fun secondLine(row: ParkRow): String {
         }
         else -> base ?: "стоит"
     }
+    return listOfNotNull(model, status).joinToString(" · ")
 }
 
 private fun relativeAgo(t: LocalDateTime): String {

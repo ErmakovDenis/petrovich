@@ -10,7 +10,7 @@ def test_health_without_token(make_client):
     with make_client() as client:
         assert client.get("/health").json() == {
             "status": "ok", "llmProvider": "openrouter", "llmConfigured": True, "backgroundConfigured": False, "emailConfigured": False,
-            "reserveConfigured": False, "telegramConfigured": False,
+            "reserveConfigured": False, "telegramConfigured": False, "petrovichAiConfigured": False,
             "breakers": {"llm": "closed", "autograph": "closed", "predictive": "closed"},
         }
     with make_client(test_settings(llm_model="")) as client:

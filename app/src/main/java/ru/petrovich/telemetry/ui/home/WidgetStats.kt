@@ -12,6 +12,7 @@ import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.ParameterColumn
 import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.data.VehicleTelemetry
+import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.plural
 import java.time.Duration
 import java.time.LocalDateTime
@@ -19,6 +20,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 import java.util.Locale
+import kotlin.math.ceil
+import kotlin.math.max
 
 /** Машина считается «едущей», если скорость выше этого порога — иначе стоит (в т.ч. холостой ход). */
 private const val IDLE_SPEED_KMH = 1.0
@@ -34,8 +37,16 @@ private val FRESHNESS: Duration = Duration.ofMinutes(45)
 
 private val RuLocale = Locale("ru")
 
-/** Период «Подробной сводки виджета» (3.15). У «Без связи» выбора нет — там всегда «сейчас». */
-enum class WidgetPeriod(val title: String) { DAY("День"), WEEK("Неделя"), MONTH("Месяц") }
+/** Период «Подробной сводки виджета» (3.15). У «Без связи» выбора нет — там всегда «сейчас». Свой период — отдельно через [TimeRange]. */
+enum class WidgetPeriod(val title: String) {
+    DAY("День"), WEEK("Неделя"), MONTH("Месяц");
+
+    fun toRange(now: LocalDateTime = LocalDateTime.now()): TimeRange = when (this) {
+        DAY -> TimeRange.lastHours(24, now)
+        WEEK -> TimeRange.lastDays(7, now)
+        MONTH -> TimeRange.lastDays(30, now)
+    }
+}
 
 data class WidgetPoint(val label: String, val value: Double)
 
@@ -144,12 +155,27 @@ private fun accumulate(type: WidgetType, t: VehicleTelemetry, bucketStart: Local
  */
 fun VehicleTelemetry.totalOf(type: WidgetType): Double = accumulate(type, this, from, ChronoUnit.DAYS, 1).sum()
 
-private fun bucketLabel(period: WidgetPeriod, start: LocalDateTime, unit: ChronoUnit, i: Int): String {
+private fun bucketLabel(period: WidgetPeriod?, start: LocalDateTime, unit: ChronoUnit, i: Int): String {
     val t = if (unit == ChronoUnit.HOURS) start.plusHours(i.toLong()) else start.plusDays(i.toLong())
     return when (period) {
         WidgetPeriod.DAY -> t.format(DateTimeFormatter.ofPattern("HH", RuLocale))
         WidgetPeriod.WEEK -> t.dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
         WidgetPeriod.MONTH -> t.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
+        null -> if (unit == ChronoUnit.HOURS) {
+            t.format(DateTimeFormatter.ofPattern("HH:mm", RuLocale))
+        } else {
+            t.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
+        }
+    }
+}
+
+/** Разбиение своего периода: часы, если короче 36 ч, иначе дни. */
+private fun customBuckets(range: TimeRange): Pair<ChronoUnit, Int> {
+    val span = range.span
+    return if (span.toHours() < 36) {
+        ChronoUnit.HOURS to max(1, ceil(span.toMinutes() / 60.0).toInt())
+    } else {
+        ChronoUnit.DAYS to max(1, ceil(span.toHours() / 24.0).toInt())
     }
 }
 
@@ -205,9 +231,29 @@ suspend fun loadWidgetSummary(type: WidgetType, period: WidgetPeriod): WidgetSum
     buildSummary(type, data, bucketStart, unit, bucketCount) { i -> bucketLabel(period, bucketStart, unit, i) }
 }
 
+/** Сводка за произвольный отрезок: грузим текущий + такой же прошлый для сравнения. */
+suspend fun loadWidgetSummary(type: WidgetType, range: TimeRange): WidgetSummary = coroutineScope {
+    val (unit, bucketCount) = customBuckets(range)
+    val windowStart = range.previousOfSameLength().from
+    val settings = ServiceLocator.settings.current()
+    if (settings.telemetryOnServer && unit == ChronoUnit.DAYS) {
+        val fromDay = windowStart.toLocalDate()
+        val toDay = range.to.toLocalDate()
+        val response = ServiceLocator.widgetStats.load(fromDay.toString(), toDay.toString())
+        return@coroutineScope buildDailySummary(type, null, response.items, fromDay, bucketCount)
+    }
+    val repo = ServiceLocator.telemetry
+    val vehicles = repo.vehicles().let { if (type == WidgetType.FUEL_TRUCKS) it.filter(Vehicle::isTruck) else it }
+    val limit = Semaphore(4)
+    val data = vehicles.map { v ->
+        async { limit.withPermit { v to runCatching { repo.telemetry(v, windowStart, range.to) }.getOrNull() } }
+    }.awaitAll()
+    buildSummary(type, data, windowStart, unit, bucketCount) { i -> bucketLabel(null, range.from, unit, i) }
+}
+
 private fun buildDailySummary(
     type: WidgetType,
-    period: WidgetPeriod,
+    period: WidgetPeriod?,
     items: List<ru.petrovich.telemetry.data.DailyVehicleStats>,
     from: java.time.LocalDate,
     bucketCount: Int,
@@ -225,10 +271,14 @@ private fun buildDailySummary(
     val previous = filtered.filter { java.time.LocalDate.parse(it.day) < currentFrom }
     val total = current.sumOf(::value)
     val previousTotal = previous.sumOf(::value)
+    val pattern = when (period) {
+        WidgetPeriod.WEEK -> "EEE"
+        else -> "d.MM"
+    }
     val points = (0 until bucketCount).map { index ->
         val day = currentFrom.plusDays(index.toLong())
         WidgetPoint(
-            day.format(DateTimeFormatter.ofPattern(if (period == WidgetPeriod.WEEK) "EEE" else "d.MM", RuLocale)),
+            day.format(DateTimeFormatter.ofPattern(pattern, RuLocale)),
             current.filter { java.time.LocalDate.parse(it.day) == day }.sumOf(::value),
         )
     }
@@ -239,11 +289,12 @@ private fun buildDailySummary(
         points, leaders)
 }
 
-/** Общие для «Главной» телеметрия по парку — одна загрузка на все виджеты (неделя или месяц). */
+/** Общие для «Главной» телеметрия по парку — одна загрузка на все виджеты (неделя, месяц или свой). */
 data class FleetWeek(
     val data: List<Pair<Vehicle, VehicleTelemetry?>>, val from: LocalDateTime, val to: LocalDateTime,
     val serverItems: List<ru.petrovich.telemetry.data.DailyVehicleStats> = emptyList(),
-    val period: WidgetPeriod = WidgetPeriod.WEEK,
+    val period: WidgetPeriod? = WidgetPeriod.WEEK,
+    val customRange: TimeRange? = null,
 )
 
 suspend fun loadFleetWeek(): FleetWeek = loadFleetPeriod(WidgetPeriod.WEEK)
@@ -266,9 +317,32 @@ suspend fun loadFleetPeriod(period: WidgetPeriod): FleetWeek = coroutineScope {
     FleetWeek(data, from, to, period = period)
 }
 
+/** Парк за свой отрезок + такое же окно до него (для %). */
+suspend fun loadFleetRange(range: TimeRange): FleetWeek = coroutineScope {
+    val windowStart = range.previousOfSameLength().from
+    val settings = ServiceLocator.settings.current()
+    if (settings.telemetryOnServer && range.span.toHours() >= 36) {
+        val response = ServiceLocator.widgetStats.load(windowStart.toLocalDate().toString(), range.to.toLocalDate().toString())
+        return@coroutineScope FleetWeek(
+            emptyList(), windowStart, range.to, response.items, period = null, customRange = range,
+        )
+    }
+    val repo = ServiceLocator.telemetry
+    val vehicles = repo.vehicles()
+    val limit = Semaphore(4)
+    val data = vehicles.map { v ->
+        async { limit.withPermit { v to runCatching { repo.telemetry(v, windowStart, range.to) }.getOrNull() } }
+    }.awaitAll()
+    FleetWeek(data, windowStart, range.to, period = null, customRange = range)
+}
+
 /** Сводка виджета из уже загруженных [FleetWeek] — без обращений к серверу. */
 fun FleetWeek.summary(type: WidgetType): WidgetSummary {
-    val bucketCount = if (period == WidgetPeriod.MONTH) 30 else 7
+    val (unit, bucketCount) = when {
+        customRange != null -> customBuckets(customRange)
+        period == WidgetPeriod.MONTH -> ChronoUnit.DAYS to 30
+        else -> ChronoUnit.DAYS to 7
+    }
     if (serverItems.isNotEmpty()) {
         val days = serverItems.groupBy { it.day }.toSortedMap()
         val orderedDays = days.keys.toList()
@@ -299,14 +373,9 @@ fun FleetWeek.summary(type: WidgetType): WidgetSummary {
             points, leaders)
     }
     val filtered = if (type == WidgetType.FUEL_TRUCKS) data.filter { it.first.isTruck() } else data
-    return buildSummary(type, filtered, from, ChronoUnit.DAYS, bucketCount) { i ->
-        from.plusDays((bucketCount + i).toLong()).let { t ->
-            if (period == WidgetPeriod.WEEK) {
-                t.dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
-            } else {
-                t.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
-            }
-        }
+    val labelStart = customRange?.from ?: from.plus(bucketCount.toLong(), unit)
+    return buildSummary(type, filtered, from, unit, bucketCount) { i ->
+        bucketLabel(period, labelStart, unit, i)
     }
 }
 

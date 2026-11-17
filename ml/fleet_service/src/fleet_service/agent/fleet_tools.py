@@ -43,15 +43,33 @@ def period_args(args: dict[str, Any], ctx: ToolContext) -> tuple[datetime, datet
     return from_, to
 
 
+def _vehicle_label(v) -> str:
+    """Имя с гос. номером, если номер ещё не входит в name."""
+    if not v.plate:
+        return v.name
+    compact_name = v.name.replace(" ", "")
+    compact_plate = v.plate.replace(" ", "")
+    if compact_plate.lower() in compact_name.lower() or compact_name.lower() in compact_plate.lower():
+        return v.name
+    return f"{v.name} {v.plate}"
+
+
 async def find_vehicle_id(service: TelemetryService, ctx: ToolContext, vehicle_id: str) -> str:
-    """id машины пользователя. Модель могла передать название вместо id — принимаем только однозначное совпадение."""
+    """id машины пользователя. Модель могла передать название/госномер вместо id — только однозначное совпадение."""
     vehicles = await service.vehicles(ctx.session, ctx.schema_id)
     if any(v.id == vehicle_id for v in vehicles):
         return vehicle_id
-    by_name = [v for v in vehicles if v.name.strip().lower() == vehicle_id.lower()]
-    if len(by_name) != 1:
+    needle = vehicle_id.strip().lower()
+    by_name = [v for v in vehicles if v.name.strip().lower() == needle]
+    if len(by_name) == 1:
+        return by_name[0].id
+    by_plate = [v for v in vehicles if (v.plate or "").strip().lower() == needle]
+    if len(by_plate) == 1:
+        return by_plate[0].id
+    by_label = [v for v in vehicles if _vehicle_label(v).strip().lower() == needle]
+    if len(by_label) != 1:
         raise VehicleNotFound()
-    return by_name[0].id
+    return by_label[0].id
 
 
 def _round(x: float) -> float:
@@ -83,7 +101,13 @@ def summarize(result: BuildResult) -> dict[str, Any]:
                 "coverage": round(len(values) / len(table.timestamps), 2),
             })
     summary: dict[str, Any] = {
-        "vehicle": {"id": t.vehicle.id, "name": t.vehicle.name, "group": t.vehicle.group},
+        "vehicle": {
+            "id": t.vehicle.id,
+            "name": t.vehicle.name,
+            "plate": t.vehicle.plate,
+            "label": _vehicle_label(t.vehicle),
+            "group": t.vehicle.group,
+        },
         "period": {
             "from": t.from_.strftime(_TIME),
             "to": t.to.strftime(_TIME),
@@ -122,7 +146,13 @@ def check_summary(result: CheckResult, max_anomalies: int) -> dict[str, Any]:
     else:
         outcome = "analytics_unavailable"
     summary: dict[str, Any] = {
-        "vehicle": {"id": t.vehicle.id, "name": t.vehicle.name, "group": t.vehicle.group},
+        "vehicle": {
+            "id": t.vehicle.id,
+            "name": t.vehicle.name,
+            "plate": t.vehicle.plate,
+            "label": _vehicle_label(t.vehicle),
+            "group": t.vehicle.group,
+        },
         "period": {"from": t.from_.strftime(_TIME), "to": t.to.strftime(_TIME)},
         "outcome": outcome,
         "total": len(r.anomalies),
@@ -151,11 +181,20 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
         vehicles = await service.vehicles(ctx.session, ctx.schema_id)
         query = str(args.get("query") or "").strip().lower()
         if query:
-            vehicles = [v for v in vehicles if query in v.name.lower() or query in (v.group or "").lower()]
+            vehicles = [
+                v for v in vehicles
+                if query in v.name.lower()
+                or query in (v.plate or "").lower()
+                or query in _vehicle_label(v).lower()
+                or query in (v.group or "").lower()
+            ]
         limit = settings.tool_max_vehicles
         return {
             "total": len(vehicles),
-            "vehicles": [{"id": v.id, "name": v.name, "group": v.group} for v in vehicles[:limit]],
+            "vehicles": [
+                {"id": v.id, "name": v.name, "plate": v.plate, "label": _vehicle_label(v), "group": v.group}
+                for v in vehicles[:limit]
+            ],
             "truncated": len(vehicles) > limit,
         }
 
@@ -186,11 +225,13 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
     return [
         Tool(
             name="list_vehicles",
-            description="Список машин автопарка пользователя: id, название, группа. Используй, чтобы найти id машины "
-            "по названию или номеру. query — необязательная подстрока названия или группы.",
+            description="Список машин автопарка: id, name, plate (гос. номер), label (имя с номером), группа. "
+            "В ответах пользователю называй машины по label или plate. query — подстрока названия, гос. номера или группы.",
             parameters={
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Подстрока названия или группы машины"}},
+                "properties": {
+                    "query": {"type": "string", "description": "Подстрока названия, гос. номера или группы"},
+                },
             },
             handler=list_vehicles,
         ),

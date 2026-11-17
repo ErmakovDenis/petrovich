@@ -29,10 +29,12 @@ from sqlalchemy import Connection, Engine, and_, case, delete, exists, func, ins
 from ..rules.baseline import java_time
 from ..schemas.contract import Anomaly
 from ..schemas.store import Decision, Resolution, StoredAnomaly
+from .db import ai_feed_state as AI
 from .db import anomalies as A
 from .db import decisions as D
 from .db import scan_marks as M
 from .db import widget_daily_stats as W
+from ..schemas.store import FeedSource
 from ..schemas.widgets import DailyVehicleStats
 
 T = TypeVar("T")
@@ -144,6 +146,10 @@ class AnomalyFilter:
     detected_from_ms: int | None = None
     # Подписка чата Telegram: без этих типов событий.
     exclude_kinds: Collection[str] = ()
+    # id начинается с prefix (api| / rule|) — выдача по источнику ленты.
+    id_prefix: str | None = None
+    # id не начинается с prefix — скрыть кэш API при выдаче правил.
+    exclude_id_prefix: str | None = None
 
 
 def now_ms() -> int:
@@ -269,6 +275,62 @@ class AnomalyRepository:
             lambda conn: conn.execute(select(M.c.last_scan_at).where(M.c.schema_id == schema_id)).scalar()
         )
 
+    async def set_feed_state(
+        self, schema_id: str, feed_source: FeedSource, *, api_updated_at: int | None = None,
+        fallback_rules: bool = False, keep_api_updated_at: bool = False,
+    ) -> None:
+        """Запомнить, чем сейчас отвечаем клиенту и боту по этой схеме."""
+        at = now_ms()
+
+        def work(conn: Connection) -> None:
+            prev = conn.execute(select(AI).where(AI.c.schema_id == schema_id)).mappings().first()
+            api_at = api_updated_at
+            if keep_api_updated_at and prev is not None:
+                api_at = prev["api_updated_at"]
+            values = {
+                "schema_id": schema_id,
+                "feed_source": feed_source.value,
+                "api_updated_at": api_at,
+                "fallback_rules": fallback_rules,
+                "updated_at": at,
+            }
+            if prev is None:
+                conn.execute(insert(AI).values(**values))
+            else:
+                conn.execute(update(AI).where(AI.c.schema_id == schema_id).values(**values))
+
+        await self.run(work, write=True)
+
+    async def feed_state(self, schema_id: str) -> tuple[FeedSource, int | None, bool]:
+        """Источник выдачи, время последнего успешного API, последнее предпочтение fallback."""
+        row = await self.run(
+            lambda conn: conn.execute(select(AI).where(AI.c.schema_id == schema_id)).mappings().first()
+        )
+        if row is None:
+            return FeedSource.RULES, None, False
+        try:
+            source = FeedSource(row["feed_source"])
+        except ValueError:
+            source = FeedSource.RULES
+        return source, row["api_updated_at"], bool(row["fallback_rules"])
+
+    async def list_by_id_prefix(
+        self, schema_id: str, prefix: str, vehicle_ids: Collection[str], utc_offset_minutes: int,
+    ) -> list[StoredAnomaly]:
+        """Аномалии схемы с id, начинающимся на prefix (api| / rule|), среди видимых машин."""
+        if not vehicle_ids:
+            return []
+
+        def work(conn: Connection) -> list[StoredAnomaly]:
+            rows = conn.execute(
+                select(A)
+                .where(A.c.schema_id == schema_id, A.c.vehicle_id.in_(list(vehicle_ids)), A.c.id.like(f"{prefix}%"))
+                .order_by(A.c.first_detected_at.desc())
+            ).all()
+            return [Record.of(r).to_api(utc_offset_minutes) for r in rows]
+
+        return await self.run(work)
+
     async def save_widget_stats(self, schema_id: str, stats: list[DailyVehicleStats]) -> None:
         """Сохраняет готовые дни. Закрытые дни пересчитываются только при первом заполнении."""
         def work(conn: Connection) -> None:
@@ -321,6 +383,10 @@ class AnomalyRepository:
             conditions.append(A.c.resolution == Resolution.CONFIRMED.value)
         elif f.status == "false_alarm":
             conditions.append(A.c.resolution == Resolution.FALSE_ALARM.value)
+        if f.id_prefix is not None:
+            conditions.append(A.c.id.like(f"{f.id_prefix}%"))
+        if f.exclude_id_prefix is not None:
+            conditions.append(A.c.id.not_like(f"{f.exclude_id_prefix}%"))
         return and_(*conditions)
 
     async def query(self, schema_id: str, f: AnomalyFilter, limit: int, offset: int = 0,

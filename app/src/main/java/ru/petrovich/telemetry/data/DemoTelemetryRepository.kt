@@ -19,7 +19,9 @@ class DemoTelemetryRepository : TelemetryRepository {
         "КАМАЗ 65115 А101МР66", "КАМАЗ 43118 В214ОК66", "МАЗ 6312 Е305ТХ96", "Scania R450 К417АУ96",
         "Volvo FH 500 М522СН66", "КАМАЗ 5490 Н630ВЕ196", "Mercedes Actros О748РА66", "MAN TGS Р851ЕК96",
         "Урал 4320 С963НМ66", "ГАЗон NEXT Т077ХО196",
-    ).mapIndexed { i, name -> Vehicle("demo-$i", name, if (i < 5) "Колонна №1" else "Колонна №2") }
+    ).mapIndexed { i, name ->
+        Vehicle("demo-$i", name, if (i < 5) "Колонна №1" else "Колонна №2", plate = VehiclePlate.fromName(name))
+    }
 
     private val step: Duration = Duration.ofMinutes(5)
 

@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import ru.petrovich.telemetry.MainActivity
 import ru.petrovich.telemetry.R
+import ru.petrovich.telemetry.data.VehiclePlate
 import ru.petrovich.telemetry.ui.common.label
 
 /** Уведомления об аномалиях; в тестах — подставные. */
@@ -69,10 +70,11 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
 
         // Отдельные уведомления для первых нескольких + сводное.
         anomalies.sortedByDescending { it.severity }.take(5).forEach { a ->
-            // Формат заголовка — «Срочно · X452: ушло 140 л топлива» (3.3 «Уведомления»).
+            // Формат заголовка — «Срочно · А101МР66: ушло 140 л топлива» (3.3 «Уведомления»).
+            val who = VehiclePlate.fromName(a.vehicleName) ?: a.vehicleName
             val n = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("${a.severity.label()} · ${a.vehicleName}: ${a.title}")
+                .setContentTitle("${a.severity.label()} · $who: ${a.title}")
                 .setContentText(a.description)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(a.description))
                 .setPriority(if (a.severity == Severity.CRITICAL) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
@@ -90,7 +92,7 @@ class AnomalyNotifier(private val context: Context) : AnomalyNotifications {
         val summary = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Выявлено аномалий: ${anomalies.size}")
-            .setContentText(anomalies.map { it.vehicleName }.distinct().joinToString())
+            .setContentText(anomalies.map { VehiclePlate.fromName(it.vehicleName) ?: it.vehicleName }.distinct().joinToString())
             .setGroup(GROUP)
             .setGroupSummary(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)

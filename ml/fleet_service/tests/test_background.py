@@ -148,7 +148,8 @@ def test_background_scan_finds_anomalies_without_the_app(client, fakes):
 def test_two_accounts_of_one_schema_do_not_double_autograph_requests(make_client, monkeypatch):
     """Схему открывают двое (Пётр на двух устройствах, Иван): каждая машина проверяется один раз. Тяжёлые
     запросы — как при одном пользователе; EnumDevices — по одному на пользователя (видимость машин разная)."""
-    # Считаются запросы самой проверки: статистика виджетов при первом появлении машины догружает историю за 60 дней.
+    # Считаются запросы самой проверки: статистика виджетов при первом появлении машины догружает историю
+    # (FS_TELEMETRY_MAX_PERIOD_HOURS / 24 суток).
     async def no_widget_stats(*_args) -> None:
         return None
     monkeypatch.setattr(scheduler_module.BackgroundScanner, "_update_widget_stats", no_widget_stats)

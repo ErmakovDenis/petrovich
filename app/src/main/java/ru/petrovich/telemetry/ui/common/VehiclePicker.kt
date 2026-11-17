@@ -118,7 +118,9 @@ private fun VehicleSheet(
     val rows = remember(vehicles, pending, query) {
         val q = query.trim()
         val found = if (q.isEmpty()) vehicles else vehicles.filter { v ->
-            v.name.contains(q, ignoreCase = true) || v.group?.contains(q, ignoreCase = true) == true
+            v.label.contains(q, ignoreCase = true) ||
+                v.plate?.contains(q, ignoreCase = true) == true ||
+                v.group?.contains(q, ignoreCase = true) == true
         }
         buildList {
             // Пока не ищем — сверху машины, по которым есть что разбирать.
@@ -131,7 +133,7 @@ private fun VehicleSheet(
                 .toSortedMap(compareBy({ it == NO_GROUP }, { it }))
                 .forEach { (group, list) ->
                     add(PickerRow.Header(group, list.size))
-                    list.sortedBy { it.name }.forEach { add(PickerRow.Item(it, pending[it.id] ?: 0, group)) }
+                    list.sortedBy { it.shortLabel }.forEach { add(PickerRow.Item(it, pending[it.id] ?: 0, group)) }
                 }
         }
     }
@@ -196,7 +198,7 @@ private fun VehicleRow(row: PickerRow.Item, selected: Boolean, onSelect: (String
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
-            row.vehicle.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            row.vehicle.label, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyLarge, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         )
         if (row.issues > 0) Pill("${row.issues}", c.high, c.highSoft)

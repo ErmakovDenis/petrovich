@@ -88,6 +88,18 @@ scan_marks = Table(
     Column("last_scan_at", BigInteger, nullable=False),
 )
 
+# Состояние ленты «Petrovich AI» по схеме: чем сейчас отвечаем и когда API последний раз ответил.
+ai_feed_state = Table(
+    "ai_feed_state",
+    metadata,
+    Column("schema_id", String(64), primary_key=True),
+    # api | api_cache | rules | unavailable
+    Column("feed_source", String(32), nullable=False),
+    Column("api_updated_at", BigInteger),
+    Column("fallback_rules", Boolean, nullable=False, server_default=false()),
+    Column("updated_at", BigInteger, nullable=False),
+)
+
 # Доступ стенда к AutoGRAPH для фоновой проверки: одна запись на установку приложения (устройство).
 # Токен и пароль — только шифротекстом (background/crypto.py), пароль — только с согласия пользователя.
 background_access = Table(

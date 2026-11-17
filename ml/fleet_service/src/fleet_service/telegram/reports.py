@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timedelta
 from ..config import Settings
 from ..rules.baseline import java_time
 from ..schemas.contract import Severity, Vehicle
+from ..schemas.store import feed_list_filters
 from ..schemas.telegram import DailyReport, NamedCount, ReportEvent, ReportGroup, WeeklyReport
 from ..store.repository import AnomalyFilter, AnomalyRepository, Record, to_local
 from .links import Link
@@ -64,14 +65,22 @@ class TelegramReports:
         return [v.id for v in vehicles if chosen is None or v.id in chosen]
 
     async def _records(self, link: Link, ids: list[str], start_utc: datetime, end_utc: datetime) -> list[Record]:
-        """События по подписке чата, начавшиеся в [start_utc, end_utc); сначала новые."""
+        """События по подписке чата, начавшиеся в [start_utc, end_utc); сначала новые.
+        Источник ленты — как в приложении (api / кэш / правила)."""
         if not ids:
+            return []
+        feed_source, _, _ = await self._store.feed_state(link.schema_id)
+        empty, id_prefix, exclude_id_prefix = feed_list_filters(feed_source)
+        if empty:
             return []
         sub = link.subscription
         _, records = await self._store.query(
             link.schema_id,
-            AnomalyFilter(vehicle_ids=ids, from_utc=start_utc, to_utc=end_utc,
-                          severities=[s.value for s in sub.severities()], exclude_kinds=sub.muted_kinds),
+            AnomalyFilter(
+                vehicle_ids=ids, from_utc=start_utc, to_utc=end_utc,
+                severities=[s.value for s in sub.severities()], exclude_kinds=sub.muted_kinds,
+                id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
+            ),
             self._settings.anomalies_max_limit,
         )
         return [r for r in records if start_utc <= r.start_utc < end_utc]
