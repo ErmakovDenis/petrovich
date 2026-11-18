@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..mail.service import Draft, EmailRefused, EmailService
-from ..schemas.emails import EmailResult
+from ..schemas.emails import EmailContacts, EmailResult
 from .deps import UserSession, acting_user_name, require_session
 
 router = APIRouter(prefix="/v1/emails", tags=["emails"])
@@ -27,10 +27,13 @@ def _result(draft: Draft) -> EmailResult:
 
 
 @router.post("/{draft_id}/confirm", response_model=EmailResult, response_model_by_alias=True)
-async def confirm(draft_id: str, user: User, name: UserName, emails: Emails) -> EmailResult:
+async def confirm(draft_id: str, user: User, name: UserName, emails: Emails,
+                  request: EmailContacts | None = None) -> EmailResult:
     """Отправить черновик — только по нажатию «Отправить» в приложении. Черновик подтверждается один раз, пока не
     истёк срок, и только тем пользователем (схема и логин), для которого его подготовил ассистент."""
     try:
+        if request is not None and request.email_contacts is not None:
+            await emails.sync_contacts(user.schema_id, name, request.email_contacts)
         return _result(await emails.confirm(draft_id, user.schema_id, name))
     except EmailRefused as e:
         raise HTTPException(e.status, str(e)) from None

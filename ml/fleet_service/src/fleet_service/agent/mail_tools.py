@@ -17,7 +17,7 @@ EMAIL = "email"
 
 def build_mail_tools(settings: Settings, emails: EmailService) -> list[Tool]:
     async def list_recipients(args: dict[str, Any], ctx: ToolContext) -> dict:
-        recipients = emails.recipients(ctx.schema_id)
+        recipients = await emails.recipients(ctx.schema_id, ctx.user_name)
         return {
             "recipients": [{"id": r.id, "name": r.name, "role": r.role} for r in recipients],
             "message": None if recipients else "Получателей писем для этой схемы нет — письмо подготовить нельзя.",

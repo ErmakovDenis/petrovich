@@ -166,11 +166,12 @@ object ServiceLocator {
             anomalyIdOnly = { settings.current().anomalyStoreOnServer },
             // Переключатель «Письма из чата»: выключен — ассистенту письма недоступны, как раньше.
             allowEmail = { settings.current().emailsOnServer },
+            contacts = { settings.current().contacts },
         )
     }
 
     /** «Отправить» и «Отменить» у черновика письма со стенда в чате. */
-    val emails: EmailActions by lazy { StandEmails(stand) }
+    val emails: EmailActions by lazy { StandEmails(stand, contacts = { settings.current().contacts }) }
 
     /** Ссылка подключения Telegram-бота (раздел «Стенд» в настройках). */
     val telegram by lazy { StandTelegram(stand) }

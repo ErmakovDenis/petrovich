@@ -4,6 +4,8 @@ import kotlinx.serialization.Serializable
 import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandException
 import ru.petrovich.telemetry.data.StandRequests
+import ru.petrovich.telemetry.data.api.ApiFactory
+import ru.petrovich.telemetry.data.settings.Contact
 
 // Письма из чата (ml/fleet_service, schemas/emails.py): ассистент готовит черновик, отправляет его стенд только
 // по нажатию «Отправить» здесь. Адресов модель не видит; пользователю они показываются в черновике.
@@ -43,9 +45,29 @@ interface EmailActions {
  */
 fun StandException.meansAlreadySent(): Boolean = code == 409 && message.orEmpty().startsWith("Письмо уже отправлено")
 
-class StandEmails(private val stand: StandClient) : EmailActions {
-    override suspend fun send(draftId: String): EmailResult =
-        StandRequests.decode(EmailResult.serializer(), stand.post(listOf("v1", "emails", draftId, "confirm"), "{}"))
+/** Список перечитывается при каждом запросе; телефон не передаётся. */
+@Serializable
+data class EmailContact(val id: String, val name: String, val role: String, val email: String)
+
+fun List<Contact>.emailContacts(): List<EmailContact> = filter { it.email.isNotBlank() }.map {
+    EmailContact(it.id, it.name.trim(), it.role.trim(), it.email.trim())
+}
+
+@Serializable
+private data class EmailConfirmation(val emailContacts: List<EmailContact>? = null)
+
+class StandEmails(
+    private val stand: StandClient,
+    private val contacts: suspend () -> List<Contact>? = { null },
+) : EmailActions {
+    override suspend fun send(draftId: String): EmailResult {
+        val body = ApiFactory.json.encodeToString(
+            EmailConfirmation.serializer(), EmailConfirmation(contacts()?.emailContacts()),
+        )
+        return StandRequests.decode(
+            EmailResult.serializer(), stand.post(listOf("v1", "emails", draftId, "confirm"), body),
+        )
+    }
 
     override suspend fun cancel(draftId: String): EmailResult =
         StandRequests.decode(EmailResult.serializer(), stand.post(listOf("v1", "emails", draftId, "cancel"), "{}"))

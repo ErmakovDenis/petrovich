@@ -16,6 +16,7 @@ from ..schemas.chat import ChatRequest, ChatResponse
 from ..store.repository import AnomalyRepository
 from ..telemetry.service import TelemetryService
 from ..agent.mail_tools import EMAIL
+from ..mail.service import EmailRefused
 from .deps import (
     UserSession,
     get_agent,
@@ -80,6 +81,11 @@ async def chat(
         # места среди FS_CHAT_CONCURRENCY ответов входит в срок; очередь полна — сразу Overloaded (503).
         with llm_scope(settings.chat_timeout_seconds) as scope:
             async with asyncio.timeout(settings.chat_timeout_seconds):
+                if request.email_contacts is not None and http.app.state.emails is not None:
+                    try:
+                        await http.app.state.emails.sync_contacts(user.schema_id, name, request.email_contacts)
+                    except EmailRefused as e:
+                        raise HTTPException(e.status, str(e)) from None
                 stored = None
                 if request.anomaly_id:
                     # Чат из карточки при хранилище на стенде: приложение передаёт только id, данные и решение —

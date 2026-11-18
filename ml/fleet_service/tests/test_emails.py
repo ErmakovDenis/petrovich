@@ -405,3 +405,133 @@ def test_schema_limit_backs_up_unverified_login(make_client, smtp):
         assert r["drafts"] == [] and "на схему" in r["reply"]
     assert len(smtp.messages) == 1
 
+
+
+# --- контакты из мобильного приложения, добавленные после запуска стенда ---
+
+APP_CONTACT = {"id": "new-contact", "name": "Анна Сидорова", "role": "Бухгалтер", "email": "anna@example.org"}
+
+
+def contact_llm(recipient_id="app_new-contact"):
+    return FakeLLM(tool_call("list", "list_recipients", "{}"),
+                   tool_call("draft", "draft_email", json.dumps({
+                       "recipient_ids": [recipient_id], "subject": "Отчёт", "body": "Данные отчёта"})),
+                   text("Черновик готов."))
+
+
+def contact_chat(client, contacts=None, headers=None):
+    payload = ask("Напиши Анне", allowEmail=True)
+    if contacts is not None:
+        payload["emailContacts"] = contacts
+    response = client.post("/v1/chat", json=payload, headers=headers or user())
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_contact_added_after_start_is_available_and_sent_only_on_confirmation(make_client, smtp):
+    # Одно приложение стенда и один EmailService: список меняется после первого обращения.
+    llm = FakeLLM(text("Привет."), *contact_llm().replies)
+    with make_client(mail_settings(smtp), llm=llm) as client:
+        contact_chat(client, [])
+        reply = contact_chat(client, [APP_CONTACT])
+        [draft] = reply["drafts"]
+        assert draft["recipients"] == [{**APP_CONTACT, "id": "app_new-contact"}]
+        results = [json.loads(m["content"]) for m in llm.calls[-1][0] if m["role"] == "tool"]
+        assert [r["id"] for r in results[0]["recipients"]] == ["mechanic", "dispatcher", "app_new-contact"]
+        assert "anna@example.org" not in json.dumps(llm.calls, ensure_ascii=False)
+        assert smtp.messages == []
+        response = client.post(f"/v1/emails/{draft['id']}/confirm",
+                               json={"emailContacts": [APP_CONTACT]}, headers=user())
+        assert response.status_code == 200, response.text
+        assert smtp.messages[0]["to"] == ["anna@example.org"]
+
+
+@pytest.mark.parametrize("contacts, message", [
+    ([], "Получателя больше нет"),
+    ([{**APP_CONTACT, "email": "changed@example.org"}], "Адрес получателя изменился"),
+])
+def test_edit_or_delete_contact_before_confirmation_blocks_old_draft(make_client, smtp, contacts, message):
+    with make_client(mail_settings(smtp), llm=contact_llm()) as client:
+        [draft] = contact_chat(client, [APP_CONTACT])["drafts"]
+        response = client.post(f"/v1/emails/{draft['id']}/confirm",
+                               json={"emailContacts": contacts}, headers=user())
+        assert response.status_code == 409 and message in response.json()["detail"]
+        assert smtp.messages == []
+
+
+def test_contacts_and_draft_survive_service_restart(make_client, smtp):
+    settings = mail_settings(smtp)
+    with make_client(settings, llm=contact_llm()) as client:
+        [draft] = contact_chat(client, [APP_CONTACT])["drafts"]
+    # Вновь созданные сервисы и старый клиент, не присылающий emailContacts.
+    with make_client(settings) as restarted:
+        response = confirm(restarted, draft["id"])
+        assert response.status_code == 200, response.text
+        assert smtp.messages[0]["to"] == ["anna@example.org"]
+
+
+@pytest.mark.parametrize("headers", [user("Иван", OTHER), user("Пётр", FOREIGN)])
+def test_mobile_contacts_are_scoped_to_owner_and_schema(make_client, smtp, headers):
+    llm = FakeLLM(text("Сохранено"), *contact_llm().replies)
+    with make_client(mail_settings(smtp), llm=llm) as client:
+        contact_chat(client, [APP_CONTACT])
+        response = contact_chat(client, headers=headers)
+        assert response["drafts"] == []
+        results = [json.loads(m["content"]) for m in llm.calls[-1][0] if m["role"] == "tool"]
+        assert all(r["id"] != "app_new-contact" for r in results[0]["recipients"])
+        assert "неизвестный получатель" in results[1]["error"]
+        assert smtp.messages == []
+
+
+def test_contact_updates_are_used_in_next_chat_without_restart(make_client, smtp):
+    changed = {**APP_CONTACT, "name": "Анна Новая", "email": "updated@example.org"}
+    llm = FakeLLM(*contact_llm().replies, *contact_llm().replies, *contact_llm().replies)
+    with make_client(mail_settings(smtp), llm=llm) as client:
+        contact_chat(client, [APP_CONTACT])
+        [draft] = contact_chat(client, [changed])["drafts"]
+        assert draft["recipients"][0]["name"] == changed["name"]
+        assert draft["recipients"][0]["email"] == changed["email"]
+        assert contact_chat(client, [])["drafts"] == []
+        assert smtp.messages == []
+
+
+@pytest.mark.parametrize("contacts", [
+    [{**APP_CONTACT, "email": "bad\r\nBcc: injected@example.org"}],
+    [APP_CONTACT, APP_CONTACT],
+    [{**APP_CONTACT, "id": "a,b"}],
+    [{**APP_CONTACT, "name": "   "}],
+])
+def test_invalid_mobile_contacts_rejected_without_changing_existing_list(make_client, smtp, contacts):
+    llm = FakeLLM(text("Сохранено"), *contact_llm().replies)
+    with make_client(mail_settings(smtp), llm=llm) as client:
+        contact_chat(client, [APP_CONTACT])
+        response = client.post("/v1/chat", json=ask("Письмо", allowEmail=True, emailContacts=contacts), headers=user())
+        assert response.status_code == 422, response.text
+        assert contact_chat(client)["drafts"][0]["recipients"][0]["email"] == APP_CONTACT["email"]
+        assert smtp.messages == []
+
+
+def test_mobile_contacts_request_matches_android_contract():
+    from fleet_service.schemas.chat import ChatRequest
+    path = Path(__file__).resolve().parents[3] / "testdata/contract/chat-request-contacts.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    request = ChatRequest.model_validate(raw)
+    assert request.model_dump(by_alias=True, mode="json", exclude_defaults=True) == raw
+
+
+def test_mobile_contacts_work_with_empty_server_recipient_file(make_client, smtp, tmp_path):
+    path = tmp_path / "empty.toml"
+    path.write_text("recipient = []\n", encoding="utf-8")
+    with make_client(mail_settings(smtp, email_recipients_path=path), llm=contact_llm()) as client:
+        [draft] = contact_chat(client, [APP_CONTACT])["drafts"]
+        assert confirm(client, draft["id"]).status_code == 200
+        assert smtp.messages[0]["to"] == [APP_CONTACT["email"]]
+
+
+def test_missing_owner_cannot_replace_mobile_contacts(make_client, smtp):
+    with make_client(mail_settings(smtp), llm=contact_llm()) as client:
+        [draft] = contact_chat(client, [APP_CONTACT])["drafts"]
+        response = client.post("/v1/chat", json=ask("Привет", emailContacts=[]), headers=user(None))
+        assert response.status_code == 422 and "X-User-Name" in response.json()["detail"]
+        assert confirm(client, draft["id"]).status_code == 200
+        assert smtp.messages[0]["to"] == [APP_CONTACT["email"]]

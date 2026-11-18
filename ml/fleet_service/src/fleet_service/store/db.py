@@ -29,6 +29,17 @@ from sqlalchemy.engine import make_url
 
 metadata = MetaData()
 
+# Контакты телефона: отдельный список по схеме и владельцу, сохраняется между перезапусками.
+email_contacts = Table(
+    "email_contacts", metadata,
+    Column("schema_id", String(64), primary_key=True),
+    Column("user_key", String(200), primary_key=True),
+    Column("id", String(64), primary_key=True),
+    Column("name", String(200), nullable=False),
+    Column("role", String(200), nullable=False),
+    Column("email", String(320), nullable=False),
+)
+
 anomalies = Table(
     "anomalies",
     metadata,

@@ -20,3 +20,7 @@ keystore.properties
 
 # Локальные настройки Claude Code для ML-сессий
 /.claude-ml/
+
+# Локальные инструкции и справочник Codex
+/AGENTS.md
+/CODEX.md

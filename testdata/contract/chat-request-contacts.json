@@ -1,0 +1,18 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Подготовь письмо Анне"
+    }
+  ],
+  "utcOffsetMinutes": 300,
+  "allowEmail": true,
+  "emailContacts": [
+    {
+      "id": "new-contact",
+      "name": "Анна",
+      "role": "Бухгалтер",
+      "email": "anna@example.org"
+    }
+  ]
+}
