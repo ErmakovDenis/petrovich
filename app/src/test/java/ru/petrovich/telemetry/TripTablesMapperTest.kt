@@ -49,6 +49,28 @@ class TripTablesMapperTest {
     }
 
     @Test
+    fun selectKeepsNonstandardFuelAlongsideSpeed() {
+        val (selected, _) = AutoGraphParameters.select(
+            listOf(
+                RParameter("LLS_A", "Уровень в баке", unit = "л", returnType = 4),
+                RParameter("Speed", "Скорость", unit = "км/ч", returnType = 4),
+                RParameter("Power", "Питание", returnType = 0),
+            ),
+        )
+        assertEquals(
+            setOf("LLS_A" to MetricCategory.FUEL, "Speed" to MetricCategory.MOTION, "Power" to MetricCategory.POWER),
+            selected.map { it.name to it.category }.toSet(),
+        )
+        val (withTank, _) = AutoGraphParameters.select(
+            listOf(
+                RParameter("FLTankMain", "Уровень (бак)", unit = "л", returnType = 4),
+                RParameter("Speed", "Скорость", unit = "км/ч", returnType = 4),
+            ),
+        )
+        assertEquals(listOf("FLTankMain"), withTank.filter { it.category == MetricCategory.FUEL }.map { it.name })
+    }
+
+    @Test
     fun valuesBeforeDtAreBuffered() {
         val json = TripTablesGolden.VALUES_BEFORE_DT
         val (selected, aggregation) = AutoGraphParameters.select(TripTablesGolden.VALUES_BEFORE_DT_PARAMS)

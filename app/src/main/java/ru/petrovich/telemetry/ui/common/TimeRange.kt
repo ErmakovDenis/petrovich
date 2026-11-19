@@ -40,6 +40,12 @@ data class TimeRange(
         return TimeRange(from.minus(length), from)
     }
 
+    /** Соседнее окно той же длины сразу после текущего (для листать «вперёд»). */
+    fun nextOfSameLength(): TimeRange {
+        val length = span
+        return TimeRange(to, to.plus(length))
+    }
+
     companion object {
         const val MAX_DAYS = 180L
 

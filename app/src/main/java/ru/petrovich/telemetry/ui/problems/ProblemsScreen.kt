@@ -48,6 +48,7 @@ import ru.petrovich.telemetry.anomaly.Resolution
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
+import ru.petrovich.telemetry.ui.common.VehicleFilterBar
 import ru.petrovich.telemetry.ui.common.hhmm
 import ru.petrovich.telemetry.ui.common.isNew
 import ru.petrovich.telemetry.ui.common.shown
@@ -73,23 +74,36 @@ fun ProblemsScreen(
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val anomalies = remember(all, settings?.mutedKinds) { all.shown(settings?.mutedKinds.orEmpty()) }
     var scanning by remember { mutableStateOf(false) }
+    var vehicleId by remember { mutableStateOf<String?>(null) }
+    val fleet by ServiceLocator.fleetCache.state.collectAsStateWithLifecycle()
+    val vehicles = remember(fleet.vehicles, anomalies) {
+        val fromFleet = fleet.vehicles
+        if (fromFleet.isNotEmpty()) fromFleet
+        else anomalies.map { a ->
+            ru.petrovich.telemetry.data.Vehicle(id = a.vehicleId, name = a.vehicleName)
+        }.distinctBy { it.id }.sortedBy { it.name }
+    }
+    val scoped = remember(anomalies, vehicleId) {
+        if (vehicleId == null) anomalies else anomalies.filter { it.vehicleId == vehicleId }
+    }
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val c = Petrovich.colors
 
-    val newCount = anomalies.count { it.isNew }
-    val progressCount = anomalies.count { it.resolution == Resolution.IN_PROGRESS }
-    val closedCount = anomalies.count { it.resolution == Resolution.CONFIRMED || it.resolution == Resolution.FALSE_ALARM }
+    val newCount = scoped.count { it.isNew }
+    val progressCount = scoped.count { it.resolution == Resolution.IN_PROGRESS }
+    val closedCount = scoped.count { it.resolution == Resolution.CONFIRMED || it.resolution == Resolution.FALSE_ALARM }
 
-    val inProgress = anomalies.filter { it.resolution == Resolution.IN_PROGRESS }.sortedByDescending { it.eventTime }
+    val inProgress = scoped.filter { it.resolution == Resolution.IN_PROGRESS }.sortedByDescending { it.eventTime }
     val shown = when (tab) {
-        ProblemsTab.NEW -> anomalies.filter { it.isNew }.sortedWith(AnomalyOrder)
+        ProblemsTab.NEW -> scoped.filter { it.isNew }.sortedWith(AnomalyOrder)
         ProblemsTab.IN_PROGRESS -> inProgress
-        ProblemsTab.CLOSED -> anomalies.filter { it.resolution == Resolution.CONFIRMED || it.resolution == Resolution.FALSE_ALARM }.sortedByDescending { it.eventTime }
+        ProblemsTab.CLOSED -> scoped.filter { it.resolution == Resolution.CONFIRMED || it.resolution == Resolution.FALSE_ALARM }.sortedByDescending { it.eventTime }
     }
 
     // Хранилище на стенде: лента — со стенда; без сети остаётся последняя загруженная.
     LaunchedEffect(Unit) {
+        runCatchingCancellable { ServiceLocator.fleetCache.ensureFresh() }
         runCatchingCancellable { ServiceLocator.anomalySync.refresh() }
             .onFailure { snackbar.showSnackbar("Лента со стенда не обновилась: ${it.message}. Показана последняя загруженная") }
     }
@@ -137,6 +151,14 @@ fun ProblemsScreen(
                 onTab = onTab,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             )
+            if (vehicles.isNotEmpty()) {
+                VehicleFilterBar(
+                    vehicles = vehicles,
+                    selectedId = vehicleId,
+                    onSelect = { vehicleId = it },
+                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
+                )
+            }
             FeedDisclaimer(
                 feedSource = settings?.anomalyFeedSource.orEmpty(),
                 apiUpdatedAt = settings?.anomalyApiUpdatedAt ?: 0L,
@@ -145,7 +167,12 @@ fun ProblemsScreen(
             // На вкладке «Новые» дополнительно видно, что уже передано в работу — чтобы не потерялось из виду.
             val teaser = if (tab == ProblemsTab.NEW) inProgress else emptyList()
             if (shown.isEmpty() && teaser.isEmpty()) {
-                EmptyProblems(tab = tab, hasAny = anomalies.isNotEmpty(), onScan = ::scan)
+                EmptyProblems(
+                    tab = tab,
+                    hasAny = anomalies.isNotEmpty(),
+                    filteredEmpty = vehicleId != null && scoped.isEmpty() && anomalies.isNotEmpty(),
+                    onScan = ::scan,
+                )
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
@@ -270,13 +297,19 @@ private fun ProblemsTabBar(
 }
 
 @Composable
-private fun EmptyProblems(tab: ProblemsTab, hasAny: Boolean, onScan: () -> Unit) {
+private fun EmptyProblems(
+    tab: ProblemsTab,
+    hasAny: Boolean,
+    filteredEmpty: Boolean = false,
+    onScan: () -> Unit,
+) {
     val c = Petrovich.colors
     Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.TopCenter) {
         SurfaceCard(Modifier.fillMaxWidth().padding(top = 8.dp), shape = RoundedCornerShape(20.dp)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     when {
+                        filteredEmpty -> "По этой машине в разделе «${tab.title}» ничего нет."
                         tab == ProblemsTab.NEW && !hasAny -> "Здесь пусто. Петрович сообщит, если что-то случится."
                         tab == ProblemsTab.NEW -> "Новых проблем нет — и это хорошо."
                         tab == ProblemsTab.IN_PROGRESS -> "Здесь пусто. Ничего не передано в работу."
@@ -284,7 +317,7 @@ private fun EmptyProblems(tab: ProblemsTab, hasAny: Boolean, onScan: () -> Unit)
                     },
                     style = MaterialTheme.typography.titleMedium,
                 )
-                if (tab == ProblemsTab.NEW && !hasAny) {
+                if (tab == ProblemsTab.NEW && !hasAny && !filteredEmpty) {
                     Text(
                         "Петрович проверяет данные каждые 15 минут. Можно запустить проверку сейчас.",
                         style = MaterialTheme.typography.bodyMedium, color = c.muted,

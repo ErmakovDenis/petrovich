@@ -64,6 +64,8 @@ class RParameter:
 
 # Стандартные имена параметров, используемые в правилах аномалий.
 FUEL_LEVEL = "TankMainFuelLevel"
+# Тот же ДУТ под другими именами AutoGRAPH — для поиска колонки уровня.
+FUEL_LEVEL_NAMES = (FUEL_LEVEL, "FL1", "FLTankMain")
 FUEL_DRAIN_VOLUME = "TankMainFuelDnVol"
 FUEL_UP_VOLUME = "TankMainFuelUpVol"
 POWER = "Power"
@@ -86,6 +88,7 @@ _F, _P, _E, _M = MetricCategory.FUEL, MetricCategory.POWER, MetricCategory.ENGIN
 CURATED: list[ParameterSpec] = [
     ParameterSpec(FUEL_LEVEL, _F, "Уровень топлива"),
     ParameterSpec("FL1", _F, "ДУТ 1"),
+    ParameterSpec("FLTankMain", _F, "Уровень топлива (бак)"),
     ParameterSpec("CANFinstant", _F, "Мгновенный расход"),
     ParameterSpec("ConsumptionCAN", _F, "Расход по CAN (накоп.)", Aggregation.MAX),
     ParameterSpec(FUEL_UP_VOLUME, _F, "Объём заправки", Aggregation.MAX),
@@ -146,7 +149,8 @@ def _caption(p: RParameter) -> str:
 
 def select(available: list[RParameter]) -> tuple[list[ParameterInfo], dict[str, Aggregation]]:
     """Параметры прибора для показа: сначала известные из CURATED, плюс любые параметры напряжения.
-    Если прибор настроен нестандартно и известных имён нет — классификация по ключевым словам."""
+    Остальные числовые — по ключевым словам категории (топливо/двигатель/…), даже если уже есть Speed:
+    иначе ДУТ с именем вроде `LLS_A` не попадает в графики рядом со стандартной скоростью."""
     by_name = {p.name: p for p in available}
     chosen: list[ParameterInfo] = []
     aggregation: dict[str, Aggregation] = {}
@@ -167,13 +171,12 @@ def select(available: list[RParameter]) -> tuple[list[ParameterInfo], dict[str, 
                                         category=MetricCategory.POWER))
             aggregation[p.name] = Aggregation.MEAN_NONZERO
 
-    if all(c.category == MetricCategory.POWER for c in chosen):
-        for p in numeric:
-            if any(c.name == p.name for c in chosen):
-                continue
-            category = classify(p.name, p.caption, p.alias, p.group_name)
-            if category is None or sum(1 for c in chosen if c.category == category) >= 6:
-                continue
-            chosen.append(ParameterInfo(name=p.name, caption=_caption(p), unit=_unit(p), category=category))
-            aggregation[p.name] = Aggregation.MEAN
+    for p in numeric:
+        if any(c.name == p.name for c in chosen):
+            continue
+        category = classify(p.name, p.caption, p.alias, p.group_name)
+        if category is None or sum(1 for c in chosen if c.category == category) >= 6:
+            continue
+        chosen.append(ParameterInfo(name=p.name, caption=_caption(p), unit=_unit(p), category=category))
+        aggregation[p.name] = Aggregation.MEAN
     return chosen, aggregation

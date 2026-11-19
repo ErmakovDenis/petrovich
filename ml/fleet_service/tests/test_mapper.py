@@ -151,3 +151,20 @@ def test_select_classifies_nonstandard_device_by_keywords():
     assert selected[0].unit is None  # пустая единица — нет единицы
     assert selected[3].caption == "Misc"
     assert aggregation["Vbat"] is Aggregation.MEAN_NONZERO and aggregation["LLS_A"] is Aggregation.MEAN
+
+
+def test_select_keeps_nonstandard_fuel_alongside_speed():
+    """Раньше keyword-fallback отключался при любом curated не-POWER — LLS_A / FLTankMain пропадали рядом со Speed."""
+    selected, _ = select([
+        RParameter("LLS_A", "Уровень в баке", unit="л", return_type=4),
+        RParameter("Speed", "Скорость", unit="км/ч", return_type=4),
+        RParameter("Power", "Питание", return_type=0),
+    ])
+    assert ("LLS_A", MetricCategory.FUEL) in [(p.name, p.category) for p in selected]
+    assert ("Speed", MetricCategory.MOTION) in [(p.name, p.category) for p in selected]
+
+    selected2, _ = select([
+        RParameter("FLTankMain", "Уровень (бак)", unit="л", return_type=4),
+        RParameter("Speed", "Скорость", unit="км/ч", return_type=4),
+    ])
+    assert [p.name for p in selected2 if p.category == MetricCategory.FUEL] == ["FLTankMain"]
