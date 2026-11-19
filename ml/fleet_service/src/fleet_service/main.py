@@ -26,6 +26,8 @@ from .api import anomalies as anomalies_api
 from .api import background as background_api
 from .api import chat, emails as emails_api, health
 from .api import status as status_api
+from .api import identity as identity_api
+from .api import identity_telegram as identity_telegram_api
 from .api import telegram as telegram_api
 from .api import telemetry as telemetry_api
 from .api.errors import install_error_handlers
@@ -36,6 +38,9 @@ from .background.crypto import SecretBox
 from .background.scheduler import BackgroundScanner
 from .breaker import CircuitBreaker
 from .config import Settings, get_settings
+from .identity.repository import IdentityRepository
+from .identity.service import IdentityService
+from .identity.telegram import TelegramIdentityService
 from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
 from .metrics import Metrics
@@ -132,6 +137,9 @@ def create_app(
         analytics = AnalyticsClient(settings, client, predictive_limit, breakers["predictive"], metrics)
         checks = AnomalyCheckService(settings, telemetry, analytics)
         store = build_store(settings)
+        app.state.identity = IdentityService(IdentityRepository(store), autograph, settings.autograph_base_url)
+        app.state.identity_rate = TokenBuckets(rate_per_minute=5, burst=5)
+        app.state.telegram_identity = TelegramIdentityService(store, autograph, settings.autograph_base_url, box)
         access = AccessRepository(store, box)
         ai = PetrovichAiClient(settings, client)
         scans = ScanService(settings, telemetry, checks, store, ai)
@@ -181,6 +189,8 @@ def create_app(
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(identity_api.router)
+    app.include_router(identity_telegram_api.router)
     app.include_router(telemetry_api.router)
     app.include_router(anomalies_api.router)
     app.include_router(background_api.router)

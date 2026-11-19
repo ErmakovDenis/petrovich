@@ -158,6 +158,10 @@ async def unlink_chat(chat_id: str, http: Request, user: App, name: Name, settin
                       telemetry: Telemetry) -> TelegramChats:
     """Приложение: отключить чат. Бот сообщит об этом в чате; ответ — оставшиеся чаты."""
     await _own_chat(links, user, name, chat_id)
+    # Непроверенный X-User-Name старого API не может отозвать чужой персональный профиль.
+    if await http.app.state.telegram_identity.is_linked(chat_id):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Сначала отключите личный профиль этого чата в разделе «Личный профиль Петровича» или командой /forget_identity")
     if await links.delete(chat_id):
         _notifier(http).say(chat_id, UNLINKED_FROM_APP)
     return await chats(user, name, settings, links, telemetry)

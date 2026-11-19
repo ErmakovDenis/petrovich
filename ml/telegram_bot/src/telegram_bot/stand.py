@@ -33,10 +33,14 @@ class Stand:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _call(self, method: str, path: str, chat_id: str | int | None = None, **kwargs: Any) -> Any:
+    async def _call(self, method: str, path: str, chat_id: str | int | None = None,
+                    identity_user_id: int | None = None, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {self._token}"}
         if chat_id is not None:
             headers["X-Telegram-Chat-Id"] = str(chat_id)
+        if identity_user_id is not None:
+            headers["X-Telegram-User-Id"] = str(identity_user_id)
+            headers["X-Telegram-Chat-Type"] = "private"
         try:
             resp = await self._http.request(method, self._base + path, headers=headers, timeout=self._timeout, **kwargs)
         except httpx.HTTPError as e:
@@ -69,6 +73,19 @@ class Stand:
 
     async def outbox(self) -> dict:
         return await self._call("POST", "/v1/telegram/bot/outbox")
+
+    # --- отдельная персональная привязка: обычное подключение к схеме не даёт этих полномочий ---
+
+    async def identity_code(self, chat_id: int, user_id: int) -> dict:
+        return await self._call("POST", "/v2/identity/telegram/pair-code", json={
+            "chatId": str(chat_id), "telegramUserId": str(user_id), "chatType": "private",
+        })
+
+    async def identity_me(self, chat_id: int, user_id: int) -> dict:
+        return await self._call("GET", "/v2/identity/telegram/me", chat_id, identity_user_id=user_id)
+
+    async def identity_unlink(self, chat_id: int, user_id: int) -> None:
+        await self._call("DELETE", "/v2/identity/telegram/me", chat_id, identity_user_id=user_id)
 
     # --- аномалии и решения ---
 

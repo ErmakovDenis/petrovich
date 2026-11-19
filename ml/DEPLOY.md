@@ -28,7 +28,7 @@
   `fleet_service/.env`.
 - Модель выбирает одна настройка `FS_LLM_PROVIDER`: `gigachat` или `openrouter` (п. 4.2). Шлюз `gigachat_gateway`
   запускается всегда, порт наружу не открыт. Токен GigaChat, проверка TLS и преобразование сообщений — в нём.
-- Логин и пароль AutoGRAPH на стенд не приходят: приложение передаёт токен сессии (`Authorization: Bearer`) и id
+- В обычном режиме приложение передаёт токен сессии AutoGRAPH (`Authorization: Bearer`) и id
   схемы (`X-Schema-Id`). Пароль стенд получает, только если пользователь включил «Разрешить стенду входить
   самостоятельно», и хранит его зашифрованным.
 - Ключи OpenRouter и GigaChat есть только в `ml/fleet_service/.env` на сервере, в APK их нет. Ключ GigaChat видит только
@@ -38,6 +38,35 @@
 - `predictive_antifraud` пока без обученных моделей: работает и отвечает `ready: false`, стенд показывает это как
   статус `not_ready`, проверка по правилам идёт как обычно.
 - Release-сборка приложения ходит на стенд только по HTTPS; HTTP без TLS разрешён лишь в debug-сборке (п. 10).
+
+### Экспериментальное подтверждение личности (P0 памяти)
+
+По умолчанию `FS_IDENTITY_ENABLED=false` и `FS_IDENTITY_ACCOUNT_LIFECYCLE=unconfigured`.
+P0 проверен локально; Android и персональная привязка Telegram реализованы, личная память ещё не включена.
+Для рабочего включения нужны HTTPS, защита Login на ingress и принятый оператором регламент managed:
+логины нельзя переименовывать или выдавать другому человеку в обход реестра.
+Нативный UID AutoGRAPH не подтверждён. Если такой регламент обеспечить нельзя, API оставлять выключенным.
+
+Обслуживание аккаунта: выключить identity API на всех экземплярах, сделать согласованную копию SQLite,
+проверить команду без записи, согласованно изменить AutoGRAPH и применить операцию реестра с `--apply`.
+Входы между изменениями должны быть закрыты. Проверить результат, только затем включать API.
+Команда использует явные адреса, реальные пароли и ключи не нужны:
+
+```bash
+python -m fleet_service.identity.accounts --db-url sqlite:////srv/data/fleet.db --autograph-url https://autograph.example/ServiceJSON/ rename --login old_login --new-login new_login
+python -m fleet_service.identity.accounts --db-url sqlite:////srv/data/fleet.db --autograph-url https://autograph.example/ServiceJSON/ retire --login old_login
+```
+
+Без `--apply` записи нет. `rename` сохраняет UUID, отзывает все credentials и персональные Telegram-привязки;
+`retire` закрывает прежнюю личность во всех схемах, следующий bind того же логина создаёт новый UUID.
+Объединение с занятым логином запрещено. Эти команды доступны только оператору, отсутствуют в API и tools.
+Перед повторным открытием оператор подтверждает регламент через `FS_IDENTITY_ACCOUNT_LIFECYCLE=managed`;
+одного `FS_IDENTITY_ENABLED=true` недостаточно. После восстановления старой копии отозвать credentials до открытия API.
+
+Контракт и откат миграций `0009`/`0010` описаны в
+[fleet_service/README.md](fleet_service/README.md#подтверждение-личности-ассистента-p0).
+[Разбор безопасности P0](docs/assistant-memory-p0-security-review.md) фиксирует границы выбранного режима.
+Выключение флага не требует удаления таблиц и не влияет на `/v1/chat`.
 
 ## 2. Требования к серверу
 

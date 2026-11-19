@@ -92,6 +92,12 @@ def build_router(logic: Petrovich) -> Router:
     async def start(message: Message, command: CommandObject) -> None:
         await deliver(message, await logic.start(message.chat.id, command.args or ""))
 
+    @router.message(Command("identity", "identity_status", "forget_identity"))
+    async def identity(message: Message, command: CommandObject) -> None:
+        user_id = message.from_user.id if message.chat.type == "private" and message.from_user else None
+        action = {"identity_status": "status", "forget_identity": "unlink"}.get(command.command, "code")
+        await deliver(message, await logic.identity(message.chat.id, user_id, action))
+
     @router.message(Command("help"))
     async def help_(message: Message) -> None:
         await deliver(message, [logic.help()])

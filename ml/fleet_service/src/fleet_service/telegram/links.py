@@ -18,6 +18,7 @@ from sqlalchemy import Connection, delete, func, insert, select, update
 from ..background.access import user_key
 from ..schemas.contract import Severity
 from ..schemas.telegram import LinkView, Subscription
+from ..store.db import identity_telegram_codes as IC, identity_telegram_links as IL
 from ..store.db import telegram_link_codes as C
 from ..store.db import anomalies as A
 from ..store.db import telegram_links as L
@@ -188,6 +189,8 @@ class TelegramLinks:
 
     async def delete(self, chat_id: str) -> bool:
         def work(conn: Connection) -> bool:
+            conn.execute(delete(IL).where(IL.c.chat_id == chat_id))
+            conn.execute(delete(IC).where(IC.c.chat_id == chat_id))
             conn.execute(delete(N).where(N.c.chat_id == chat_id))
             return conn.execute(delete(L).where(L.c.chat_id == chat_id)).rowcount > 0
 
@@ -254,6 +257,9 @@ def _bind(conn: Connection, chat_id: str, title: str | None, schema_id: str, sch
           utc_offset_minutes: int, at: int) -> Link:
     """Подключить чат к схеме и пользователю. Чат, уже подключённый тем же пользователем к той же схеме, сохраняет
     подписку; иначе подписка — по умолчанию, а прежние отметки уведомлений удаляются."""
+    # Переподключение старого бота не может сохранить полномочия прежнего персонального профиля.
+    conn.execute(delete(IL).where(IL.c.chat_id == chat_id))
+    conn.execute(delete(IC).where(IC.c.chat_id == chat_id))
     old = conn.execute(select(L).where(L.c.chat_id == chat_id)).first()
     same = old is not None and old.schema_id == schema_id and user_key(old.user_name, "") == user_key(user_name, "")
     values = {

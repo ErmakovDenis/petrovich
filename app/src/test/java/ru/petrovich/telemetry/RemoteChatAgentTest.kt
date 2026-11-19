@@ -80,7 +80,7 @@ class RemoteChatAgentTest {
 
     @Test
     fun mobileContactsMatchSharedContractFixture() = runTest {
-        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") })
+        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") }, OkHttpClient())
         val agent = RemoteChatAgent(stand, utcOffsetMinutes = { 300 }, allowEmail = { true }, contacts = {
             listOf(Contact(id = "new-contact", name = "Анна", role = "Бухгалтер", email = "anna@example.org"))
         })
@@ -94,7 +94,7 @@ class RemoteChatAgentTest {
     @Test
     fun readsContactsAgainForEveryChatAndConfirmation() = runTest {
         var contacts = emptyList<Contact>()
-        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") })
+        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") }, OkHttpClient())
         val agent = RemoteChatAgent(stand, allowEmail = { true }, contacts = { contacts })
         suspend fun requestContacts(): kotlinx.serialization.json.JsonArray {
             server.enqueue(reply(200, """{"reply":"Готово"}"""))

@@ -12,22 +12,100 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    CheckConstraint,
+    ForeignKeyConstraint,
     DateTime,
     Engine,
     Float,
+    ForeignKey,
     Index,
     Integer,
     MetaData,
     String,
     Table,
     Text,
+    UniqueConstraint,
     create_engine,
     event,
     false,
+    text,
 )
 from sqlalchemy.engine import make_url
 
 metadata = MetaData()
+
+# Личность подтверждается серверным Login, а не заголовком X-User-Name.
+principals = Table(
+    "principals", metadata,
+    Column("principal_id", String(36), primary_key=True),
+    Column("provider", String(64), nullable=False),
+    Column("provider_subject", String(64), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("disabled_at", BigInteger),
+    UniqueConstraint("provider", "provider_subject", name="uq_principals_provider_subject"),
+)
+
+principal_scopes = Table(
+    "principal_scopes", metadata,
+    Column("principal_id", String(36), ForeignKey("principals.principal_id"), primary_key=True),
+    Column("tenant_id", String(64), primary_key=True),
+    Column("linked_at", BigInteger, nullable=False),
+    Column("revoked_at", BigInteger),
+)
+
+# Только хэши секретов; сессия строго та, которая получена при проверенном Login.
+identity_credentials = Table(
+    "identity_credentials", metadata,
+    Column("credential_hash", String(64), primary_key=True),
+    Column("principal_id", String(36), ForeignKey("principals.principal_id"), nullable=False),
+    Column("tenant_id", String(64), nullable=False),
+    Column("session_hash", String(64), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    Column("revoked_at", BigInteger),
+    Index("ix_identity_credentials_principal", "principal_id"),
+)
+
+# Реестр управляемых аккаунтов: логин — изменяемая привязка, principal_id — неизменная личность.
+identity_accounts = Table(
+    "identity_accounts", metadata,
+    Column("provider", String(64), primary_key=True),
+    Column("login_hash", String(64), primary_key=True),
+    Column("principal_id", String(36), ForeignKey("principals.principal_id"), nullable=False, unique=True),
+    Column("updated_at", BigInteger, nullable=False),
+)
+
+identity_account_events = Table(
+    "identity_account_events", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("principal_id", String(36), ForeignKey("principals.principal_id"), nullable=False),
+    Column("action", String(16), nullable=False),
+    Column("previous_login_hash", String(64), nullable=False),
+    Column("next_login_hash", String(64)),
+    Column("at", BigInteger, nullable=False),
+)
+
+# Персональные коды Telegram не совместимы с прежними кодами подключения к схеме.
+identity_telegram_codes = Table(
+    "identity_telegram_codes", metadata,
+    Column("code_hash", String(64), primary_key=True),
+    Column("chat_id", String(32), nullable=False, unique=True),
+    Column("telegram_user_id", String(32), nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+)
+
+identity_telegram_links = Table(
+    "identity_telegram_links", metadata,
+    Column("chat_id", String(32), primary_key=True),
+    Column("telegram_user_id", String(32), nullable=False),
+    Column("principal_id", String(36), ForeignKey("principals.principal_id"), nullable=False),
+    Column("tenant_id", String(64), nullable=False),
+    Column("credential_hash", String(64), ForeignKey("identity_credentials.credential_hash"), nullable=False),
+    Column("session_ciphertext", Text, nullable=False),
+    Column("linked_at", BigInteger, nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    Index("ix_identity_telegram_owner", "principal_id", "tenant_id"),
+)
 
 # Контакты телефона: отдельный список по схеме и владельцу, сохраняется между перезапусками.
 email_contacts = Table(
@@ -286,4 +364,158 @@ telegram_notifications = Table(
     Column("repeat", Boolean, nullable=False, server_default=false()),
     Column("at", BigInteger, nullable=False),
     Index("ix_telegram_notifications_at", "at"),
+)
+
+# P1: данные памяти. Все персональные записи принадлежат проверенному principal и схеме.
+conversations = Table(
+    "conversations", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("channel", String(16), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("deleted_at", BigInteger),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("channel IN ('android','telegram')", name="ck_conversations_channel"),
+    CheckConstraint("version >= 0", name="ck_conversations_version"),
+    Index("ix_conversations_owner", "tenant_id", "principal_id", "updated_at"),
+)
+
+conversation_messages = Table(
+    "conversation_messages", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("conversation_id", String(36), ForeignKey("conversations.id"), nullable=False),
+    Column("client_message_id", String(128), nullable=False),
+    Column("role", String(16), nullable=False),
+    Column("content", Text, nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("turn_id", String(36), nullable=False),
+    UniqueConstraint("conversation_id", "client_message_id", "role", name="uq_messages_client_role"),
+    CheckConstraint("role IN ('user','assistant')", name="ck_messages_role"),
+    CheckConstraint("state IN ('pending','committed','failed','deleted')", name="ck_messages_state"),
+    CheckConstraint("length(content) <= 32000", name="ck_messages_length"),
+    Index("ix_messages_conversation", "conversation_id", "created_at", "id"),
+)
+
+conversation_summaries = Table(
+    "conversation_summaries", metadata,
+    Column("conversation_id", String(36), ForeignKey("conversations.id"), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("summary", Text, nullable=False),
+    Column("source_range", Text, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    CheckConstraint("length(summary) <= 8000", name="ck_summaries_length"),
+)
+
+user_entity_aliases = Table(
+    "user_entity_aliases", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("entity_type", String(16), nullable=False),
+    Column("entity_id", String(128), nullable=False),
+    Column("alias", String(120), nullable=False),
+    Column("normalized_alias", String(240), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("source_message_id", String(36), ForeignKey("conversation_messages.id")),
+    Column("created_at", BigInteger, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    Column("deleted_at", BigInteger),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("entity_type = 'vehicle'", name="ck_aliases_entity"),
+    CheckConstraint("status IN ('active','deleted')", name="ck_aliases_status"),
+    Index("uq_aliases_active", "tenant_id", "principal_id", "entity_type", "normalized_alias", unique=True,
+          sqlite_where=text("deleted_at IS NULL AND status = 'active'")),
+)
+
+user_preferences = Table(
+    "user_preferences", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("key", String(64), nullable=False),
+    Column("value_json", Text, nullable=False),
+    Column("source_type", String(16), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    Column("deleted_at", BigInteger),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("source_type IN ('explicit','settings')", name="ck_preferences_source"),
+    CheckConstraint("status IN ('active','deleted')", name="ck_preferences_status"),
+    CheckConstraint("key IN ('response_length','response_format','technical_detail','language','auto_extract_enabled')", name="ck_preferences_key"),
+    Index("uq_preferences_active", "tenant_id", "principal_id", "key", unique=True,
+          sqlite_where=text("deleted_at IS NULL AND status = 'active'")),
+)
+
+investigation_notes = Table(
+    "investigation_notes", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("anomaly_id", String(512), nullable=False),
+    Column("vehicle_id", String(128), nullable=False),
+    Column("author_id", String(36), nullable=False),
+    Column("note", Text, nullable=False),
+    Column("status", String(24), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    Column("deleted_at", BigInteger),
+    ForeignKeyConstraint(["author_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("status IN ('observation','hypothesis','verified_reason','action')", name="ck_notes_status"),
+    CheckConstraint("length(note) <= 4000", name="ck_notes_length"),
+    Index("ix_notes_anomaly", "tenant_id", "anomaly_id"),
+)
+
+memory_candidates = Table(
+    "memory_candidates", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("kind", String(16), nullable=False),
+    Column("dedupe_key", String(64), nullable=False),
+    Column("payload_json", Text, nullable=False),
+    Column("evidence_message_id", String(36), ForeignKey("conversation_messages.id"), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("expires_at", BigInteger, nullable=False),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    UniqueConstraint("tenant_id", "principal_id", "dedupe_key", name="uq_candidates_dedupe"),
+    CheckConstraint("kind IN ('alias','preference')", name="ck_candidates_kind"),
+    CheckConstraint("status IN ('pending','accepted','rejected','expired')", name="ck_candidates_status"),
+    CheckConstraint("length(payload_json) <= 4000", name="ck_candidates_length"),
+)
+
+memory_outbox = Table(
+    "memory_outbox", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("event_type", String(32), nullable=False),
+    Column("aggregate_id", String(36), ForeignKey("conversations.id"), nullable=False),
+    Column("payload_ref", String(36), ForeignKey("conversation_messages.id"), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("next_run_at", BigInteger, nullable=False),
+    Column("lease_token", String(36)),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    UniqueConstraint("event_type", "payload_ref", name="uq_outbox_event"),
+    CheckConstraint("event_type = 'turn_committed'", name="ck_outbox_event"),
+    CheckConstraint("state IN ('pending','processing','done','dead','cancelled')", name="ck_outbox_state"),
+    CheckConstraint("attempts >= 0", name="ck_outbox_attempts"),
+    Index("ix_outbox_due", "state", "next_run_at"),
+)
+
+memory_audit = Table(
+    "memory_audit", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("tenant_id", String(64), nullable=False),
+    Column("principal_id", String(36), nullable=False),
+    Column("action", String(32), nullable=False),
+    Column("target_type", String(32), nullable=False),
+    Column("target_id", String(36), nullable=False),
+    Column("at", BigInteger, nullable=False),
+    Column("reason", String(32), nullable=False),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    Index("ix_memory_audit_owner", "tenant_id", "principal_id", "at"),
 )

@@ -20,6 +20,8 @@ from ..limits import UpstreamLimiter
 from ..metrics import Metrics
 from .errors import AutoGraphUnavailable, SchemaForbidden, SessionInvalid
 
+from .schema_ids import parse_schema_ids
+
 log = logging.getLogger(__name__)
 
 __all__ = ["AutoGraphSessionChecker", "AutoGraphUnavailable", "SchemaForbidden", "SessionInvalid", "session_key"]
@@ -124,5 +126,5 @@ class AutoGraphSessionChecker:
         # С недействительным токеном AutoGRAPH может ответить 200 не со списком — это тоже отказ.
         if not isinstance(schemas, list):
             return _Outcome.INVALID
-        ids = {str(s.get("ID")) for s in schemas if isinstance(s, dict)}
+        ids = parse_schema_ids(schemas)
         return _Outcome.OK if schema_id in ids else _Outcome.FORBIDDEN

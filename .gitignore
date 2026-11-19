@@ -24,3 +24,8 @@ keystore.properties
 # Локальные инструкции и справочник Codex
 /AGENTS.md
 /CODEX.md
+/.codex/
+/.agents/
+
+# Локальные артефакты приёмки P0 (снимки тестового эмулятора)
+/ml/docs/artifacts/p0/

@@ -291,6 +291,23 @@ class Petrovich:
 
     # --- команды ---
 
+    async def identity(self, chat_id: int, user_id: int | None, action: str = "code") -> list[Reply]:
+        if user_id is None or chat_id <= 0 or chat_id != user_id:
+            return [Reply("Личный профиль подключается только в личном чате с ботом.")]
+        try:
+            if action == "status":
+                await self._stand.identity_me(chat_id, user_id)
+                return [Reply("Личный профиль подтверждён. Сама память ассистента пока не включена.")]
+            if action == "unlink":
+                await self._stand.identity_unlink(chat_id, user_id)
+                return [Reply("Личный профиль Telegram отключён. Обычные уведомления и чат продолжают работать.")]
+            data = await self._stand.identity_code(chat_id, user_id)
+            return [Reply("Персональный код: <code>" + T.h(data["code"]) + "</code>\n"
+                          "Введите его в приложении: Подключение и данные → Личный профиль Петровича → Telegram. "
+                          "Код одноразовый. Подключайте только свой личный чат; доступ требует отдельного согласия в приложении.")]
+        except StandError as error:
+            return [Reply(T.h(error.detail))]
+
     async def start(self, chat_id: int, payload: str = "") -> list[Reply]:
         if payload:
             try:

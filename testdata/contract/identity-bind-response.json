@@ -1,0 +1,7 @@
+{
+  "principalId": "58de3817-1474-446d-a774-576b2399b35b",
+  "tenantId": "schema-1",
+  "credential": "pvi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "autographSession": "fake-identity-session",
+  "expiresAt": 1795136400000
+}

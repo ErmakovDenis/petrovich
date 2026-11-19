@@ -5,6 +5,8 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.anomaly.AnomalyDetector
@@ -32,6 +34,9 @@ import ru.petrovich.telemetry.chat.StandEmails
 import ru.petrovich.telemetry.chat.PetrovichAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
+import ru.petrovich.telemetry.data.AssistantIdentity
+import ru.petrovich.telemetry.data.StandIdentity
+import ru.petrovich.telemetry.data.settings.AndroidIdentityVault
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.ServerTelemetryRepository
@@ -44,6 +49,7 @@ import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.api.PetrovichAi
 import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.ui.park.FleetCache
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.io.File
 
 /** Простейший DI-контейнер. */
@@ -52,9 +58,28 @@ object ServiceLocator {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        if (!identityMaintenanceStarted) {
+            identityMaintenanceStarted = true
+            appScope.launch {
+                settings.settings.collectLatest {
+                    while (runCatchingCancellable { assistantIdentity.cleanupIfNeeded() }.getOrDefault(true)) {
+                        delay(60_000)
+                    }
+                }
+            }
+        }
     }
 
+    private var identityMaintenanceStarted = false
+
     val settings by lazy { SettingsRepository(appContext) }
+
+    val assistantIdentity by lazy {
+        AssistantIdentity(
+            { settings.current() }, { transform -> settings.update(transform) },
+            AndroidIdentityVault(), StandIdentity(allowLocalHttp = BuildConfig.DEBUG),
+        )
+    }
 
     val autoGraph by lazy { AutoGraphTelemetryRepository(ApiFactory.create(), settings) }
 

@@ -1,0 +1,7 @@
+{
+  "userName": "Пётр",
+  "password": "fake-password",
+  "schemaId": "schema-1",
+  "utcOffsetMinutes": 300,
+  "consent": true
+}

@@ -205,6 +205,8 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onChanged: () -> Unit, onOpenTe
             ) { Text("Сохранить адрес") }
             serverStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
+            AssistantIdentitySection(s)
+            HorizontalDivider()
             Text("Антифрод (API Антифрод)", style = MaterialTheme.typography.titleMedium)
             SwitchRow(
                 title = "При недоступности антифрода использовать общие правила",

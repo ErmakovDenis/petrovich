@@ -126,7 +126,7 @@ def test_secret_box_binds_ciphertext_to_device_and_field():
 
 def test_window_longer_than_telemetry_limit_is_rejected():
     with pytest.raises(ValidationError):
-        test_settings(background_window_hours=200)
+        test_settings(background_window_hours=200, telemetry_max_period_hours=72)
 
 
 # --- фоновая проверка ---

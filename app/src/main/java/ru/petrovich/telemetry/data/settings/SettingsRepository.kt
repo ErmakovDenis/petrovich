@@ -28,6 +28,12 @@ data class AppSettings(
     val password: String = "",
     val schemaId: String = "",
     val schemaName: String = "",
+    /** Только AES-GCM шифротекст пары для персонального API; ключ хранится в Android Keystore. */
+    val identityCiphertext: String = "",
+    /** Меняется при каждом переходе между аккаунтами/схемами/стендами, включая переход обратно. */
+    val identityGeneration: Long = 0,
+    /** Пара уже недоступна приложению, но должна быть отозвана на исходном стенде. */
+    val identityNeedsRevocation: Boolean = false,
     val backgroundChecks: Boolean = true,
     /** Пройден ли первый запуск (выбор источника данных). */
     val onboarded: Boolean = false,
@@ -166,6 +172,16 @@ data class AppSettings(
     }
 }
 
+/** Применяется атомарно вместе с настройками: старая личность не оживает при возврате к прежнему аккаунту. */
+fun AppSettings.invalidatingIdentityFrom(previous: AppSettings): AppSettings {
+    val changed = serverUrl != previous.serverUrl || userName != previous.userName || password != previous.password ||
+        schemaId != previous.schemaId || demoMode != previous.demoMode
+    return copy(
+        identityGeneration = previous.identityGeneration + if (changed) 1 else 0,
+        identityNeedsRevocation = if (changed) identityCiphertext.isNotEmpty() else identityNeedsRevocation,
+    )
+}
+
 private val Context.dataStore by preferencesDataStore("settings")
 
 class SettingsRepository(private val context: Context) {
@@ -176,6 +192,9 @@ class SettingsRepository(private val context: Context) {
         val password = stringPreferencesKey("password")
         val schemaId = stringPreferencesKey("schema_id")
         val schemaName = stringPreferencesKey("schema_name")
+        val identityCiphertext = stringPreferencesKey("identity_ciphertext_v1")
+        val identityGeneration = longPreferencesKey("identity_generation")
+        val identityNeedsRevocation = booleanPreferencesKey("identity_needs_revocation")
         val background = booleanPreferencesKey("background_checks")
         val onboarded = booleanPreferencesKey("onboarded")
         val widgetLayout = stringPreferencesKey("widget_layout")
@@ -229,6 +248,9 @@ class SettingsRepository(private val context: Context) {
         password = this[Keys.password].orEmpty(),
         schemaId = this[Keys.schemaId].orEmpty(),
         schemaName = this[Keys.schemaName].orEmpty(),
+        identityCiphertext = this[Keys.identityCiphertext].orEmpty(),
+        identityGeneration = this[Keys.identityGeneration] ?: 0,
+        identityNeedsRevocation = this[Keys.identityNeedsRevocation] ?: false,
         backgroundChecks = this[Keys.background] ?: true,
         onboarded = this[Keys.onboarded] ?: false,
         widgetLayout = this[Keys.widgetLayout].orEmpty(),
@@ -282,12 +304,16 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         context.dataStore.edit { p ->
-            val new = transform(p.toSettings())
+            val previous = p.toSettings()
+            val new = transform(previous).invalidatingIdentityFrom(previous)
             p[Keys.demo] = new.demoMode
             p[Keys.user] = new.userName
             p[Keys.password] = new.password
             p[Keys.schemaId] = new.schemaId
             p[Keys.schemaName] = new.schemaName
+            p[Keys.identityCiphertext] = new.identityCiphertext
+            p[Keys.identityGeneration] = new.identityGeneration
+            p[Keys.identityNeedsRevocation] = new.identityNeedsRevocation
             p[Keys.background] = new.backgroundChecks
             p[Keys.onboarded] = new.onboarded
             p[Keys.widgetLayout] = new.widgetLayout
