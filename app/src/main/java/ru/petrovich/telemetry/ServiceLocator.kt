@@ -43,6 +43,8 @@ import ru.petrovich.telemetry.data.TelemetryRepository
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.api.PetrovichAi
 import ru.petrovich.telemetry.data.settings.SettingsRepository
+import ru.petrovich.telemetry.ui.home.ReportsPeriodStore
+import ru.petrovich.telemetry.ui.home.WidgetPeriodCache
 import ru.petrovich.telemetry.ui.park.FleetCache
 import java.io.File
 
@@ -75,6 +77,12 @@ object ServiceLocator {
 
     /** Снимок парка для Главной и Парка: не сбрасывается при смене вкладки. */
     val fleetCache by lazy { FleetCache(telemetry, settings) }
+
+    /** Снимки виджетов за день / неделю / месяц: не сбрасываются при смене вкладки. */
+    val widgetPeriodCache by lazy { WidgetPeriodCache() }
+
+    /** Выбор периода на «Отчётах» / карточке виджета — не сбрасывается при переходах по стеку. */
+    val reportsPeriod by lazy { ReportsPeriodStore() }
 
     val mlDetector by lazy { MlAnomalyDetector(appContext) }
 
@@ -150,6 +158,8 @@ object ServiceLocator {
         anomalyStore.clear()
         anomalySync.resetNotifyMark()
         fleetCache.clear()
+        widgetPeriodCache.clear()
+        reportsPeriod.clear()
         settings.update {
             it.copy(
                 lastScanAt = 0, fleetUpdatedAt = 0, fleetOnline = 0, fleetIdle = 0, fleetOffline = 0,

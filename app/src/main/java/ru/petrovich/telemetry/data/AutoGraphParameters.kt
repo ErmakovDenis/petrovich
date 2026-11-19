@@ -26,6 +26,8 @@ object AutoGraphParameters {
 
     /** Стандартные имена параметров, используемые в правилах аномалий. */
     const val FUEL_LEVEL = "TankMainFuelLevel"
+    /** Тот же ДУТ под другими именами AutoGRAPH — для поиска колонки уровня. */
+    val FUEL_LEVEL_NAMES = listOf(FUEL_LEVEL, "FL1", "FLTankMain")
     const val FUEL_DRAIN_VOLUME = "TankMainFuelDnVol"
     const val FUEL_UP_VOLUME = "TankMainFuelUpVol"
     const val POWER = "Power"
@@ -45,6 +47,7 @@ object AutoGraphParameters {
     val curated: List<ParameterSpec> = listOf(
         ParameterSpec(FUEL_LEVEL, MetricCategory.FUEL, "Уровень топлива"),
         ParameterSpec("FL1", MetricCategory.FUEL, "ДУТ 1"),
+        ParameterSpec("FLTankMain", MetricCategory.FUEL, "Уровень топлива (бак)"),
         ParameterSpec("CANFinstant", MetricCategory.FUEL, "Мгновенный расход"),
         ParameterSpec("ConsumptionCAN", MetricCategory.FUEL, "Расход по CAN (накоп.)", Aggregation.MAX),
         ParameterSpec(FUEL_UP_VOLUME, MetricCategory.FUEL, "Объём заправки", Aggregation.MAX),
@@ -79,7 +82,8 @@ object AutoGraphParameters {
     /**
      * Выбирает параметры прибора для показа: сначала известные из [curated],
      * плюс любые параметры напряжения (у FAW их нет, у Урал NEXT есть BattaryVOLTAGE — появятся, если добавить датчик).
-     * Если прибор настроен нестандартно и известных имён нет — классификация по ключевым словам.
+     * Остальные числовые — по ключевым словам категории (топливо/двигатель/…), даже если уже есть Speed:
+     * иначе ДУТ с именем вроде `LLS_A` / нестандартным alias не попадает в графики.
      */
     fun select(available: List<RParameter>): Pair<List<ParameterInfo>, Map<String, Aggregation>> {
         val byName = available.associateBy { it.name }
@@ -98,14 +102,12 @@ object AutoGraphParameters {
             aggregation[p.name] = Aggregation.MEAN_NONZERO
         }
 
-        if (chosen.none { it.category != MetricCategory.POWER }) {
-            numeric.forEach { p ->
-                if (chosen.any { it.name == p.name }) return@forEach
-                val category = MetricCategory.classify(p.name, p.caption, p.alias, p.groupName) ?: return@forEach
-                if (chosen.count { it.category == category } >= 6) return@forEach
-                chosen += ParameterInfo(p.name, p.caption ?: p.name, p.unit?.takeIf { it.isNotBlank() }, category)
-                aggregation[p.name] = Aggregation.MEAN
-            }
+        numeric.forEach { p ->
+            if (chosen.any { it.name == p.name }) return@forEach
+            val category = MetricCategory.classify(p.name, p.caption, p.alias, p.groupName) ?: return@forEach
+            if (chosen.count { it.category == category } >= 6) return@forEach
+            chosen += ParameterInfo(p.name, p.caption ?: p.name, p.unit?.takeIf { it.isNotBlank() }, category)
+            aggregation[p.name] = Aggregation.MEAN
         }
         return chosen to aggregation
     }

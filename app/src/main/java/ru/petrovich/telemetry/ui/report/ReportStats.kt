@@ -40,7 +40,7 @@ suspend fun loadReportStats(from: LocalDateTime, to: LocalDateTime): ReportStats
 
     telemetry.forEach { t ->
         val fuelTable = t.tables[MetricCategory.FUEL]
-        if (fuelTable?.columns?.any { it.parameter.name == AutoGraphParameters.FUEL_LEVEL } == true) {
+        if (fuelTable?.columns?.any { it.parameter.name in AutoGraphParameters.FUEL_LEVEL_NAMES } == true) {
             fuel += t.totalOf(WidgetType.FUEL); fuelSeen = true
             refuels += t.totalOf(WidgetType.REFUELS).toInt(); refuelsSeen = true
         }

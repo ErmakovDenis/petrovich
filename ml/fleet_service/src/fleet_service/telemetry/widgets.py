@@ -2,6 +2,7 @@ from datetime import datetime
 
 from ..schemas.contract import CategoryTable, MetricCategory, VehicleTelemetry
 from ..schemas.widgets import DailyVehicleStats
+from .parameters import FUEL_LEVEL_NAMES
 
 IDLE_SPEED = 1.0
 MAX_GAP_SECONDS = 2 * 60 * 60
@@ -22,9 +23,7 @@ def aggregate(telemetry: VehicleTelemetry, day_start: datetime, day_end: datetim
     fuel_table = telemetry.tables.get(MetricCategory.FUEL)
     speed = _column(motion, "Speed")
     ignition = _column(telemetry.tables.get(MetricCategory.POWER), "DIgnition", "DIgnitionCAN")
-    level = _column(fuel_table, "TankMainFuelLevel")
-    drain = _column(fuel_table, "TankMainFuelDnVol")
-    up = _column(fuel_table, "FuelUpVolume", "TankMainFuelUpVol")
+    level = _column(fuel_table, *FUEL_LEVEL_NAMES)
 
     for table in telemetry.tables.values():
         for i, stamp in enumerate(table.timestamps):
@@ -53,11 +52,29 @@ def aggregate(telemetry: VehicleTelemetry, day_start: datetime, day_end: datetim
             if not (day_start <= stamp < day_end):
                 continue
             old, new = level.values[i - 1], level.values[i]
-            if old is not None and new is not None:
-                fuel += max(0.0, old - new - (drain.values[i] if drain and drain.values[i] else 0)
-                            + (up.values[i] if up and up.values[i] else 0))
-            if up and (up.values[i] or 0) > REFUEL_THRESHOLD:
+            if old is not None and new is not None and old > new:
+                # Только падение уровня. UpVol/DnVol у AutoGRAPH с Aggregation.MAX
+                # залипают на много тиков: +Up раздувает расход до тысяч литров,
+                # −Dn после отключения Up обнуляет его полностью.
+                fuel += old - new
+            # Заправка — по росту уровня (UpVol один ненадёжен из‑за залипания).
+            if old is not None and new is not None and (new - old) > REFUEL_THRESHOLD:
                 refuels += 1
+
+    # Нет ДУТ / уровень плоский — берём прирост накопленного CAN-расхода за сутки.
+    if fuel <= 0 and fuel_table:
+        can = _column(fuel_table, "ConsumptionCAN")
+        if can:
+            prev: float | None = None
+            for i, stamp in enumerate(fuel_table.timestamps):
+                if not (day_start <= stamp < day_end):
+                    continue
+                v = can.values[i]
+                if v is None:
+                    continue
+                if prev is not None and v > prev:
+                    fuel += v - prev
+                prev = v
 
     return DailyVehicleStats(vehicle=telemetry.vehicle, day=day_start.date(), fuel=fuel, idle=idle,
                              mileage=mileage, refuels=refuels,

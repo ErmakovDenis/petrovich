@@ -98,6 +98,85 @@ fun VehiclePicker(vehicles: List<Vehicle>, selectedId: String?, onSelect: (Strin
     }
 }
 
+/**
+ * Фильтр по машине: [selectedId] = null — «Все машины».
+ * Для «Проблем»: очередь / в работе / закрытые по одной машине.
+ */
+@Composable
+fun VehicleFilterBar(
+    vehicles: List<Vehicle>,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
+    val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
+    val pending = remember(anomalies, settings?.mutedKinds) {
+        anomalies.shown(settings?.mutedKinds.orEmpty()).filter { it.isNew }.groupingBy { it.vehicleId }.eachCount()
+    }
+    var open by remember { mutableStateOf(false) }
+    val c = Petrovich.colors
+    val current = vehicles.firstOrNull { it.id == selectedId }
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SurfaceCard(
+            Modifier.weight(1f),
+            onClick = { open = true },
+            shape = RoundedCornerShape(14.dp),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        current?.name ?: "Все машины",
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (current != null) {
+                            listOfNotNull(current.group, current.plate).joinToString(" · ").ifEmpty { "только эта машина" }
+                        } else {
+                            "проблемы по всему парку"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = c.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                val n = current?.let { pending[it.id] } ?: pending.values.sum()
+                if (n > 0) Pill("$n", c.high, c.highSoft)
+                Icon(Icons.Filled.ExpandMore, null, tint = c.muted)
+            }
+        }
+        if (selectedId != null) {
+            IconButton(onClick = { onSelect(null) }) {
+                Icon(Icons.Filled.Close, contentDescription = "Сбросить фильтр")
+            }
+        }
+    }
+
+    if (open) {
+        VehicleSheet(
+            vehicles = vehicles,
+            selectedId = selectedId,
+            pending = pending,
+            allLabel = "Все машины",
+            onSelect = { onSelect(it); open = false },
+            onSelectAll = { onSelect(null); open = false },
+            onDismiss = { open = false },
+        )
+    }
+}
+
 private sealed interface PickerRow {
     data class Header(val title: String, val count: Int) : PickerRow
     data class Item(val vehicle: Vehicle, val issues: Int, val section: String) : PickerRow
@@ -111,6 +190,8 @@ private fun VehicleSheet(
     pending: Map<String, Int>,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
+    allLabel: String? = null,
+    onSelectAll: (() -> Unit)? = null,
 ) {
     val c = Petrovich.colors
     var query by remember { mutableStateOf("") }
@@ -163,10 +244,29 @@ private fun VehicleSheet(
                 ),
             )
             if (query.isNotBlank()) Text("Найдено: $matches из ${vehicles.size}", style = MaterialTheme.typography.labelMedium, color = c.muted)
-            if (rows.isEmpty()) {
+            if (rows.isEmpty() && allLabel == null) {
                 Text("Ничего не найдено", Modifier.padding(vertical = 24.dp), color = c.muted)
             } else {
                 LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 24.dp), modifier = Modifier.fillMaxWidth()) {
+                    if (allLabel != null && onSelectAll != null && query.isBlank()) {
+                        item(key = "all") {
+                            val selected = selectedId == null
+                            Row(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                                    .background(if (selected) c.accentSoft else androidx.compose.ui.graphics.Color.Transparent)
+                                    .clickable { onSelectAll() }
+                                    .padding(horizontal = 10.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    allLabel,
+                                    Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                            }
+                        }
+                    }
                     rows.forEach { row ->
                         when (row) {
                             is PickerRow.Header -> stickyHeader(key = "h:${row.title}") {

@@ -58,13 +58,10 @@ import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.Resolution
-import ru.petrovich.telemetry.ui.common.PeriodChips
-import ru.petrovich.telemetry.ui.common.PeriodPreset
 import ru.petrovich.telemetry.ui.common.Pill
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SectionLabel
 import ru.petrovich.telemetry.ui.common.SurfaceCard
-import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.dashedBorder
 import ru.petrovich.telemetry.ui.common.greeting
 import ru.petrovich.telemetry.ui.common.headline
@@ -85,11 +82,6 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.math.abs
 
-private val HomePeriodPresets = listOf(
-    PeriodPreset("week", "Неделя") { WidgetPeriod.WEEK.toRange() },
-    PeriodPreset("month", "Месяц") { WidgetPeriod.MONTH.toRange() },
-)
-
 @Composable
 fun HomeScreen(
     vehicleCount: Int?,
@@ -100,6 +92,7 @@ fun HomeScreen(
     onOpenWidgets: () -> Unit,
     onOpenTables: () -> Unit,
     onOpenCharts: () -> Unit,
+    onOpenPeriodReports: () -> Unit = {},
     unreadNotifications: Int = 0,
     onOpenNotifications: () -> Unit = {},
     /** «Все N машин и их статус» / плитки статуса — экран «Парк» (3.12) пока не входит в мои файлы. */
@@ -144,21 +137,12 @@ fun HomeScreen(
     // Снимок парка для плиток «на линии / стоят / без связи» — общий с вкладкой «Парк», без ожидания скана аномалий.
     LaunchedEffect(Unit) { runCatchingCancellable { ServiceLocator.fleetCache.ensureFresh() } }
 
-    // «Неделя в цифрах»: один запрос на период; при переключении / своём периоде — отдельная подгрузка.
-    var homePresetId by remember { mutableStateOf<String?>("week") }
-    var homeCustom by remember { mutableStateOf<TimeRange?>(null) }
-    var fleetWeek by remember { mutableStateOf<FleetWeek?>(null) }
-    LaunchedEffect(s.telemetryOnServer, homePresetId, homeCustom) {
-        fleetWeek = null
-        do {
-            fleetWeek = runCatchingCancellable {
-                val custom = homeCustom?.takeIf { homePresetId == null }
-                if (custom != null) loadFleetRange(custom)
-                else loadFleetPeriod(if (homePresetId == "month") WidgetPeriod.MONTH else WidgetPeriod.WEEK)
-            }.getOrNull()
-            if (!s.telemetryOnServer) break
-            delay(15_000)
-        } while (true)
+    // «Неделя в цифрах» — из WidgetPeriodCache (TTL 5 мин); DAY/MONTH прогреваем в фоне для отчётов/детали.
+    val widgetCache by ServiceLocator.widgetPeriodCache.state.collectAsStateWithLifecycle()
+    val fleetWeek = widgetCache.byPeriod[WidgetPeriod.WEEK]?.fleet
+    LaunchedEffect(s.telemetryOnServer) {
+        runCatchingCancellable { ServiceLocator.widgetPeriodCache.ensureFresh(WidgetPeriod.WEEK) }
+        runCatchingCancellable { ServiceLocator.widgetPeriodCache.prefetch() }
     }
 
     // Хранилище на стенде: свежая лента для сводки; без сети — последняя загруженная (ошибку покажет лента).
@@ -201,41 +185,21 @@ fun HomeScreen(
             ApiDegradedCard(s.anomalyFeedSource, s.anomalyApiUpdatedAt)
         }
 
-        WeekInNumbersHeader(
-            selectedPresetId = homePresetId,
-            customRange = homeCustom,
-            onSelectPreset = { homePresetId = it.id; homeCustom = null },
-            onSelectCustom = { homeCustom = it; homePresetId = null },
+        Text("Неделя в цифрах", style = MaterialTheme.typography.titleMedium)
+        HomeWidgetsGrid(
+            layout = layout,
+            fleetWeek = fleetWeek,
+            periodLabel = "неделя",
+            anomalies = anomalies,
+            onOpenWidgetDetail = onOpenWidgetDetail,
+            onOpenWidgets = onOpenWidgets,
         )
-        val periodLabel = when {
-            homePresetId == "month" -> "месяц"
-            homePresetId == "week" -> "неделя"
-            homeCustom != null -> homeCustom!!.shortLabel
-            else -> "неделя"
-        }
-        if (layout.isEmpty()) {
-            EmptyWidgets(onOpenWidgets)
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                widgetRows(layout).forEach { row ->
-                    if (row.size == 1) {
-                        MetricWidgetCard(row[0].type, fleetWeek, periodLabel, anomalies, Modifier.fillMaxWidth(), onClick = { onOpenWidgetDetail(row[0].type) })
-                    } else {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            row.forEach { slot ->
-                                MetricWidgetCard(slot.type, fleetWeek, periodLabel, anomalies, Modifier.weight(1f), onClick = { onOpenWidgetDetail(slot.type) })
-                            }
-                        }
-                    }
-                }
-                AddWidgetButton("+ Добавить или убрать виджеты", onOpenWidgets)
-            }
-        }
 
         SectionLabel("Данные по машинам")
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             LinkCard("Таблицы", "Значения по времени", Icons.Outlined.TableChart, onOpenTables, Modifier.weight(1f))
             LinkCard("Графики", "Линии и аномалии", Icons.Outlined.BarChart, onOpenCharts, Modifier.weight(1f))
+            LinkCard("Отчёты", "По периодам", Icons.Outlined.Description, onOpenPeriodReports, Modifier.weight(1f))
         }
 
         ReportLinkCard(s.reportTime, onOpenReport)
@@ -607,26 +571,43 @@ private fun LinkCard(title: String, subtitle: String, icon: ImageVector, onClick
     }
 }
 
-// ---------- «Неделя в цифрах»: период, сетка широких/узких, карточки по макету ----------
-
+/** Сетка виджетов главной и экрана «Отчёты по периодам». */
 @Composable
-private fun WeekInNumbersHeader(
-    selectedPresetId: String?,
-    customRange: TimeRange?,
-    onSelectPreset: (PeriodPreset) -> Unit,
-    onSelectCustom: (TimeRange) -> Unit,
+fun HomeWidgetsGrid(
+    layout: List<WidgetSlot>,
+    fleetWeek: FleetWeek?,
+    periodLabel: String,
+    anomalies: List<Anomaly>,
+    onOpenWidgetDetail: (WidgetType) -> Unit,
+    onOpenWidgets: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Неделя в цифрах", style = MaterialTheme.typography.titleMedium)
-        PeriodChips(
-            presets = HomePeriodPresets,
-            selectedPresetId = selectedPresetId,
-            customRange = customRange,
-            onSelectPreset = onSelectPreset,
-            onSelectCustom = onSelectCustom,
-        )
+    if (layout.isEmpty()) {
+        EmptyWidgets(onOpenWidgets)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        widgetRows(layout).forEach { row ->
+            if (row.size == 1) {
+                MetricWidgetCard(
+                    row[0].type, fleetWeek, periodLabel, anomalies, Modifier.fillMaxWidth(),
+                    onClick = { onOpenWidgetDetail(row[0].type) },
+                )
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { slot ->
+                        MetricWidgetCard(
+                            slot.type, fleetWeek, periodLabel, anomalies, Modifier.weight(1f),
+                            onClick = { onOpenWidgetDetail(slot.type) },
+                        )
+                    }
+                }
+            }
+        }
+        AddWidgetButton("+ Добавить или убрать виджеты", onOpenWidgets)
     }
 }
+
+// ---------- «Неделя в цифрах»: сетка широких/узких, карточки по макету ----------
 
 @Composable
 private fun MetricWidgetCard(
@@ -645,7 +626,7 @@ private fun MetricWidgetCard(
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             when (type) {
                 WidgetType.FUEL -> FuelWidgetBody(fleetWeek?.summary(type), periodLabel)
-                WidgetType.OVERCONSUMERS -> OverconsumersBody(fleetWeek?.summary(WidgetType.FUEL), periodLabel)
+                WidgetType.OVERCONSUMERS -> OverconsumersBody(fleetWeek?.overconsumers(), periodLabel)
                 WidgetType.OFFLINE -> OfflineWidgetBody(fleetWeek?.offline())
                 WidgetType.ALARMS -> AlarmsWidgetBody(anomalies)
                 else -> {
@@ -683,22 +664,24 @@ private fun FuelWidgetBody(summary: WidgetSummary?, periodLabel: String) {
                 "${if (change >= 0) "+" else "−"}${formatCount(abs(change))} %",
                 fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 28.sp, color = if (change >= 0) c.med else c.ok,
             )
-            Text("к обычному · ${formatCount(summary.total)} ${summary.unit}", style = MaterialTheme.typography.bodyMedium, color = c.muted, modifier = Modifier.padding(bottom = 4.dp))
+            Text("к прошлому периоду · ${formatCount(summary.total)} ${summary.unit}", style = MaterialTheme.typography.bodyMedium, color = c.muted, modifier = Modifier.padding(bottom = 4.dp))
         } else {
             BigNumber("${formatCount(summary.total)} ${summary.unit}")
         }
     }
-    if (change == null) Sub("Нет данных за прошлый период для сравнения")
+    if (change == null) Sub("Нет полного прошлого периода для сравнения")
     if (summary.points.isNotEmpty()) {
         WeekBarsWithBaseline(summary.points, summary.usualDaily())
     }
     summary.leaders.firstOrNull()?.let { top ->
-        val avg = summary.total / summary.leaders.size.coerceAtLeast(1)
-        val excess = if (avg > 0.5) ((top.value - avg) / avg * 100.0) else null
+        // Сравниваем лидера со средним среди лидеров, не с (сумма парка / 3).
+        val peers = summary.leaders.map { it.value }.filter { it > 0.5 }
+        val avg = peers.average().takeIf { peers.isNotEmpty() }
+        val excess = avg?.let { ((top.value - it) / it * 100.0).takeIf { d -> d > 0.5 } }
         Text(
             buildString {
                 append("Больше всех: ${top.name}")
-                if (excess != null && excess > 0) append(" — +${formatCount(excess)} %")
+                if (excess != null) append(" — +${formatCount(excess)} %")
             },
             style = MaterialTheme.typography.bodySmall, color = c.ink,
         )
@@ -706,42 +689,28 @@ private fun FuelWidgetBody(summary: WidgetSummary?, periodLabel: String) {
 }
 
 @Composable
-private fun OverconsumersBody(summary: WidgetSummary?, periodLabel: String) {
+private fun OverconsumersBody(report: OverconsumersReport?, periodLabel: String) {
     val c = Petrovich.colors
     WidgetHeader(WidgetType.OVERCONSUMERS, periodLabel, badge = null)
-    if (summary == null) {
+    if (report == null) {
         BigNumber("—")
         Sub("Загружаю…")
         return
     }
-    val leaders = summary.leaders
-    if (leaders.isEmpty()) {
-        BigNumber("0")
-        Sub("Нет перерасхода за период")
-        return
-    }
-    val max = leaders.maxOf { it.value }.coerceAtLeast(0.01)
-    val mean = leaders.map { it.value }.average()
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        leaders.forEach { leader ->
-            val excess = if (mean > 0.5) (leader.value - mean) / mean * 100.0 else 0.0
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(leader.name, style = MaterialTheme.typography.labelMedium, color = c.ink, modifier = Modifier.weight(1f), maxLines = 1)
-                    Text(
-                        if (excess >= 0) "+${formatCount(excess)} %" else "${formatCount(excess)} %",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (excess >= 5) c.high else c.muted,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
-                Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)).background(c.surface2)) {
-                    Box(
-                        Modifier.fillMaxWidth((leader.value / max).toFloat().coerceIn(0.04f, 1f)).fillMaxHeight()
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(if (excess >= 5) c.high else c.accentSoft),
-                    )
-                }
+    val count = report.rows.size
+    BigNumber("$count")
+    Sub(if (count == 0) "Нет перерасхода за период" else "выше медианы парка на ≥15 %")
+    if (count == 0) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        report.rows.take(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(row.name, style = MaterialTheme.typography.labelMedium, color = c.ink, modifier = Modifier.weight(1f), maxLines = 1)
+                Text(
+                    "+${formatCount(row.excessPercent)} % · ${formatCount(row.ratePer100Km)} л/100 км",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = c.high,
+                    fontWeight = FontWeight.SemiBold,
+                )
             }
         }
     }

@@ -54,7 +54,9 @@ import ru.petrovich.telemetry.ui.common.shown
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import ru.petrovich.telemetry.ui.detail.AnomalyDetailScreen
 import ru.petrovich.telemetry.ui.home.HomeScreen
+import ru.petrovich.telemetry.ui.home.PeriodReportsScreen
 import ru.petrovich.telemetry.ui.home.WidgetDetailScreen
+import ru.petrovich.telemetry.ui.home.WidgetPeriod
 import ru.petrovich.telemetry.ui.home.WidgetType
 import ru.petrovich.telemetry.ui.home.WidgetsScreen
 import ru.petrovich.telemetry.ui.mail.MailScreen
@@ -85,7 +87,7 @@ private const val MAIL = "mail/{id}"
 private const val RESOLUTION = "resolution/{id}"
 private const val REPORT = "report"
 private const val WIDGETS = "widgets"
-private const val WIDGET_DETAIL = "widget/{type}"
+private const val WIDGET_DETAIL = "widget/{type}?period={period}"
 private const val NOTIFICATIONS = "notifications"
 private const val PARK = "park"
 private const val VEHICLE = "vehicle/{id}"
@@ -94,6 +96,7 @@ private const val CONNECTION = "connection"
 private const val TELEGRAM = "telegram"
 private const val TABLES = "tables"
 private const val CHARTS = "charts"
+private const val PERIOD_REPORTS = "period-reports"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     HOME(ru.petrovich.telemetry.ui.HOME, "Главная", Icons.Outlined.Home),
@@ -163,7 +166,10 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
     }
     fun openChat(anomalyId: String?) = push(if (anomalyId == null) "chat" else "chat?anomaly=${Uri.encode(anomalyId)}")
     fun openVehicle(id: String) = push("vehicle/${Uri.encode(id)}")
-    fun openWidgetDetail(type: WidgetType) = push("widget/${type.key}")
+    fun openWidgetDetail(type: WidgetType, lockedPeriod: WidgetPeriod? = null) {
+        val q = lockedPeriod?.let { "?period=${it.name.lowercase()}" }.orEmpty()
+        push("widget/${type.key}$q")
+    }
     fun openNotifications() = push(NOTIFICATIONS)
 
     LaunchedEffect(requestedTab) {
@@ -215,10 +221,19 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
                     onOpenWidgets = { push(WIDGETS) },
                     onOpenTables = { push(TABLES) },
                     onOpenCharts = { push(CHARTS) },
+                    onOpenPeriodReports = { push(PERIOD_REPORTS) },
                     unreadNotifications = unreadNotifications,
                     onOpenNotifications = ::openNotifications,
                     onOpenFleet = { openTab(PARK) },
-                    onOpenWidgetDetail = ::openWidgetDetail,
+                    // Период на карточке — общий с «Отчётами»; с главной не навязываем неделю.
+                    onOpenWidgetDetail = { openWidgetDetail(it) },
+                )
+            }
+            composable(PERIOD_REPORTS) {
+                PeriodReportsScreen(
+                    onBack = { nav.popBackStack() },
+                    onOpenWidgets = { push(WIDGETS) },
+                    onOpenWidgetDetail = { type, period -> openWidgetDetail(type, period) },
                 )
             }
             composable(PARK) { ParkScreen(onOpenVehicle = ::openVehicle) }
@@ -234,10 +249,25 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
             composable(VEHICLE_MAP, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
                 VehicleMapScreen(vehicleId = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() })
             }
-            composable(WIDGET_DETAIL, arguments = listOf(navArgument("type") { type = NavType.StringType })) { entry ->
+            composable(
+                WIDGET_DETAIL,
+                arguments = listOf(
+                    navArgument("type") { type = NavType.StringType },
+                    navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { entry ->
                 val type = WidgetType.byKey(entry.arguments?.getString("type").orEmpty())
+                val locked = WidgetPeriod.entries.firstOrNull {
+                    it.name.equals(entry.arguments?.getString("period"), ignoreCase = true)
+                }
                 if (type != null) {
-                    WidgetDetailScreen(type = type, onBack = { nav.popBackStack() }, onAsk = { openChat(null) }, onOpenVehicle = ::openVehicle)
+                    WidgetDetailScreen(
+                        type = type,
+                        onBack = { nav.popBackStack() },
+                        onAsk = { openChat(null) },
+                        onOpenVehicle = ::openVehicle,
+                        lockedPeriod = locked,
+                    )
                 }
             }
             composable(NOTIFICATIONS) { NotificationsScreen(onBack = { nav.popBackStack() }, onOpenCard = ::openCard) }

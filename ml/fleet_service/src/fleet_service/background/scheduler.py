@@ -250,31 +250,48 @@ class BackgroundScanner:
         first = today - timedelta(days=history_days - 1)
         existing = await self._store.widget_stats(schema_id, first.isoformat(), today.isoformat())
         known = {item.day for item in existing if item.vehicle.id == vehicle_id}
-        # История заполняется одним проходом при первом появлении машины. В обычном режиме запрашивается только
-        # сегодняшний открытый день: закрытые строки уже не меняются.
-        if len(known) < history_days:
-            days = []
-            start_day = first
-            while start_day <= today:
-                end = min(start_day + timedelta(days=7), today + timedelta(days=1))
-                loaded = await self._telemetry.telemetry(
-                    owner.session, schema_id, vehicle_id, datetime.combine(start_day, datetime_time()),
-                    datetime.combine(end, datetime_time()), owner.grant.utc_offset_minutes,
-                )
-                days.extend(
-                    aggregate(loaded.telemetry, datetime.combine(start_day + timedelta(days=i), datetime_time()),
-                              datetime.combine(start_day + timedelta(days=i + 1), datetime_time()))
-                    for i in range((end - start_day).days)
-                )
-                start_day = end
-        else:
+
+        async def _load_and_save(range_from: datetime, range_to: datetime, day_list: list) -> None:
             loaded = await self._telemetry.telemetry(
-                owner.session, schema_id, vehicle_id, datetime.combine(today, datetime_time()),
-                now_local, owner.grant.utc_offset_minutes,
+                owner.session, schema_id, vehicle_id, range_from, range_to, owner.grant.utc_offset_minutes,
             )
-            days = [aggregate(loaded.telemetry, datetime.combine(today, datetime_time()),
-                              datetime.combine(today + timedelta(days=1), datetime_time()))]
-        await self._store.save_widget_stats(schema_id, days)
+            stats = [
+                aggregate(
+                    loaded.telemetry,
+                    datetime.combine(day, datetime_time()),
+                    datetime.combine(day + timedelta(days=1), datetime_time()),
+                )
+                for day in day_list
+            ]
+            await self._store.save_widget_stats(schema_id, stats)
+
+        # Сначала сегодня — иначе после очистки таблицы главная часами показывает 0,
+        # пока фон тащит историю с первого дня окна.
+        await _load_and_save(
+            datetime.combine(today, datetime_time()),
+            now_local,
+            [today],
+        )
+        known.add(today)
+
+        # Добрать пропуски от новых к старым. Не больше ~2 недель за один проход машины:
+        # иначе одна машина на 180 днях держит слот, а остальные не попадают в виджеты (нули на главной).
+        missing: list = []
+        cursor = today - timedelta(days=1)
+        while cursor >= first:
+            if cursor not in known:
+                missing.append(cursor)
+            cursor -= timedelta(days=1)
+        missing = missing[:14]
+        chunk_size = 7
+        for i in range(0, len(missing), chunk_size):
+            chunk = missing[i:i + chunk_size]  # уже от новых к старым
+            start_day, end_day = min(chunk), max(chunk)
+            await _load_and_save(
+                datetime.combine(start_day, datetime_time()),
+                datetime.combine(end_day + timedelta(days=1), datetime_time()),
+                sorted(chunk),
+            )
 
 
 def _short(device_id: str) -> str:
