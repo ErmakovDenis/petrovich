@@ -22,7 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -58,11 +59,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.onEmpty
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.chat.Author
 import ru.petrovich.telemetry.chat.ChatAgent
 import ru.petrovich.telemetry.chat.ChatMessage
 import ru.petrovich.telemetry.chat.DraftState
+import ru.petrovich.telemetry.chat.uiState
 import ru.petrovich.telemetry.chat.EmailActions
 import ru.petrovich.telemetry.chat.StandEmailDraft
 import ru.petrovich.telemetry.chat.meansAlreadySent
@@ -80,7 +85,7 @@ import ru.petrovich.telemetry.ui.common.time
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 
-data class ChatUiState(val messages: List<ChatMessage>, val agentTyping: Boolean = false)
+data class ChatUiState(val messages: List<ChatMessage>, val agentTyping: Boolean = false, val serverHistory: Boolean = false)
 
 class ChatViewModel(
     private val agent: ChatAgent = ServiceLocator.chatAgent,
@@ -98,22 +103,62 @@ class ChatViewModel(
     /** false — стенд без модели или без адреса; в приложении чат всегда идёт через стенд. */
     val connected: StateFlow<Boolean> = (agent as? SwitchingChatAgent)?.connectedState ?: MutableStateFlow(agent.connected)
 
+    private var epoch = 0L
+    private var requestJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            agent.conversationEpoch.onEmpty { emit("") }.collectLatest {
+                epoch += 1
+                requestJob?.cancel()
+                val current = epoch
+                _state.value = ChatUiState(listOf(greeting), agentTyping = true)
+                runCatchingCancellable { restore(current) }.onFailure { showError(current, it) }
+                if (epoch == current) _state.update { it.copy(agentTyping = false) }
+            }
+        }
+    }
+
+    private suspend fun restore(current: Long): Boolean {
+        val messages = agent.history() ?: return false
+        if (epoch == current) _state.update { it.copy(messages = listOf(greeting) + messages, serverHistory = true) }
+        return true
+    }
+
+    private fun showError(current: Long, error: Throwable) {
+        if (epoch == current) _state.update {
+            it.copy(messages = it.messages + ChatMessage(author = Author.AGENT, text = "Ошибка: ${error.message}", isError = true))
+        }
+    }
+
     fun send(text: String, contextAnomalyId: String?) {
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _state.value.agentTyping) return
+        val current = epoch
         _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = trimmed), agentTyping = true) }
-        viewModelScope.launch {
-            val reply = runCatchingCancellable { agent.reply(_state.value.messages, contextAnomalyId) }
-                .fold(
-                    // Черновики писем со стенда — отдельными сообщениями после ответа, каждый со своими кнопками.
-                    onSuccess = {
-                        listOf(ChatMessage(author = Author.AGENT, text = it.text, openAnomalyId = it.openAnomalyId, actionLabel = it.actionLabel, emailDraft = it.emailDraft, assignable = it.assignable)) +
-                            it.standDrafts.map { d -> ChatMessage(author = Author.AGENT, text = "", standDraft = d) }
+        requestJob = viewModelScope.launch {
+            try {
+                runCatchingCancellable { agent.reply(_state.value.messages, contextAnomalyId) }.fold(
+                    onSuccess = { reply ->
+                        val restored = runCatchingCancellable { restore(current) }.getOrDefault(false)
+                        if (!restored && epoch == current) _state.update { it.copy(messages = it.messages +
+                            ChatMessage(author = Author.AGENT, text = reply.text, openAnomalyId = reply.openAnomalyId,
+                                actionLabel = reply.actionLabel, emailDraft = reply.emailDraft, assignable = reply.assignable) +
+                            reply.standDrafts.map { d -> ChatMessage(author = Author.AGENT, text = "", standDraft = d, draftState = d.uiState()) }) }
                     },
-                    onFailure = { listOf(ChatMessage(author = Author.AGENT, text = "Ошибка: ${it.message}", isError = true)) },
+                    onFailure = { error ->
+                        runCatchingCancellable { restore(current) }
+                        showError(current, error)
+                    },
                 )
-            _state.update { it.copy(messages = it.messages + reply, agentTyping = false) }
+            } finally {
+                if (epoch == current) _state.update { it.copy(agentTyping = false) }
+            }
         }
+    }
+
+    fun retry(contextAnomalyId: String?) {
+        _state.value.messages.lastOrNull { it.author == Author.USER }?.let { send(it.text, contextAnomalyId) }
     }
 
     /**
@@ -124,7 +169,7 @@ class ChatViewModel(
         val draft = draftOf(messageId) ?: return
         updateDraft(messageId) { it.copy(draftState = DraftState.SENDING, draftError = null) }
         viewModelScope.launch {
-            val result = runCatchingCancellable { emails.send(draft.id) }
+            val result = runCatchingCancellable { emails.send(draft) }
             val error = result.exceptionOrNull()
             if (error == null || (error is StandException && error.meansAlreadySent())) {
                 updateDraft(messageId) { it.copy(draftState = DraftState.SENT, draftError = null) }
@@ -139,7 +184,7 @@ class ChatViewModel(
         val draft = draftOf(messageId) ?: return
         updateDraft(messageId) { it.copy(draftState = DraftState.CANCELLING, draftError = null) }
         viewModelScope.launch {
-            runCatchingCancellable { emails.cancel(draft.id) }
+            runCatchingCancellable { emails.cancel(draft) }
                 .onSuccess { updateDraft(messageId) { it.copy(draftState = DraftState.CANCELLED, draftError = null) } }
                 .onFailure { e -> updateDraft(messageId) { it.copy(draftState = DraftState.PENDING, draftError = e.message ?: e.toString()) } }
         }
@@ -153,9 +198,39 @@ class ChatViewModel(
         _state.update { st -> st.copy(messages = st.messages.map { if (it.id == messageId) transform(it) else it }) }
     }
 
-    fun clear() {
-        _state.value = ChatUiState(listOf(greeting))
+    private fun restart(delete: Boolean) {
+        epoch += 1
+        val current = epoch
+        requestJob?.cancel()
+        _state.value = ChatUiState(listOf(greeting), agentTyping = true, serverHistory = _state.value.serverHistory)
+        requestJob = viewModelScope.launch {
+            try {
+                runCatchingCancellable {
+                    if (delete) agent.deleteConversation() else agent.newConversation()
+                    restore(current)
+                }.onFailure { showError(current, it) }
+            } finally {
+                if (epoch == current) _state.update { it.copy(agentTyping = false) }
+            }
+        }
     }
+
+    fun refreshHistory() {
+        if (_state.value.agentTyping) return
+        val current = epoch
+        _state.update { it.copy(agentTyping = true) }
+        requestJob = viewModelScope.launch {
+            try {
+                runCatchingCancellable { restore(current) }.onFailure { showError(current, it) }
+            } finally {
+                if (epoch == current) _state.update { it.copy(agentTyping = false) }
+            }
+        }
+    }
+
+    fun clear() = restart(delete = false)
+    fun deleteConversation() = restart(delete = true)
+
 }
 
 private val suggestions = listOf(
@@ -175,6 +250,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
     val context = anomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
     val connected by vm.connected.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
+    var confirmDelete by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val c = Petrovich.colors
     val appContext = LocalContext.current
@@ -188,13 +264,24 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
         if (count > 0) listState.animateScrollToItem(count - 1)
     }
 
+    if (confirmDelete) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { confirmDelete = false }, title = { Text("Удалить разговор?") },
+        text = { Text("Сообщения этого разговора будут удалены с сервера.") },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false; vm.deleteConversation() }) { Text("Удалить") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { confirmDelete = false }) { Text("Отмена") } },
+    )
+
     Scaffold(
         topBar = {
             AppTopBar(
                 title = "Петрович",
                 subtitle = if (connected) null else "Работает по данным парка, без внешней ИИ-модели",
                 onBack = onBack,
-                actions = { IconButton(onClick = vm::clear) { Icon(Icons.Filled.DeleteSweep, "Очистить чат") } },
+                actions = {
+                    IconButton(onClick = vm::clear) { Icon(Icons.Filled.Add, "Новый разговор") }
+                    if (state.serverHistory) IconButton(onClick = vm::refreshHistory, enabled = !state.agentTyping) { Icon(Icons.Filled.Refresh, "Обновить историю") }
+                    if (state.serverHistory) androidx.compose.material3.TextButton(onClick = { confirmDelete = true }) { Text("Удалить") }
+                },
             )
         },
         containerColor = c.bg,
@@ -207,6 +294,9 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
                 contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (state.messages.lastOrNull()?.isError == true && !state.agentTyping) item(key = "retry") {
+                    androidx.compose.material3.TextButton(onClick = { vm.retry(anomalyId) }) { Text("Повторить вопрос") }
+                }
                 if (context != null) item(key = "ctx") {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text(
@@ -345,6 +435,7 @@ private fun StandDraftCard(msg: ChatMessage, onSend: () -> Unit, onCancel: () ->
             val status = when (msg.draftState) {
                 DraftState.SENT -> "✓ Отправлено"
                 DraftState.CANCELLED -> "Отменено — письмо не отправлялось"
+                DraftState.EXPIRED -> "Срок подтверждения истёк"
                 DraftState.SENDING -> "Отправляем…"
                 DraftState.CANCELLING -> "Отменяем…"
                 DraftState.FAILED -> "Не отправлено: ${msg.draftError}"

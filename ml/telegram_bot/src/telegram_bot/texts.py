@@ -506,6 +506,10 @@ def draft(d: dict, offset: int) -> str:
     """Черновик письма (макет 5): уходит, только когда пользователь нажмёт «Отправить»."""
     to = "\n".join(f"{h(r['name'])}, {h(r['role'])} — {h(r['email'])}" for r in d["recipients"])
     until = ms_local(d["expiresAt"], offset)
+    status = {"sent": "Письмо отправлено", "cancelled": "Черновик отменён", "expired": "Срок подтверждения истёк",
+              "sending": "Письмо отправляется"}.get(d.get("status"))
+    if status:
+        return f"<b>Кому</b>\n{to}\n<b>Тема</b>: {h(d['subject'])}\n\n{h(d['body'])}\n\n<i>{status}</i>"
     return (f"<b>Кому</b>\n{to}\n<b>Тема</b>: {h(d['subject'])}\n\n{h(d['body'])}\n\n"
             f"<i>Черновик действует до {until:%H:%M}. Письмо уйдёт, только когда вы нажмёте «Отправить».</i>")
 

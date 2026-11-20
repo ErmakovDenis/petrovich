@@ -116,4 +116,18 @@ class StandIdentityTest {
         assertTrue(error is StandException)
         assertEquals(0, server.requestCount)
     }
+    @Test fun conversationTransportKeepsIdentityPairAndBasePath() = runTest {
+        val bound = identity()
+        server.enqueue(MockResponse().setResponseCode(202).setBody("{}"))
+        val result = client().personalRequest(server.url("/stand/").toString(), bound, "POST", listOf("v2", "chat"), "{}", emptyMap())
+        assertEquals(202, result.code)
+        val request = server.takeRequest()
+        assertEquals("/stand/v2/chat", request.path)
+        assertEquals("Bearer ${bound.autographSession}", request.getHeader("Authorization"))
+        assertEquals(bound.credential, request.getHeader("X-Identity-Credential"))
+        assertNull(request.getHeader("X-User-Name"))
+        val error = runCatching { client().personalRequest(server.url("/").toString(), bound, "GET", listOf("v2", "conversations", "../me"), null, emptyMap()) }
+        assertTrue(error.isFailure)
+        assertEquals(1, server.requestCount)
+    }
 }

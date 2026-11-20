@@ -30,6 +30,11 @@ class AssistantIdentityTest {
     private val unlinkedChats = mutableListOf<String>()
     private val revocations = mutableListOf<String>()
     private val transport = object : IdentityTransport {
+        override suspend fun personalRequest(serverUrl: String, identity: BoundIdentity, method: String, segments: List<String>, body: String?, query: Map<String, String>): ru.petrovich.telemetry.data.PersonalHttpResponse {
+            assertSamePair(identity)
+            changeDuringPair?.invoke()
+            return ru.petrovich.telemetry.data.PersonalHttpResponse(200, "{}")
+        }
         override suspend fun bind(serverUrl: String, userName: String, password: String, schemaId: String): BoundIdentity {
             bindCalls++
             if (cancelBind) throw CancellationException("Отмена")
@@ -203,5 +208,27 @@ class AssistantIdentityTest {
         change { it.copy(userName = "Иван") }
         assertTrue(runCatching { manager().unlinkTelegram("1001", original.identityGeneration, original.identityCiphertext) }.exceptionOrNull() is StandException)
         assertTrue(unlinkedChats.isEmpty())
+    }
+    @Test fun pendingConversationIsEncryptedAndBoundToOriginalProfile() = runTest {
+        manager().connect("supplied-password", true, settings.identityGeneration)
+        val owner = manager().conversationScope()
+        manager().saveConversation(owner, "private-pending-question")
+        assertFalse(settings.conversationCiphertext.contains("private-pending-question"))
+        assertEquals("private-pending-question", manager().loadConversation())
+        val ciphertext = settings.conversationCiphertext
+        change { it.copy(userName = "Иван") }
+        assertTrue(settings.conversationCiphertext.isEmpty())
+        assertTrue(runCatching { manager().saveConversation(owner, "old-question") }.isFailure)
+        manager().cleanupIfNeeded()
+        manager().connect("supplied-password", true, settings.identityGeneration)
+        change { it.copy(conversationCiphertext = ciphertext) }
+        assertNull(manager().loadConversation())
+    }
+
+    @Test fun profileSwitchDuringPersonalRequestRejectsResponse() = runTest {
+        manager().connect("supplied-password", true, settings.identityGeneration)
+        val owner = manager().conversationScope()
+        changeDuringPair = { change { it.copy(userName = "Иван") } }
+        assertTrue(runCatching { manager().personalRequest(owner, "POST", listOf("v2", "chat"), "{}", emptyMap()) }.isFailure)
     }
 }

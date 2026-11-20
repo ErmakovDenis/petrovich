@@ -378,6 +378,7 @@ conversations = Table(
     Column("version", Integer, nullable=False),
     Column("deleted_at", BigInteger),
     ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    Column("style_overrides", Text, nullable=False, server_default="{}"),
     CheckConstraint("channel IN ('android','telegram')", name="ck_conversations_channel"),
     CheckConstraint("version >= 0", name="ck_conversations_version"),
     Index("ix_conversations_owner", "tenant_id", "principal_id", "updated_at"),
@@ -549,4 +550,53 @@ memory_preference_operations = Table(
     Column("at", BigInteger, nullable=False),
     ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
     CheckConstraint("action IN ('set', 'delete')", name="ck_preference_operation_action"),
+)
+
+# P4: обработка и результаты tools переживают перезапуск сервера.
+
+conversation_turns = Table(
+    "conversation_turns",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("conversation_id", String(36), ForeignKey("conversations.id"), nullable=False),
+    Column("client_message_id", String(128), nullable=False),
+    Column("request_hash", String(64), nullable=False),
+    Column("base_version", Integer, nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("lease_token", String(36)),
+    Column("lease_until", BigInteger, nullable=False),
+    Column("user_message_id", String(36), ForeignKey("conversation_messages.id"), nullable=False),
+    Column("assistant_message_id", String(36), ForeignKey("conversation_messages.id")),
+    Column("vehicle_ids_json", Text, nullable=False),
+    Column("draft_ids_json", Text, nullable=False),
+    Column("alias_results_json", Text, nullable=False),
+    Column("preference_results_json", Text, nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    UniqueConstraint("conversation_id", "client_message_id", name="uq_turn_client_message"),
+    CheckConstraint(
+        "state IN ('pending','completed','failed','interrupted','deleted')", name="ck_turn_state"
+    ),
+)
+
+Index(
+    "uq_turn_pending",
+    "conversation_id",
+    unique=True,
+    sqlite_where=text("state = 'pending'"),
+    _table=conversation_turns,
+)
+
+conversation_tool_calls = Table(
+    "conversation_tool_calls",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("turn_id", String(36), ForeignKey("conversation_turns.id"), nullable=False),
+    Column("request_hash", String(64), nullable=False),
+    Column("tool_name", String(80), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("result_json", Text),
+    Column("created_at", BigInteger, nullable=False),
+    UniqueConstraint("turn_id", "request_hash", name="uq_turn_tool_request"),
+    CheckConstraint("state IN ('started','done','deleted')", name="ck_turn_tool_state"),
 )

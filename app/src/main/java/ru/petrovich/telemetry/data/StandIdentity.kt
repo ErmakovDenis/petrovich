@@ -53,12 +53,19 @@ interface IdentityTransport {
     suspend fun bind(serverUrl: String, userName: String, password: String, schemaId: String): BoundIdentity
     suspend fun verify(serverUrl: String, identity: BoundIdentity)
     suspend fun revoke(serverUrl: String, identity: BoundIdentity)
+    suspend fun personalRequest(serverUrl: String, identity: BoundIdentity, method: String, segments: List<String>,
+                               body: String?, query: Map<String, String>): PersonalHttpResponse =
+        throw StandException("Серверная история недоступна")
     suspend fun pairTelegram(serverUrl: String, identity: BoundIdentity, code: String): TelegramIdentityLink =
         throw StandException("Персональная привязка Telegram недоступна")
     suspend fun telegramLinks(serverUrl: String, identity: BoundIdentity): List<TelegramIdentityLink> =
         throw StandException("Персональная привязка Telegram недоступна")
     suspend fun unlinkTelegram(serverUrl: String, identity: BoundIdentity, chatId: String): Unit =
         throw StandException("Персональная привязка Telegram недоступна")
+}
+
+data class PersonalHttpResponse(val code: Int, val body: String) {
+    override fun toString() = "PersonalHttpResponse(code=$code, содержимое скрыто)"
 }
 
 /** Отдельный клиент: пара credential/сессия не заменяется обычным повторным входом StandClient. */
@@ -151,6 +158,40 @@ class StandIdentity(
             throw StandException(message, code)
         } catch (error: IOException) {
             throw StandException("Стенд недоступен: проверьте подключение к сети")
+        }
+    }
+
+    override suspend fun personalRequest(serverUrl: String, identity: BoundIdentity, method: String, segments: List<String>,
+                                        body: String?, query: Map<String, String>): PersonalHttpResponse {
+        if (method !in setOf("GET", "POST", "DELETE") || segments.firstOrNull() != "v2" ||
+            segments.getOrNull(1) !in setOf("chat", "conversations", "emails") ||
+            segments.any { !Regex("[A-Za-z0-9_-]+").matches(it) } || query.keys.any { it !in setOf("limit", "offset") } ||
+            query.values.any { it.toLongOrNull()?.let { n -> n < 0 } != false }
+        ) throw StandException("Некорректный запрос истории")
+        val authenticated = request(serverUrl, "me", identity)
+        val endpoint = authenticated.build().url.newBuilder().apply {
+            repeat(3) { removePathSegment(build().pathSegments.lastIndex) }
+            segments.forEach { addPathSegment(it) }
+            query.forEach { (key, value) -> addQueryParameter(key, value) }
+        }.build()
+        val request = authenticated.url(endpoint).method(method,
+            if (method == "POST") (body ?: "{}").toRequestBody(jsonType) else null).build()
+        try {
+            val http = this.http.newBuilder().readTimeout(115, TimeUnit.SECONDS).callTimeout(130, TimeUnit.SECONDS).build()
+            return http.newCall(request).await().use { response ->
+                val text = withContext(Dispatchers.IO) { response.body?.string().orEmpty() }
+                if (response.code in setOf(200, 202, 204, 409)) PersonalHttpResponse(response.code, text)
+                else throw StandException(when (response.code) {
+                    401, 403 -> "Подтвердите личность и доступ к схеме повторно"
+                    404 -> "Разговор или письмо удалены либо недоступны"
+                    429 -> "Слишком много вопросов — повторите позже"
+                    503, 504 -> "Ответ не завершён. Повторите тот же вопрос позже"
+                    in 300..399 -> "Стенд перенаправил запрос. Проверьте адрес подключения"
+                    else -> "Серверная история недоступна (HTTP ${response.code})"
+                }, response.code)
+            }
+        } catch (error: IOException) {
+            throw StandException("Стенд недоступен. Повторите тот же вопрос после восстановления сети")
         }
     }
 }

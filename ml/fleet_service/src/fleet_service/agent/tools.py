@@ -37,6 +37,8 @@ class ToolContext:
     alias_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
     preference_intent: PreferenceIntent | None = field(default=None, repr=False)
     preference_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    journal: Any | None = field(default=None, repr=False)
+    read_only_recovery: bool = False
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
@@ -53,6 +55,8 @@ class Tool:
     feature: str | None = None
     # false — аргументы не пишутся в лог (в них текст письма).
     log_arguments: bool = True
+    # При восстановлении после сбоя новые побочные эффекты запрещены.
+    mutates: bool = False
 
 
 class ToolRegistry:
@@ -69,12 +73,16 @@ class ToolRegistry:
     def __len__(self) -> int:
         return len(self._tools)
 
-    def specs(self, features: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    def specs(self, features: frozenset[str] = frozenset(), read_only: bool = False) -> list[dict[str, Any]]:
         """Описание tools в формате OpenAI `tools` — только доступных при [features]."""
         return [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
-            for t in self._tools.values() if t.feature is None or t.feature in features
+            for t in self._tools.values() if self.allows(t.name, features, read_only)
         ]
+
+    def allows(self, name: str, features: frozenset[str], read_only: bool = False) -> bool:
+        tool = self._tools.get(name)
+        return tool is not None and (tool.feature is None or tool.feature in features) and not (read_only and tool.mutates)
 
     def logs_arguments(self, name: str) -> bool:
         tool = self._tools.get(name)
@@ -83,7 +91,7 @@ class ToolRegistry:
     async def execute(self, name: str, raw_arguments: str | None, ctx: ToolContext) -> str:
         """Исполняет tool и возвращает результат JSON-строкой для сообщения role=tool."""
         tool = self._tools.get(name)
-        if tool is None or (tool.feature is not None and tool.feature not in ctx.features):
+        if not self.allows(name, ctx.features, ctx.read_only_recovery):
             return _error(f"неизвестный tool {name}")
         try:
             args = json.loads(raw_arguments or "{}")

@@ -73,6 +73,7 @@ def build_mail_tools(settings: Settings, emails: EmailService) -> list[Tool]:
                 "additionalProperties": False,
             },
             handler=draft_email,
+            mutates=True,
             feature=EMAIL,
             log_arguments=False,
         ),

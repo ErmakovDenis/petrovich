@@ -32,7 +32,7 @@ class Agent:
 
     async def run(self, messages: list[Message], ctx: ToolContext) -> AgentResult:
         """[messages] дополняется ответами модели и результатами tools."""
-        specs = self._tools.specs(ctx.features)
+        specs = self._tools.specs(ctx.features, ctx.read_only_recovery)
         called: list[str] = []
         for iteration in range(1, self._max_iterations + 1):
             message = await self._llm.complete(messages, specs)
@@ -55,7 +55,8 @@ class Agent:
                 log.info("итерация %d: модель вызывает tool %s(%s)", iteration, name,
                          arguments if len(arguments) <= 200 else arguments[:200] + "…")
                 called.append(name)
-                result = await self._tools.execute(name, fn.get("arguments"), ctx)
+                result = await (ctx.journal.execute(self._tools, name, fn.get("arguments"), ctx)
+                                if ctx.journal is not None else self._tools.execute(name, fn.get("arguments"), ctx))
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result})
         raise AgentIterationLimit(self._max_iterations)
 

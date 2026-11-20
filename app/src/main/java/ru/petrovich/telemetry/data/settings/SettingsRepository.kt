@@ -34,6 +34,10 @@ data class AppSettings(
     val identityGeneration: Long = 0,
     /** Пара уже недоступна приложению, но должна быть отозвана на исходном стенде. */
     val identityNeedsRevocation: Boolean = false,
+    /** Явное включение персональной истории; без подтверждённой личности v1 не подставляется. */
+    val serverChatHistory: Boolean = false,
+    /** Зашифрованные pointer и один pending запрос; полной локальной копии истории нет. */
+    val conversationCiphertext: String = "",
     val backgroundChecks: Boolean = true,
     /** Пройден ли первый запуск (выбор источника данных). */
     val onboarded: Boolean = false,
@@ -125,6 +129,7 @@ data class AppSettings(
     val anomalyApiUpdatedAt: Long = 0,
 ) {
     /** Стенд задан — чат, письма, телеметрия и аномалии всегда через него (без демо и локальных заглушек). */
+    val chatHistoryOnServer: Boolean get() = assistantOnServer && serverChatHistory
     val assistantOnServer: Boolean get() = serverUrl.isNotBlank()
 
     val emailsOnServer: Boolean get() = assistantOnServer
@@ -178,6 +183,7 @@ fun AppSettings.invalidatingIdentityFrom(previous: AppSettings): AppSettings {
         schemaId != previous.schemaId || demoMode != previous.demoMode
     return copy(
         identityGeneration = previous.identityGeneration + if (changed) 1 else 0,
+        conversationCiphertext = if (changed) "" else conversationCiphertext,
         identityNeedsRevocation = if (changed) identityCiphertext.isNotEmpty() else identityNeedsRevocation,
     )
 }
@@ -195,6 +201,8 @@ class SettingsRepository(private val context: Context) {
         val identityCiphertext = stringPreferencesKey("identity_ciphertext_v1")
         val identityGeneration = longPreferencesKey("identity_generation")
         val identityNeedsRevocation = booleanPreferencesKey("identity_needs_revocation")
+        val serverChatHistory = booleanPreferencesKey("server_chat_history")
+        val conversationCiphertext = stringPreferencesKey("conversation_ciphertext_v1")
         val background = booleanPreferencesKey("background_checks")
         val onboarded = booleanPreferencesKey("onboarded")
         val widgetLayout = stringPreferencesKey("widget_layout")
@@ -251,6 +259,8 @@ class SettingsRepository(private val context: Context) {
         identityCiphertext = this[Keys.identityCiphertext].orEmpty(),
         identityGeneration = this[Keys.identityGeneration] ?: 0,
         identityNeedsRevocation = this[Keys.identityNeedsRevocation] ?: false,
+        serverChatHistory = this[Keys.serverChatHistory] ?: false,
+        conversationCiphertext = this[Keys.conversationCiphertext].orEmpty(),
         backgroundChecks = this[Keys.background] ?: true,
         onboarded = this[Keys.onboarded] ?: false,
         widgetLayout = this[Keys.widgetLayout].orEmpty(),
@@ -314,6 +324,8 @@ class SettingsRepository(private val context: Context) {
             p[Keys.identityCiphertext] = new.identityCiphertext
             p[Keys.identityGeneration] = new.identityGeneration
             p[Keys.identityNeedsRevocation] = new.identityNeedsRevocation
+            p[Keys.serverChatHistory] = new.serverChatHistory
+            p[Keys.conversationCiphertext] = new.conversationCiphertext
             p[Keys.background] = new.backgroundChecks
             p[Keys.onboarded] = new.onboarded
             p[Keys.widgetLayout] = new.widgetLayout

@@ -25,6 +25,9 @@ data class StandEmailDraft(
     val body: String,
     /** До какого момента черновик можно отправить, epoch millis. */
     val expiresAt: Long,
+    @kotlinx.serialization.Transient val personal: Boolean = false,
+    @kotlinx.serialization.Transient val status: String = "draft",
+    @kotlinx.serialization.Transient val personalScope: String? = null,
 )
 
 /** Ответ `POST /v1/emails/{id}/confirm` и `/cancel`. */
@@ -37,6 +40,10 @@ interface EmailActions {
     suspend fun send(draftId: String): EmailResult
 
     suspend fun cancel(draftId: String): EmailResult
+    suspend fun send(draft: StandEmailDraft): EmailResult =
+        if (draft.personal) throw StandException("Персональные письма недоступны") else send(draft.id)
+    suspend fun cancel(draft: StandEmailDraft): EmailResult =
+        if (draft.personal) throw StandException("Персональные письма недоступны") else cancel(draft.id)
 }
 
 /**
@@ -59,7 +66,20 @@ private data class EmailConfirmation(val emailContacts: List<EmailContact>? = nu
 class StandEmails(
     private val stand: StandClient,
     private val contacts: suspend () -> List<Contact>? = { null },
+    private val personalAction: (suspend (String, String, String, String) -> EmailResult)? = null,
 ) : EmailActions {
+    override suspend fun send(draft: StandEmailDraft): EmailResult {
+        if (!draft.personal) return send(draft.id)
+        val owner = draft.personalScope ?: throw StandException("Не подтверждён владелец письма")
+        val body = ApiFactory.json.encodeToString(EmailConfirmation.serializer(), EmailConfirmation(contacts()?.emailContacts()))
+        return personalAction?.invoke(owner, draft.id, "confirm", body) ?: throw StandException("Персональные письма недоступны")
+    }
+    override suspend fun cancel(draft: StandEmailDraft): EmailResult {
+        if (!draft.personal) return cancel(draft.id)
+        val owner = draft.personalScope ?: throw StandException("Не подтверждён владелец письма")
+        return personalAction?.invoke(owner, draft.id, "cancel", "{}") ?: throw StandException("Персональные письма недоступны")
+    }
+
     override suspend fun send(draftId: String): EmailResult {
         val body = ApiFactory.json.encodeToString(
             EmailConfirmation.serializer(), EmailConfirmation(contacts()?.emailContacts()),
@@ -71,4 +91,13 @@ class StandEmails(
 
     override suspend fun cancel(draftId: String): EmailResult =
         StandRequests.decode(EmailResult.serializer(), stand.post(listOf("v1", "emails", draftId, "cancel"), "{}"))
+}
+
+fun StandEmailDraft.uiState(): DraftState = when (status) {
+    "sent" -> DraftState.SENT
+    "cancelled" -> DraftState.CANCELLED
+    "expired" -> DraftState.EXPIRED
+    "sending" -> DraftState.SENDING
+    "failed" -> DraftState.FAILED
+    else -> DraftState.PENDING
 }

@@ -7,6 +7,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.AppSettings
 import ru.petrovich.telemetry.data.settings.IdentityVault
@@ -22,6 +24,9 @@ private class IdentityRecord(
 ) {
     override fun toString() = "IdentityRecord(секреты скрыты)"
 }
+
+@Serializable
+private data class ConversationEnvelope(val owner: String, val payload: String)
 
 data class AssistantIdentityState(
     val connected: Boolean = false,
@@ -65,7 +70,7 @@ class AssistantIdentity(
     suspend fun cleanupIfNeeded(): Boolean = mutex.withLock { cleanupLocked() }
 
     private suspend fun clear(ciphertext: String) {
-        update { if (it.identityCiphertext == ciphertext) it.copy(identityCiphertext = "", identityNeedsRevocation = false) else it }
+        update { if (it.identityCiphertext == ciphertext) it.copy(identityCiphertext = "", identityNeedsRevocation = false, conversationCiphertext = "") else it }
     }
 
     private suspend fun cleanupLocked(): Boolean {
@@ -197,6 +202,56 @@ class AssistantIdentity(
 
     /** Только после отдельного предупреждения: серверная пара может действовать до исходного срока. */
     suspend fun forgetLocally() = mutex.withLock {
-        update { it.copy(identityCiphertext = "", identityNeedsRevocation = false) }
+        update { it.copy(identityCiphertext = "", identityNeedsRevocation = false, conversationCiphertext = "") }
+    }
+
+    private fun owner(record: IdentityRecord): String = ApiFactory.json.encodeToString(
+        ListSerializer(String.serializer()),
+        listOf(record.serverUrl, record.identity.principalId, record.identity.tenantId, record.generation.toString()),
+    )
+
+    suspend fun conversationScope(): String = mutex.withLock { owner(active(settings())) }
+
+    suspend fun loadConversation(): String? = mutex.withLock {
+        val s = settings()
+        val record = active(s)
+        if (s.conversationCiphertext.isBlank()) return@withLock null
+        val envelope = runCatchingCancellable {
+            withContext(Dispatchers.IO) {
+                ApiFactory.json.decodeFromString(ConversationEnvelope.serializer(), vault.open(s.conversationCiphertext))
+            }
+        }.getOrElse { throw StandException("Не удалось открыть состояние разговора. Начните новый разговор") }
+        envelope.payload.takeIf { envelope.owner == owner(record) }
+    }
+
+    suspend fun saveConversation(expectedOwner: String, payload: String?) = mutex.withLock {
+        val s = settings()
+        val record = active(s)
+        if (owner(record) != expectedOwner) throw StandException("Личный профиль изменился. Повторите действие")
+        val encrypted = if (payload == null) "" else withContext(Dispatchers.IO) {
+            vault.seal(ApiFactory.json.encodeToString(ConversationEnvelope.serializer(), ConversationEnvelope(expectedOwner, payload)))
+        }
+        var accepted = false
+        update {
+            if (it.identityCiphertext == s.identityCiphertext && !it.identityNeedsRevocation && record.matches(it)) {
+                accepted = true
+                it.copy(conversationCiphertext = encrypted)
+            } else it
+        }
+        if (!accepted) throw StandException("Личный профиль изменился. Повторите действие")
+    }
+
+    suspend fun personalRequest(expectedOwner: String, method: String, segments: List<String>, body: String? = null,
+                                query: Map<String, String> = emptyMap()): PersonalHttpResponse {
+        val (s, record) = mutex.withLock {
+            val s = settings()
+            val record = active(s)
+            if (owner(record) != expectedOwner) throw StandException("Личный профиль изменился. Повторите действие")
+            s to record
+        }
+        // Долгое ожидание модели не блокирует немедленное отключение профиля в настройках.
+        val result = transport.personalRequest(record.serverUrl, record.identity, method, segments, body, query)
+        mutex.withLock { unchanged(s, record) }
+        return result
     }
 }

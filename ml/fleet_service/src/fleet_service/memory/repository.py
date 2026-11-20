@@ -21,6 +21,8 @@ from ..store.db import (
     memory_audit as A,
     memory_alias_operations as AO,
     memory_preference_operations as PO,
+    conversation_turns as CT,
+    conversation_tool_calls as CJ,
     memory_candidates as K,
     memory_outbox as O,
     principal_scopes as PS,
@@ -270,6 +272,23 @@ class MemoryRepository:
             if row["deleted_at"] is not None:
                 return
             at = self._clock()
+            turn_ids = select(CT.c.id).where(CT.c.conversation_id == conversation_id)
+            conn.execute(
+                update(CJ).where(CJ.c.turn_id.in_(turn_ids)).values(state="deleted", result_json=None)
+            )
+            conn.execute(
+                update(CT)
+                .where(CT.c.conversation_id == conversation_id)
+                .values(
+                    state="deleted",
+                    lease_token=None,
+                    lease_until=0,
+                    draft_ids_json="[]",
+                    alias_results_json="[]",
+                    preference_results_json="[]",
+                )
+            )
+            conn.execute(update(C).where(C.c.id == conversation_id).values(style_overrides="{}"))
             message_ids = select(M.c.id).where(M.c.conversation_id == conversation_id)
             conn.execute(
                 update(K)

@@ -28,6 +28,7 @@ from .api import anomalies as anomalies_api
 from .api import background as background_api
 from .api import chat, emails as emails_api, health
 from .api import status as status_api
+from .api import conversations as conversations_api
 from .api import identity as identity_api
 from .api import identity_telegram as identity_telegram_api
 from .api import telegram as telegram_api
@@ -202,6 +203,7 @@ def create_app(
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(conversations_api.router)
     app.include_router(identity_api.router)
     app.include_router(identity_telegram_api.router)
     app.include_router(telemetry_api.router)

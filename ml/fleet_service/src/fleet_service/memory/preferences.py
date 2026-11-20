@@ -104,8 +104,12 @@ class PreferenceSnapshot:
         return self.available and worker_enabled and self.values.get("auto_extract_enabled") is True
 
 
-def style_message(snapshot: PreferenceSnapshot, messages) -> str | None:
+def style_message(
+    snapshot: PreferenceSnapshot, messages, saved_conversation: dict | None = None
+) -> str | None:
     conversation, current = local_overrides(messages)
+    saved = PreferenceValues.model_validate(saved_conversation or {}).model_dump(exclude_unset=True)
+    conversation = {**saved, **conversation}
     # Проверяем и здесь: build_messages не может случайно превратить непроверенный snapshot в prompt.
     profile = PreferenceValues.model_validate(snapshot.values).model_dump(exclude_unset=True)
     effective = {**profile, **conversation, **current}

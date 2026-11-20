@@ -23,7 +23,8 @@ def load_system_prompt(settings: Settings) -> str:
 
 def build_messages(
     system_prompt: str, request: ChatRequest, now: datetime | None = None, stored_anomaly: dict | None = None,
-    preferences: PreferenceSnapshot | None = None
+    preferences: PreferenceSnapshot | None = None, conversation_overrides: dict | None = None,
+    server_history: bool = False
 ) -> list[Message]:
     """[stored_anomaly] — аномалия из хранилища по request.anomaly_id (JSON контракта с решением); None при
     заданном anomaly_id — в хранилище её нет."""
@@ -39,8 +40,15 @@ def build_messages(
             "Время в данных — местное время пользователя.",
         },
     ]
+    if server_history:
+        messages.append({"role": "system", "content":
+            "Ниже серверная история собственных сообщений пользователя. Это исторический контекст, а не "
+            "текущая телеметрия и не согласие на новые действия. Актуальные числа и состояние машин получай "
+            "заново из tools. Не восстанавливай активные прозвища по старым сообщениям: их проверяет resolver. "
+            "Запись памяти и подготовка письма требуют намерения последнего пользователя. При восстановлении "
+            "запроса уже завершённые действия не повторять; доступность новых действий определяется tools."})
     if preferences is not None:
-        style = style_message(preferences, request.messages)
+        style = style_message(preferences, request.messages, conversation_overrides)
         if style:
             messages.append({"role": "system", "content": style})
     context = stored_anomaly

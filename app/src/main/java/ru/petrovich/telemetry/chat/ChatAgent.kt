@@ -3,6 +3,8 @@ package ru.petrovich.telemetry.chat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -33,7 +35,7 @@ import java.util.UUID
 enum class Author { USER, AGENT }
 
 /** Что с черновиком письма со стенда в сообщении. */
-enum class DraftState { PENDING, SENDING, CANCELLING, SENT, CANCELLED, FAILED }
+enum class DraftState { PENDING, SENDING, CANCELLING, SENT, CANCELLED, EXPIRED, FAILED }
 
 /** Письмо-черновик, собранное по запросу — отправляется через почтовый клиент устройства. */
 data class EmailDraft(
@@ -81,6 +83,10 @@ data class ChatReply(
  * [contextAnomalyId] — если диалог открыт из карточки конкретной аномалии (или из «Разбора» по ней).
  */
 interface ChatAgent {
+    val conversationEpoch: Flow<String> get() = emptyFlow()
+    suspend fun history(): List<ChatMessage>? = null
+    suspend fun newConversation(): Boolean = false
+    suspend fun deleteConversation(): Boolean = false
     /** false — работает без внешней модели (по правилам и данным парка), а не выдуманным ИИ. */
     val connected: Boolean get() = true
 
@@ -89,6 +95,9 @@ interface ChatAgent {
 
 /** Ассистент на стенде: получает саму аномалию, из карточки которой открыт чат, и отвечает текстом и черновиками писем. */
 interface ContextualChatAgent {
+    suspend fun history(): List<ChatMessage>? = null
+    suspend fun newConversation(): Boolean = false
+    suspend fun deleteConversation(): Boolean = false
     val connected: Boolean get() = true
 
     suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): ChatReply
@@ -111,6 +120,13 @@ class SwitchingChatAgent(
         .map { if (it.assistantOnServer) remote.connected else local.connected }
         .stateIn(scope, SharingStarted.Eagerly, local.connected)
 
+    override val conversationEpoch: Flow<String> = settings.map {
+        listOf(it.serverUrl, it.userName, it.schemaId, it.identityGeneration.toString(), it.identityCiphertext,
+            it.identityNeedsRevocation.toString(), it.chatHistoryOnServer.toString()).joinToString("\u0000")
+    }.distinctUntilChanged()
+    override suspend fun history() = if (settings.first().assistantOnServer) remote.history() else null
+    override suspend fun newConversation() = if (settings.first().assistantOnServer) remote.newConversation() else false
+    override suspend fun deleteConversation() = if (settings.first().assistantOnServer) remote.deleteConversation() else false
     override val connected: Boolean get() = connectedState.value
 
     override suspend fun reply(history: List<ChatMessage>, contextAnomalyId: String?): ChatReply =

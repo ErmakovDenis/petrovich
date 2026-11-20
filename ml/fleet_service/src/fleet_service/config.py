@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     memory_aliases_enabled: bool = False
     # P3: типизированные личные настройки оформления, отдельно от прозвищ.
     memory_preferences_enabled: bool = False
+    # P4: отдельный durable API истории; v1 остаётся без серверной истории.
+    chat_v2_enabled: bool = False
+    chat_history_max_chars: int = Field(16000, ge=2000, le=64000)
     # Без стабильного upstream UID нужен подтверждённый регламент управления реестром аккаунтов.
     identity_account_lifecycle: Literal["unconfigured", "managed"] = "unconfigured"
 

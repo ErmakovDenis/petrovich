@@ -89,6 +89,7 @@ class RemoteChatAgent(
         val state = when (m.draftState) {
             DraftState.SENT -> "пользователь отправил"
             DraftState.CANCELLED -> "пользователь отменил"
+            DraftState.EXPIRED -> "срок подтверждения истёк"
             DraftState.FAILED -> "отправка не подтверждена: ${m.draftError}"
             DraftState.PENDING, DraftState.SENDING, DraftState.CANCELLING -> "ждёт подтверждения пользователя"
         }
