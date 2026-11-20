@@ -10,6 +10,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from ..identity.principal import Principal
+from ..memory.aliases import AliasIntent
+from ..memory.preferences import PreferenceIntent
+from ..memory.resolver import VehicleAmbiguous, vehicle_label
+
 log = logging.getLogger(__name__)
 
 
@@ -25,6 +30,15 @@ class ToolContext:
     user_name: str | None = None
     features: frozenset[str] = frozenset()
     drafts: list[Any] = field(default_factory=list)
+    # Только серверная аутентификация; модель и X-User-Name эти поля не заполняют.
+    principal: Principal | None = field(default=None, repr=False)
+    check_principal: Callable[[], Awaitable[Principal]] | None = field(default=None, repr=False)
+    alias_intent: AliasIntent | None = field(default=None, repr=False)
+    alias_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    preference_intent: PreferenceIntent | None = field(default=None, repr=False)
+    preference_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    journal: Any | None = field(default=None, repr=False)
+    read_only_recovery: bool = False
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
@@ -41,6 +55,8 @@ class Tool:
     feature: str | None = None
     # false — аргументы не пишутся в лог (в них текст письма).
     log_arguments: bool = True
+    # При восстановлении после сбоя новые побочные эффекты запрещены.
+    mutates: bool = False
 
 
 class ToolRegistry:
@@ -57,21 +73,25 @@ class ToolRegistry:
     def __len__(self) -> int:
         return len(self._tools)
 
-    def specs(self, features: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    def specs(self, features: frozenset[str] = frozenset(), read_only: bool = False) -> list[dict[str, Any]]:
         """Описание tools в формате OpenAI `tools` — только доступных при [features]."""
         return [
             {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
-            for t in self._tools.values() if t.feature is None or t.feature in features
+            for t in self._tools.values() if self.allows(t.name, features, read_only)
         ]
+
+    def allows(self, name: str, features: frozenset[str], read_only: bool = False) -> bool:
+        tool = self._tools.get(name)
+        return tool is not None and (tool.feature is None or tool.feature in features) and not (read_only and tool.mutates)
 
     def logs_arguments(self, name: str) -> bool:
         tool = self._tools.get(name)
-        return tool is None or tool.log_arguments
+        return tool is not None and tool.log_arguments
 
     async def execute(self, name: str, raw_arguments: str | None, ctx: ToolContext) -> str:
         """Исполняет tool и возвращает результат JSON-строкой для сообщения role=tool."""
         tool = self._tools.get(name)
-        if tool is None or (tool.feature is not None and tool.feature not in ctx.features):
+        if not self.allows(name, ctx.features, ctx.read_only_recovery):
             return _error(f"неизвестный tool {name}")
         try:
             args = json.loads(raw_arguments or "{}")
@@ -82,6 +102,9 @@ class ToolRegistry:
         start = time.monotonic()
         try:
             result = await tool.handler(args, ctx)
+        except VehicleAmbiguous as error:
+            result = {"status": "confirmation_required", "message": str(error),
+                      "vehicles": [{"id": v.id, "label": vehicle_label(v)} for v in error.vehicles]}
         except Exception as e:  # noqa: BLE001 — сбой tool не должен ронять ответ ассистента
             log.warning("tool %s: ошибка за %.0f мс: %s", name, (time.monotonic() - start) * 1000, e)
             return _error(f"{name} не выполнен: {e}")

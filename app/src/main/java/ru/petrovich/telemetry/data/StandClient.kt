@@ -174,7 +174,7 @@ class StandClient(
 }
 
 /** Запрос OkHttp как suspend-функция: отмена корутины (закрыли экран) отменяет и запрос. */
-private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
     cont.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) = cont.resumeWithException(e)

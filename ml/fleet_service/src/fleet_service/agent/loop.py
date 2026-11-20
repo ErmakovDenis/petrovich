@@ -32,7 +32,7 @@ class Agent:
 
     async def run(self, messages: list[Message], ctx: ToolContext) -> AgentResult:
         """[messages] дополняется ответами модели и результатами tools."""
-        specs = self._tools.specs(ctx.features)
+        specs = self._tools.specs(ctx.features, ctx.read_only_recovery)
         called: list[str] = []
         for iteration in range(1, self._max_iterations + 1):
             message = await self._llm.complete(messages, specs)
@@ -47,15 +47,16 @@ class Agent:
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = str(fn.get("name"))
-                # Аргументы tools — id машин и периоды, секретов в них нет; длинные обрезаются. У tools писем
-                # аргументы (текст письма) в лог не пишутся.
+                # Аргументы писем, памяти и ссылок на машины (включая личные прозвища) не логируются.
+                # Неизвестные tools также не дают права записывать произвольный текст модели в лог.
                 arguments = " ".join(str(fn.get("arguments") or "").split())
                 if not self._tools.logs_arguments(name):
                     arguments = "аргументы не пишутся в лог"
                 log.info("итерация %d: модель вызывает tool %s(%s)", iteration, name,
                          arguments if len(arguments) <= 200 else arguments[:200] + "…")
                 called.append(name)
-                result = await self._tools.execute(name, fn.get("arguments"), ctx)
+                result = await (ctx.journal.execute(self._tools, name, fn.get("arguments"), ctx)
+                                if ctx.journal is not None else self._tools.execute(name, fn.get("arguments"), ctx))
                 messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result})
         raise AgentIterationLimit(self._max_iterations)
 

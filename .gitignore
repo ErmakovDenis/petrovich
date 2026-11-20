@@ -9,6 +9,7 @@
 .externalNativeBuild
 .cxx
 .kotlin/
+ml/fleet_service/certs/*
 
 # Ключи подписи release
 *.jks
@@ -20,3 +21,12 @@ keystore.properties
 
 # Локальные настройки Claude Code для ML-сессий
 /.claude-ml/
+
+# Локальные инструкции и справочник Codex
+/AGENTS.md
+/CODEX.md
+/.codex/
+/.agents/
+
+# Локальные артефакты приёмки P0 (снимки тестового эмулятора)
+/ml/docs/artifacts/p0/

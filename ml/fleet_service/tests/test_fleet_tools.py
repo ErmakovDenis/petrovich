@@ -40,15 +40,15 @@ def test_list_vehicles_with_query_and_limit(make_client):
         ural = run_tool(c, "list_vehicles", {"query": "урал"})
         other = run_tool(c, "list_vehicles", {}, ToolContext(OTHER_TOKEN, SCHEMA_ID, 300))
     assert everything == {"total": 2, "truncated": True,
-                          "vehicles": [{"id": "veh-1", "name": "FAW №1", "group": "Колонна 1"}]}
-    assert ural["vehicles"] == [{"id": "veh-2", "name": "Урал NEXT А001АА", "group": None}]
+                          "vehicles": [{"id": "veh-1", "name": "FAW №1", "group": "Колонна 1", "plate": None, "label": "FAW №1"}]}
+    assert ural["vehicles"] == [{"id": "veh-2", "name": "Урал NEXT А001АА", "group": None, "plate": "А001АА", "label": "Урал NEXT А001АА"}]
     assert other["total"] == 1
 
 
 def test_summary_has_aggregates_units_period_and_no_data(client):
     s = run_tool(client, "get_vehicle_summary",
                  {"vehicle_id": "veh-1", "from": "2026-09-16T00:00", "to": "2026-09-16T06:00"})
-    assert s["vehicle"] == {"id": "veh-1", "name": "FAW №1", "group": "Колонна 1"}
+    assert s["vehicle"] == {"id": "veh-1", "name": "FAW №1", "group": "Колонна 1", "plate": None, "label": "FAW №1"}
     assert s["period"] == {"from": "2026-09-16T00:00", "to": "2026-09-16T06:00", "bucketMinutes": 1, "intervals": 361}
     by_name = {p["name"]: p for p in s["parameters"]}
     assert by_name["TankMainFuelLevel"] == {
@@ -118,8 +118,8 @@ def test_question_about_fuel_is_answered_with_number_from_tool(make_client, fake
     tool_messages = [m for m in fakes.state.llm_requests[-1]["messages"] if m["role"] == "tool"]
     summary = json.loads(tool_messages[-1]["content"])
     assert "timestamps" not in tool_messages[-1]["content"] and summary["parameters"]
-    # Вызов tool виден в логе (с аргументами, без токена).
-    assert "модель вызывает tool get_vehicle_summary({\"vehicle_id\": \"veh-1\"})" in caplog.text
+    # Вызов виден без аргументов: ссылка на машину теперь может быть личным прозвищем.
+    assert "модель вызывает tool get_vehicle_summary(аргументы не пишутся в лог)" in caplog.text
     assert "tool get_vehicle_summary: выполнен" in caplog.text
     assert VALID_TOKEN not in caplog.text
 

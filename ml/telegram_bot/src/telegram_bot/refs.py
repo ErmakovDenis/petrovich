@@ -3,6 +3,7 @@
 уведомлений продолжают работать. Записи старше срока удаляются."""
 
 import hashlib
+import json
 import sqlite3
 import threading
 import time
@@ -15,6 +16,7 @@ class Refs:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.execute("CREATE TABLE IF NOT EXISTS refs (key TEXT PRIMARY KEY, value TEXT NOT NULL, at INTEGER NOT NULL)")
+        self._db.execute("CREATE TABLE IF NOT EXISTS conversations (chat_id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
         self._db.commit()
         self._lock = threading.Lock()
         self._ttl = ttl_days * 86400
@@ -39,3 +41,14 @@ class Refs:
 
     def close(self) -> None:
         self._db.close()
+
+    def conversation(self, chat_id: int) -> dict:
+        with self._lock:
+            row = self._db.execute("SELECT payload FROM conversations WHERE chat_id = ?", (chat_id,)).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def save_conversation(self, chat_id: int, value: dict) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO conversations VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET payload = excluded.payload",
+                             (chat_id, json.dumps(value)))
+            self._db.commit()

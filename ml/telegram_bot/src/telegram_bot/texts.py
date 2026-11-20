@@ -37,7 +37,9 @@ HELP = (
     "/report — доклад за сутки, /week — сводка за прошлую неделю\n"
     "/export — выгрузить события в Excel\n"
     "/settings — что и по каким машинам присылать, когда доклад\n"
-    "/new — начать разговор заново\n\n"
+    "/new — начать разговор заново\n"
+    "/identity — код персональной привязки, /identity_status — проверить профиль\n"
+    "/forget_identity — отключить личный профиль Telegram\n\n"
     "Можно просто спросить текстом: «Что у меня не так?», «Что с топливом у КАМАЗа за сутки?»"
 )
 ASK_PLACEHOLDER = "Спросите Петровича"
@@ -504,6 +506,10 @@ def draft(d: dict, offset: int) -> str:
     """Черновик письма (макет 5): уходит, только когда пользователь нажмёт «Отправить»."""
     to = "\n".join(f"{h(r['name'])}, {h(r['role'])} — {h(r['email'])}" for r in d["recipients"])
     until = ms_local(d["expiresAt"], offset)
+    status = {"sent": "Письмо отправлено", "cancelled": "Черновик отменён", "expired": "Срок подтверждения истёк",
+              "sending": "Письмо отправляется"}.get(d.get("status"))
+    if status:
+        return f"<b>Кому</b>\n{to}\n<b>Тема</b>: {h(d['subject'])}\n\n{h(d['body'])}\n\n<i>{status}</i>"
     return (f"<b>Кому</b>\n{to}\n<b>Тема</b>: {h(d['subject'])}\n\n{h(d['body'])}\n\n"
             f"<i>Черновик действует до {until:%H:%M}. Письмо уйдёт, только когда вы нажмёте «Отправить».</i>")
 

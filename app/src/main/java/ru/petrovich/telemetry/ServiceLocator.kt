@@ -5,8 +5,12 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import ru.petrovich.telemetry.anomaly.AnomalyDetector
 import ru.petrovich.telemetry.anomaly.AnomalyNotifier
 import ru.petrovich.telemetry.anomaly.AnomalyScanner
@@ -31,7 +35,14 @@ import ru.petrovich.telemetry.chat.EmailActions
 import ru.petrovich.telemetry.chat.StandEmails
 import ru.petrovich.telemetry.chat.PetrovichAgent
 import ru.petrovich.telemetry.chat.RemoteChatAgent
+import ru.petrovich.telemetry.chat.DurableChatAgent
+import ru.petrovich.telemetry.chat.emailContacts
+import ru.petrovich.telemetry.chat.HistorySwitchingRemote
+import ru.petrovich.telemetry.data.StandRequests
 import ru.petrovich.telemetry.chat.SwitchingChatAgent
+import ru.petrovich.telemetry.data.AssistantIdentity
+import ru.petrovich.telemetry.data.StandIdentity
+import ru.petrovich.telemetry.data.settings.AndroidIdentityVault
 import ru.petrovich.telemetry.data.AutoGraphTelemetryRepository
 import ru.petrovich.telemetry.data.DemoTelemetryRepository
 import ru.petrovich.telemetry.data.ServerTelemetryRepository
@@ -46,6 +57,7 @@ import ru.petrovich.telemetry.data.settings.SettingsRepository
 import ru.petrovich.telemetry.ui.home.ReportsPeriodStore
 import ru.petrovich.telemetry.ui.home.WidgetPeriodCache
 import ru.petrovich.telemetry.ui.park.FleetCache
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.io.File
 
 /** Простейший DI-контейнер. */
@@ -54,9 +66,28 @@ object ServiceLocator {
 
     fun init(context: Context) {
         appContext = context.applicationContext
+        if (!identityMaintenanceStarted) {
+            identityMaintenanceStarted = true
+            appScope.launch {
+                settings.settings.collectLatest {
+                    while (runCatchingCancellable { assistantIdentity.cleanupIfNeeded() }.getOrDefault(true)) {
+                        delay(60_000)
+                    }
+                }
+            }
+        }
     }
 
+    private var identityMaintenanceStarted = false
+
     val settings by lazy { SettingsRepository(appContext) }
+
+    val assistantIdentity by lazy {
+        AssistantIdentity(
+            { settings.current() }, { transform -> settings.update(transform) },
+            AndroidIdentityVault(), StandIdentity(allowLocalHttp = BuildConfig.DEBUG),
+        )
+    }
 
     val autoGraph by lazy { AutoGraphTelemetryRepository(ApiFactory.create(), settings) }
 
@@ -169,18 +200,46 @@ object ServiceLocator {
     }
 
     /** Ассистент на стенде; тот же доступ к стенду, что у телеметрии. */
-    val remoteChatAgent by lazy {
+    private val legacyRemoteChatAgent by lazy {
         // При хранилище на стенде чат из карточки передаёт только id аномалии: стенд берёт её с решением из хранилища.
         RemoteChatAgent(
             stand,
             anomalyIdOnly = { settings.current().anomalyStoreOnServer },
             // Переключатель «Письма из чата»: выключен — ассистенту письма недоступны, как раньше.
             allowEmail = { settings.current().emailsOnServer },
+            contacts = { settings.current().contacts },
         )
     }
 
+    val durableChatAgent by lazy {
+        DurableChatAgent(
+            scope = { assistantIdentity.conversationScope() }, load = { assistantIdentity.loadConversation() },
+            save = { owner, value -> assistantIdentity.saveConversation(owner, value) },
+            call = { owner, method, path, body, query -> assistantIdentity.personalRequest(owner, method, path, body, query) },
+            allowEmail = { settings.current().emailsOnServer },
+            contacts = { settings.current().contacts.emailContacts() },
+        )
+    }
+    val remoteChatAgent by lazy {
+        HistorySwitchingRemote(legacyRemoteChatAgent, durableChatAgent) { settings.current().chatHistoryOnServer }
+    }
+
     /** «Отправить» и «Отменить» у черновика письма со стенда в чате. */
-    val emails: EmailActions by lazy { StandEmails(stand) }
+    val emails: EmailActions by lazy {
+        StandEmails(stand, contacts = { settings.current().contacts }, personalAction = { owner, id, action, body ->
+            val response = assistantIdentity.personalRequest(owner, "POST", listOf("v2", "emails", id, action), body)
+            if (response.code == 409) {
+                val alreadySent = runCatchingCancellable {
+                    ApiFactory.json.parseToJsonElement(response.body).jsonObject["detail"]?.jsonPrimitive?.content
+                        ?.startsWith("Письмо уже отправлено") == true
+                }.getOrDefault(false)
+                throw ru.petrovich.telemetry.data.StandException(
+                    if (alreadySent) "Письмо уже отправлено" else "Действие с письмом уже выполнено или недоступно", 409,
+                )
+            }
+            StandRequests.decode(ru.petrovich.telemetry.chat.EmailResult.serializer(), response.body)
+        })
+    }
 
     /** Ссылка подключения Telegram-бота (раздел «Стенд» в настройках). */
     val telegram by lazy { StandTelegram(stand) }

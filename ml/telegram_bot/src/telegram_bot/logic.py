@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from . import charts, exports, pdf
 from . import texts as T
 from .refs import Refs
+from .personal_history import PersonalHistory
 from .stand import Stand, StandError
 
 log = logging.getLogger(__name__)
@@ -213,7 +214,9 @@ def settings_buttons(sub: dict) -> list[list[Button]]:
 
 
 class Petrovich:
-    def __init__(self, stand: Stand, refs: Refs, history_max: int = 20, clock: Callable[[], datetime] = utc_now):
+    def __init__(self, stand: Stand, refs: Refs, history_max: int = 20, clock: Callable[[], datetime] = utc_now, *, server_history: bool = False):
+        self.server_history = server_history
+        self._personal = PersonalHistory(stand, refs)
         self._stand = stand
         self._refs = refs
         self._history_max = history_max
@@ -291,6 +294,23 @@ class Petrovich:
 
     # --- команды ---
 
+    async def identity(self, chat_id: int, user_id: int | None, action: str = "code") -> list[Reply]:
+        if user_id is None or chat_id <= 0 or chat_id != user_id:
+            return [Reply("Личный профиль подключается только в личном чате с ботом.")]
+        try:
+            if action == "status":
+                await self._stand.identity_me(chat_id, user_id)
+                return [Reply("Личный профиль подтверждён. Сама память ассистента пока не включена.")]
+            if action == "unlink":
+                await self._stand.identity_unlink(chat_id, user_id)
+                return [Reply("Личный профиль Telegram отключён. Обычные уведомления и чат продолжают работать.")]
+            data = await self._stand.identity_code(chat_id, user_id)
+            return [Reply("Персональный код: <code>" + T.h(data["code"]) + "</code>\n"
+                          "Введите его в приложении: Подключение и данные → Личный профиль Петровича → Telegram. "
+                          "Код одноразовый. Подключайте только свой личный чат; доступ требует отдельного согласия в приложении.")]
+        except StandError as error:
+            return [Reply(T.h(error.detail))]
+
     async def start(self, chat_id: int, payload: str = "") -> list[Reply]:
         if payload:
             try:
@@ -316,8 +336,30 @@ class Petrovich:
     def new(self, chat_id: int) -> Reply:
         st = self.state(chat_id)
         st.history.clear()
+        if self.server_history:
+            self._personal.new(chat_id)
         st.review = st.pending_reason = None
         return Reply(T.NEW_CHAT, menu=True)
+
+    async def conversation(self, chat_id: int, delete: bool = False) -> list[Reply]:
+        if not self.server_history:
+            return [Reply("Серверная история выключена")]
+        try:
+            if delete:
+                await self._personal.delete(chat_id)
+                self.state(chat_id).history.clear()
+                return [Reply("Разговор удалён")]
+            rows = await self._personal.history(chat_id)
+            replies = []
+            offset = await self._offset(chat_id)
+            for row in rows:
+                who = "Вы" if row['role'] == 'user' else "Петрович"
+                replies.extend(Reply(T.h(f"{who}: {part}")) for part in T.split(row['content']))
+                replies.extend(self._draft_reply(chat_id, d, offset) for d in row.get('drafts', []))
+            return replies or [Reply("Разговор пока пуст")]
+        except StandError as e:
+            return [Reply("Подтвердите личный профиль: /identity") if self.server_history and e.status == 401 else
+                    await self._failed(chat_id, e)]
 
     async def problems(self, chat_id: int) -> Reply:
         try:
@@ -392,23 +434,33 @@ class Petrovich:
 
     async def _ask(self, chat_id: int, question: str) -> list[Reply]:
         st = self.state(chat_id)
-        st.history.append({"role": "user", "content": question})
+        if not self.server_history:
+            st.history.append({"role": "user", "content": question})
         try:
             offset = await self._offset(chat_id)
-            resp = await self._stand.chat(chat_id, st.history[-self._history_max:], offset, st.review)
+            resp = (await self._personal.ask(chat_id, question, offset, st.review) if self.server_history else
+                    await self._stand.chat(chat_id, st.history[-self._history_max:], offset, st.review))
         except StandError as e:
-            st.history.pop()
-            return [await self._failed(chat_id, e)]
-        st.history.append({"role": "assistant", "content": resp["reply"]})
-        del st.history[:-self._history_max]
+            if not self.server_history:
+                st.history.pop()
+            return [Reply("Подтвердите личный профиль: /identity") if self.server_history and e.status == 401 else
+                    await self._failed(chat_id, e)]
+        if not self.server_history:
+            st.history.append({"role": "assistant", "content": resp["reply"]})
+            del st.history[:-self._history_max]
         replies = [Reply(T.h(part)) for part in T.split(resp["reply"])]
         if st.review is not None:
             replies[-1].buttons = review_buttons(self._refs.key(st.review))
-        for d in resp.get("drafts") or []:
-            key = self._refs.key(d["id"])
-            replies.append(Reply(T.draft(d, offset), [[Button("Отправить", f"ms:{key}"),
-                                                      Button("Отменить", f"mc:{key}")]]))
+        replies.extend(self._draft_reply(chat_id, d, offset) for d in resp.get("drafts") or [])
         return replies
+
+    def _draft_reply(self, chat_id: int, d: dict, offset: int) -> Reply:
+        value = ("v2mail:" + self._refs.conversation(chat_id)["scope"] + ":" + d["id"]
+                 if self.server_history else d["id"])
+        key = self._refs.key(value)
+        buttons = ([[Button("Отправить", f"ms:{key}"), Button("Отменить", f"mc:{key}")]]
+                   if d.get("status", "draft") in ("draft", "failed") else None)
+        return Reply(T.draft(d, offset), buttons)
 
     # --- кнопки ---
 
@@ -462,6 +514,8 @@ class Petrovich:
                 a = await self._stand.anomaly(chat_id, value, await self._offset(chat_id))
                 st.review, st.pending_reason = value, None
                 st.history.clear()
+                if self.server_history:
+                    self._personal.new(chat_id)
                 return Answer([Reply(T.review_intro(a)), *await self._ask(chat_id, T.REVIEW_FIRST_QUESTION)])
             if action == "rm":
                 st.review = value
@@ -469,6 +523,8 @@ class Petrovich:
             if action == "rx":
                 st.review = None
                 st.history.clear()
+                if self.server_history:
+                    self._personal.new(chat_id)
                 return Answer([Reply("Разбор завершён. Решение по событию можно принять на карточке или в /problems.",
                                      menu=True)])
             if action in ("dt", "dc"):
@@ -639,7 +695,15 @@ class Petrovich:
 
     async def _email(self, chat_id: int, draft_id: str, send: bool, message_text: str) -> Answer:
         try:
-            result = await (self._stand.send_email if send else self._stand.cancel_email)(chat_id, draft_id)
+            if draft_id.startswith("v2mail:"):
+                _, scope, draft_id = draft_id.split(":", 2)
+                state = await self._personal._state(chat_id)
+                if state["scope"] != scope:
+                    raise StandError(403, "Это письмо относится к другому профилю")
+                action = "confirm" if send else "cancel"
+                result = await self._stand.personal(chat_id, "POST", f"/v2/emails/{draft_id}/{action}", json={})
+            else:
+                result = await (self._stand.send_email if send else self._stand.cancel_email)(chat_id, draft_id)
         except StandError as e:
             if e.status == 409 and e.detail.startswith("Письмо уже отправлено"):
                 result = {"status": "sent", "sentAt": None}

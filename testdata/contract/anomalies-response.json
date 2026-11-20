@@ -46,5 +46,7 @@
       "lastDetectedAt": 1789003500000
     }
   ],
-  "lastScanAt": 1789003800000
+  "lastScanAt": 1789003800000,
+  "feedSource": "rules",
+  "apiUpdatedAt": null
 }

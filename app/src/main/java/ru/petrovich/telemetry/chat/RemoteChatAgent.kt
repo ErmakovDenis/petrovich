@@ -7,6 +7,7 @@ import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandException
 import ru.petrovich.telemetry.data.StandSession
 import ru.petrovich.telemetry.data.api.ApiFactory
+import ru.petrovich.telemetry.data.settings.Contact
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Instant
 import java.time.ZoneId
@@ -23,6 +24,8 @@ data class ChatRequest(
     val anomalyId: String? = null,
     /** Письма из чата разрешены (переключатель «Письма из чата»): ассистент может готовить черновики. */
     val allowEmail: Boolean = false,
+    /** Актуальные контакты; null — клиент не синхронизирует список, [] — удалить все контакты телефона. */
+    val emailContacts: List<EmailContact>? = null,
 )
 
 @Serializable
@@ -42,6 +45,7 @@ class RemoteChatAgent(
     private val anomalyIdOnly: suspend () -> Boolean = { false },
     /** true — письма из чата разрешены ([AppSettings.emailsOnServer]). */
     private val allowEmail: suspend () -> Boolean = { false },
+    private val contacts: suspend () -> List<Contact>? = { null },
 ) : ContextualChatAgent {
 
     constructor(
@@ -56,7 +60,10 @@ class RemoteChatAgent(
 
     override suspend fun reply(history: List<ChatMessage>, anomaly: Anomaly?): ChatReply {
         val idOnly = anomaly != null && anomaly.isStandId && anomalyIdOnly()
-        val body = ApiFactory.json.encodeToString(ChatRequest.serializer(), request(history, anomaly, idOnly, allowEmail()))
+        val payload = request(history, anomaly, idOnly, allowEmail()).copy(
+            emailContacts = contacts()?.emailContacts(),
+        )
+        val body = ApiFactory.json.encodeToString(ChatRequest.serializer(), payload)
         val text = stand.post("v1/chat", body)
         val response = runCatchingCancellable { ApiFactory.json.decodeFromString(ChatResponse.serializer(), text) }
             .getOrNull()?.takeIf { it.reply.isNotBlank() }
@@ -82,6 +89,7 @@ class RemoteChatAgent(
         val state = when (m.draftState) {
             DraftState.SENT -> "пользователь отправил"
             DraftState.CANCELLED -> "пользователь отменил"
+            DraftState.EXPIRED -> "срок подтверждения истёк"
             DraftState.FAILED -> "отправка не подтверждена: ${m.draftError}"
             DraftState.PENDING, DraftState.SENDING, DraftState.CANCELLING -> "ждёт подтверждения пользователя"
         }

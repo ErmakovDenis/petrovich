@@ -11,6 +11,7 @@ import logging
 import re
 
 _PATTERNS = [
+    (re.compile(r"pvi_[A-Za-z0-9_-]+"), "pvi_***"),
     (re.compile(r"(?i)\b(session|username|password)=[^&\s\"']*"), r"\1=***"),
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9\-._~+/=]+"), r"\1***"),
     # От 16 символов: иначе пострадает обычный текст («basic check»), а ключ GigaChat гораздо длиннее.

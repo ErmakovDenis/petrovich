@@ -18,6 +18,8 @@ from .agent.fleet_tools import build_fleet_tools
 from .agent.llm import ChatCompletionsClient, LLMClient
 from .agent.loop import Agent
 from .agent.mail_tools import build_mail_tools
+from .agent.memory_tools import build_memory_tools
+from .agent.preference_tools import build_preference_tools
 from .agent.prompt import load_system_prompt
 from .agent.store_tools import build_store_tools
 from .agent.tools import ToolRegistry
@@ -26,6 +28,9 @@ from .api import anomalies as anomalies_api
 from .api import background as background_api
 from .api import chat, emails as emails_api, health
 from .api import status as status_api
+from .api import conversations as conversations_api
+from .api import identity as identity_api
+from .api import identity_telegram as identity_telegram_api
 from .api import telegram as telegram_api
 from .api import telemetry as telemetry_api
 from .api.errors import install_error_handlers
@@ -36,9 +41,16 @@ from .background.crypto import SecretBox
 from .background.scheduler import BackgroundScanner
 from .breaker import CircuitBreaker
 from .config import Settings, get_settings
+from .identity.repository import IdentityRepository
+from .identity.service import IdentityService
+from .identity.telegram import TelegramIdentityService
 from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
 from .metrics import Metrics
+from .memory.aliases import AliasService
+from .memory.repository import MemoryRepository
+from .memory.preferences import PreferenceService
+from .memory.resolver import VehicleResolver
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
 from .mail.service import EmailService
@@ -64,7 +76,14 @@ def build_tools(
     """Tools ассистента: телеметрия (шаг 2), проверка машины (шаг 3), хранилище аномалий и решений (шаг 4),
     черновики писем (шаг 6; только если письма настроены и разрешены в запросе)."""
     registry = ToolRegistry(max_result_chars=settings.tool_max_result_chars)
-    tools = [*build_fleet_tools(settings, telemetry, checks), *build_store_tools(settings, telemetry, store)]
+    memory = MemoryRepository(store) if (settings.memory_aliases_enabled or settings.memory_preferences_enabled) else None
+    resolver = VehicleResolver(telemetry, memory if settings.memory_aliases_enabled else None)
+    tools = [*build_fleet_tools(settings, telemetry, checks, resolver),
+             *build_store_tools(settings, telemetry, store, resolver)]
+    if memory is not None and settings.memory_aliases_enabled:
+        tools += build_memory_tools(AliasService(memory, resolver), settings.tool_max_vehicles)
+    if memory is not None and settings.memory_preferences_enabled:
+        tools += build_preference_tools(PreferenceService(memory))
     if emails is not None:
         tools += build_mail_tools(settings, emails)
     for tool in tools:
@@ -132,6 +151,9 @@ def create_app(
         analytics = AnalyticsClient(settings, client, predictive_limit, breakers["predictive"], metrics)
         checks = AnomalyCheckService(settings, telemetry, analytics)
         store = build_store(settings)
+        app.state.identity = IdentityService(IdentityRepository(store), autograph, settings.autograph_base_url)
+        app.state.identity_rate = TokenBuckets(rate_per_minute=5, burst=5)
+        app.state.telegram_identity = TelegramIdentityService(store, autograph, settings.autograph_base_url, box)
         access = AccessRepository(store, box)
         ai = PetrovichAiClient(settings, client)
         scans = ScanService(settings, telemetry, checks, store, ai)
@@ -181,6 +203,9 @@ def create_app(
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(conversations_api.router)
+    app.include_router(identity_api.router)
+    app.include_router(identity_telegram_api.router)
     app.include_router(telemetry_api.router)
     app.include_router(anomalies_api.router)
     app.include_router(background_api.router)

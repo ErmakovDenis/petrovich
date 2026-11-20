@@ -31,6 +31,8 @@ import ru.petrovich.telemetry.data.StandClient
 import ru.petrovich.telemetry.data.StandSession
 import ru.petrovich.telemetry.data.api.ApiFactory
 import ru.petrovich.telemetry.data.settings.AppSettings
+import ru.petrovich.telemetry.data.settings.Contact
+import ru.petrovich.telemetry.chat.StandEmails
 import java.io.File
 
 class RemoteChatAgentTest {
@@ -75,6 +77,50 @@ class RemoteChatAgentTest {
     )
 
     private fun reply(code: Int, body: String) = MockResponse().setResponseCode(code).setBody(body)
+
+    @Test
+    fun mobileContactsMatchSharedContractFixture() = runTest {
+        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") }, OkHttpClient())
+        val agent = RemoteChatAgent(stand, utcOffsetMinutes = { 300 }, allowEmail = { true }, contacts = {
+            listOf(Contact(id = "new-contact", name = "Анна", role = "Бухгалтер", email = "anna@example.org"))
+        })
+        server.enqueue(reply(200, """{"reply":"Готово"}"""))
+        agent.reply(listOf(ChatMessage(author = Author.USER, text = "Подготовь письмо Анне")), null)
+        val fixture = File(TripTablesGolden.repoRoot(), "testdata/contract/chat-request-contacts.json")
+        assertEquals(Json.parseToJsonElement(fixture.readText()),
+            Json.parseToJsonElement(server.takeRequest().body.readUtf8()))
+    }
+
+    @Test
+    fun readsContactsAgainForEveryChatAndConfirmation() = runTest {
+        var contacts = emptyList<Contact>()
+        val stand = StandClient({ server.url("/").toString() }, { StandSession("token", "schema-1") }, OkHttpClient())
+        val agent = RemoteChatAgent(stand, allowEmail = { true }, contacts = { contacts })
+        suspend fun requestContacts(): kotlinx.serialization.json.JsonArray {
+            server.enqueue(reply(200, """{"reply":"Готово"}"""))
+            agent.reply(history, null)
+            return Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject["emailContacts"]!!.jsonArray
+        }
+        assertEquals(0, requestContacts().size)
+        contacts = listOf(
+            Contact(id = "new-contact", name = "Анна", role = "Бухгалтер", phone = "+70000000000", email = "anna@example.org"),
+            Contact(id = "phone-only", name = "Иван", role = "Механик", phone = "+71111111111"),
+        )
+        val sent = requestContacts()
+        assertEquals(1, sent.size)
+        assertEquals("anna@example.org", sent.single().jsonObject["email"]!!.jsonPrimitive.content)
+        assertFalse(sent.single().jsonObject.containsKey("phone"))
+        val emails = StandEmails(stand, contacts = { contacts })
+        contacts = contacts.map { it.copy(email = if (it.id == "new-contact") "updated@example.org" else "") }
+        server.enqueue(reply(200, """{"id":"draft-id","status":"sent"}"""))
+        emails.send("draft-id")
+        val confirmation = server.takeRequest()
+        assertEquals("/v1/emails/draft-id/confirm", confirmation.path)
+        val body = Json.parseToJsonElement(confirmation.body.readUtf8()).jsonObject
+        assertEquals("updated@example.org", body["emailContacts"]!!.jsonArray.single().jsonObject["email"]!!.jsonPrimitive.content)
+        contacts = emptyList()
+        assertEquals(0, requestContacts().size)
+    }
 
     @Test
     fun sendsHistoryContextAndSessionHeaders() = runTest {

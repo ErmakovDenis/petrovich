@@ -33,21 +33,36 @@ class Stand:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def _call(self, method: str, path: str, chat_id: str | int | None = None, **kwargs: Any) -> Any:
+    async def _call(self, method: str, path: str, chat_id: str | int | None = None,
+                    identity_user_id: int | None = None, allow_interrupted: bool = False, **kwargs: Any) -> Any:
         headers = {"Authorization": f"Bearer {self._token}"}
         if chat_id is not None:
             headers["X-Telegram-Chat-Id"] = str(chat_id)
+        if identity_user_id is not None:
+            headers["X-Telegram-User-Id"] = str(identity_user_id)
+            headers["X-Telegram-Chat-Type"] = "private"
         try:
             resp = await self._http.request(method, self._base + path, headers=headers, timeout=self._timeout, **kwargs)
         except httpx.HTTPError as e:
             log.warning("стенд: %s %s не ответил: %s", method, path.split("?")[0], type(e).__name__)
             raise StandError(None, UNAVAILABLE) from e
+        if allow_interrupted and resp.status_code == 409:
+            try:
+                if resp.json().get("state") == "interrupted":
+                    return resp.json()
+            except (ValueError, AttributeError):
+                pass
         if resp.status_code >= 400:
             detail = _detail(resp)
             if resp.status_code >= 500 and not detail:
                 detail = UNAVAILABLE
             raise StandError(resp.status_code, detail or f"Стенд ответил {resp.status_code}")
         return resp.json() if resp.content else None
+
+    async def personal(self, chat_id: int, method: str, path: str, **kwargs: Any) -> Any:
+        if chat_id <= 0:
+            raise StandError(403, "Личная история доступна только в личном чате")
+        return await self._call(method, path, chat_id, identity_user_id=chat_id, **kwargs)
 
     # --- подключение и подписка ---
 
@@ -69,6 +84,19 @@ class Stand:
 
     async def outbox(self) -> dict:
         return await self._call("POST", "/v1/telegram/bot/outbox")
+
+    # --- отдельная персональная привязка: обычное подключение к схеме не даёт этих полномочий ---
+
+    async def identity_code(self, chat_id: int, user_id: int) -> dict:
+        return await self._call("POST", "/v2/identity/telegram/pair-code", json={
+            "chatId": str(chat_id), "telegramUserId": str(user_id), "chatType": "private",
+        })
+
+    async def identity_me(self, chat_id: int, user_id: int) -> dict:
+        return await self._call("GET", "/v2/identity/telegram/me", chat_id, identity_user_id=user_id)
+
+    async def identity_unlink(self, chat_id: int, user_id: int) -> None:
+        await self._call("DELETE", "/v2/identity/telegram/me", chat_id, identity_user_id=user_id)
 
     # --- аномалии и решения ---
 

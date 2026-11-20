@@ -58,5 +58,7 @@
       "modelsReady": false
     }
   ],
-  "lastScanAt": 1789003800000
+  "lastScanAt": 1789003800000,
+  "feedSource": "rules",
+  "apiUpdatedAt": null
 }

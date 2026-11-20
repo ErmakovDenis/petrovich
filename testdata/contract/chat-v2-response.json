@@ -1,0 +1,11 @@
+{
+  "conversationId": "00000000-0000-0000-0000-000000000001",
+  "clientMessageId": "00000000-0000-0000-0000-000000000002",
+  "userMessageId": "00000000-0000-0000-0000-000000000003",
+  "assistantMessageId": "00000000-0000-0000-0000-000000000004",
+  "version": 1,
+  "state": "completed",
+  "reply": "Данных об этом у меня нет.",
+  "drafts": [],
+  "unavailableDraftIds": []
+}

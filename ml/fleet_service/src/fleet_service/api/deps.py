@@ -171,7 +171,10 @@ def acting_user_name(
 ) -> str | None:
     """Кто действует — автор решения, владелец черновика письма: у Telegram-бота — логин из подключения чата,
     у приложения — `X-User-Name`."""
-    return user.telegram.user_name if user.telegram is not None else header
+    name = user.telegram.user_name if user.telegram is not None else header
+    if name and name.casefold().startswith("__principal__:"):
+        raise HTTPException(403, "Персональные письма доступны только через проверенный API v2")
+    return name
 
 
 def require_app(user: Annotated[UserSession, Depends(require_session)]) -> UserSession:

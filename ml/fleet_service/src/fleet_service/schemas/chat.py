@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .contract import Anomaly, CamelModel
-from .emails import EmailDraftView
+from .emails import EmailContacts, EmailDraftView
 
 
 class ChatTurn(CamelModel):
@@ -13,7 +13,7 @@ class ChatTurn(CamelModel):
     content: str = Field(min_length=1)
 
 
-class ChatRequest(CamelModel):
+class ChatRequest(EmailContacts):
     # История диалога по порядку; последнее сообщение — вопрос пользователя.
     messages: list[ChatTurn] = Field(min_length=1)
     # Смещение пояса пользователя от UTC в минутах (то же, что UTCOffset при Login в AutoGRAPH).

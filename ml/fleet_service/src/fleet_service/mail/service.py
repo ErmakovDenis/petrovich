@@ -1,7 +1,7 @@
 """Письма: черновик готовит ассистент (tool draft_email), отправляет стенд — только по подтверждению пользователя
 в приложении (`POST /v1/emails/{id}/confirm`). Вызова, которым модель могла бы отправить письмо, нет.
 
-- Получатели — только из файла получателей (recipients.py), по id; адрес в свободной форме не принимается.
+- Получатели — из файла и сохранённых контактов пользователя, по id; модель не задаёт адреса.
 - Черновик живёт FS_EMAIL_DRAFT_TTL_MINUTES и принадлежит создавшему его пользователю (схема и логин); id
   черновика — случайный, его знает только приложение пользователя.
 - Подтвердить можно один раз: статус draft → sending меняется одним UPDATE, второй запрос его уже не застанет.
@@ -25,6 +25,8 @@ from ..background.access import now_ms, user_key
 from ..config import Settings
 from ..store.db import email_drafts as E
 from ..store.db import email_log as L
+from ..store.db import email_contacts as C
+from ..schemas.emails import EmailContact
 from ..store.repository import AnomalyRepository
 from .recipients import ID, Recipient, Recipients
 from .sender import SendFailed, SmtpSender
@@ -68,8 +70,29 @@ class EmailService:
         self._run = store.run
         self.clock = clock
 
-    def recipients(self, schema_id: str) -> list[Recipient]:
-        return self._recipients.for_schema(schema_id)
+    async def sync_contacts(self, schema_id: str, user_name: str | None, contacts: list[EmailContact]) -> None:
+        """Полный актуальный список телефона; старые клиенты этот метод не вызывают."""
+        if not (user_name or "").strip():
+            raise EmailRefused(422, "для почтовых контактов нужен логин AutoGRAPH (X-User-Name)")
+        owner = user_key(user_name, "")
+
+        def work(conn: Connection) -> None:
+            conn.execute(delete(C).where(C.c.schema_id == schema_id, C.c.user_key == owner))
+            if contacts:
+                conn.execute(insert(C), [dict(schema_id=schema_id, user_key=owner, id="app_" + c.id,
+                                             name=c.name, role=c.role, email=c.email) for c in contacts])
+        await self._run(work, write=True)
+
+    async def recipients(self, schema_id: str, user_name: str | None = None) -> list[Recipient]:
+        configured = self._recipients.for_schema(schema_id)
+        if not (user_name or "").strip():
+            return configured
+        rows = await self._run(lambda conn: conn.execute(select(C).where(
+            C.c.schema_id == schema_id, C.c.user_key == user_key(user_name, "")
+        ).order_by(C.c.id)).all())
+        # Контакт приложения не может подменить получателя серверной конфигурации.
+        configured_ids = {r.id for r in configured}
+        return configured + [Recipient(r.id, r.name, r.role, r.email) for r in rows if r.id not in configured_ids]
 
     # --- черновик ---
 
@@ -92,11 +115,12 @@ class EmailService:
             raise await refuse("recipient_ids — непустой список id из list_recipients")
         if len(ids) > s.email_max_recipients:
             raise await refuse(f"не больше {s.email_max_recipients} получателей в одном письме")
+        available = {r.id: r for r in await self.recipients(schema_id, name)}
         recipients: list[Recipient] = []
         for raw in ids:
             if not isinstance(raw, str) or "@" in raw or not ID.match(raw):
                 raise await refuse("адрес в свободной форме не принимается: получатели — только id из list_recipients")
-            r = self._recipients.get(raw, schema_id)
+            r = available.get(raw)
             if r is None:
                 raise await refuse(f"неизвестный получатель {raw}: получатели — только id из list_recipients")
             if r not in recipients:
@@ -145,8 +169,9 @@ class EmailService:
         if self.clock() >= draft.expires_at:
             raise await self._refuse(draft, "expired", 410,
                                      "Срок черновика истёк — попросите ассистента подготовить письмо заново")
-        # Получатель мог пропасть из файла или сменить адрес после подготовки: пользователь видел прежние адреса.
-        current = [self._recipients.get(r.id, schema_id) for r in draft.recipients]
+        # Получатель мог быть удалён или сменить адрес после подготовки: пользователь видел прежние адреса.
+        available = {r.id: r for r in await self.recipients(schema_id, user_name)}
+        current = [available.get(r.id) for r in draft.recipients]
         if any(r is None for r in current):
             raise await self._refuse(draft, "rejected", 409,
                                      "Получателя больше нет в списке получателей — подготовьте письмо заново")
@@ -217,8 +242,9 @@ class EmailService:
             await self._journal(schema_id, user_name, draft_id[:64], "—", "—", "not_found",
                                 "черновик не найден или принадлежит другому пользователю")
             raise EmailRefused(404, "Черновик не найден")
-        # Получатели — из текущего файла; удалённый получатель — как «нет в списке» при отправке.
-        recipients = [self._recipients.get(i, schema_id) or Recipient(i, i, "", "") for i in row.recipient_ids.split(",")]
+        # Получатели — из актуального списка владельца; удалённые блокируются при отправке.
+        available = {r.id: r for r in await self.recipients(schema_id, user_name)}
+        recipients = [available.get(i) or Recipient(i, i, "", "") for i in row.recipient_ids.split(",")]
         return Draft(id=row.id, schema_id=row.schema_id, user_name=row.user_name, recipients=recipients,
                      subject=row.subject, body=row.body, created_at=row.created_at, expires_at=row.expires_at,
                      status=row.status, sent_at=row.sent_at, recipients_hash=row.recipients_hash)

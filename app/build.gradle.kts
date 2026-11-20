@@ -16,6 +16,7 @@ if (keystorePropertiesFile.exists()) {
 android {
     namespace = "ru.petrovich.telemetry"
     compileSdk = 35
+    testBuildType = "p0test"
 
     defaultConfig {
         applicationId = "ru.petrovich.telemetry"
@@ -23,9 +24,10 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "ru.petrovich.telemetry.IdentityDeviceTestRunner"
 
         buildConfigField("String", "API_BASE_URL", "\"https://web.tk-ekat.ru/ServiceJSON/\"")
-        buildConfigField("String", "PETROVICH_AI_URL", "\"https://petrovich-dev.duckdns.org/\"")
+        buildConfigField("String", "PETROVICH_AI_URL", "\"https://petrovichai.ru/\"")
         // Адрес стенда по умолчанию: приложение всегда ходит за данными сюда, пока пользователь не сменит адрес в настройках.
         buildConfigField("String", "STAND_URL", "\"https://petrovichai.ru\"")
     }
@@ -42,6 +44,17 @@ android {
     }
 
     buildTypes {
+        // Отдельный пакет и только локальные fakes: проверка P0 не читает данные обычного приложения.
+        create("p0test") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".p0test"
+            versionNameSuffix = "-p0test"
+            isDebuggable = true
+            buildConfigField("String", "STAND_URL", "\"http://127.0.0.1:18080\"")
+            buildConfigField("String", "API_BASE_URL", "\"http://127.0.0.1:18081/autograph/ServiceJSON/\"")
+            buildConfigField("String", "PETROVICH_AI_URL", "\"http://127.0.0.1:18081/unused/\"")
+            matchingFallbacks += listOf("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -90,6 +103,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0") // только потоковый JsonReader
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

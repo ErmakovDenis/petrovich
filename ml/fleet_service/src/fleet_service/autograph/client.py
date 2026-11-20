@@ -26,6 +26,8 @@ from ..telemetry.mapper import TripTablesBuilder
 from ..telemetry.parameters import RParameter
 from .errors import AutoGraphUnavailable, LoginRejected, SessionInvalid
 
+from .schema_ids import parse_schema_ids
+
 log = logging.getLogger(__name__)
 
 API_DATE = "%Y%m%d-%H%M"
@@ -169,7 +171,7 @@ class AutoGraphClient:
         data = await self._json("EnumSchemas", {"session": session})
         if not isinstance(data, list):
             raise SessionInvalid()
-        return {str(s.get("ID")) for s in data if isinstance(s, dict)}
+        return parse_schema_ids(data)
 
     async def enum_devices(self, session: str, schema_id: str) -> list[Vehicle]:
         """Машины схемы, доступные пользователю (Allowed), по имени — как vehicles() в приложении."""

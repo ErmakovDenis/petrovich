@@ -57,12 +57,14 @@
     {
       "id": "veh-1",
       "name": "КАМАЗ 43118",
-      "group": null
+      "group": null,
+      "plate": null
     },
     {
       "id": "veh-2",
       "name": "Scania R450",
-      "group": "Север"
+      "group": "Север",
+      "plate": null
     }
   ],
   "vehiclesError": null

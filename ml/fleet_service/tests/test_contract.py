@@ -114,3 +114,11 @@ def test_store_requests_from_app_fixtures():
     assert items[0].event_time.hour == 10 and items[1].reason is None
     chat = ChatRequest.model_validate(_fixture("chat-request-anomaly-id.json"))
     assert chat.anomaly is None and chat.anomaly_id == "rule|overheat|42|TemperatureCOOL|2026-09-16T05:30Z"
+
+
+def test_personal_telegram_pair_contract():
+    from fleet_service.schemas.identity import TelegramIdentityPair, TelegramIdentityLink
+    request = _fixture("identity-telegram-pair-request.json")
+    response = _fixture("identity-telegram-pair-response.json")
+    assert TelegramIdentityPair.model_validate(request).model_dump(by_alias=True) == request
+    assert TelegramIdentityLink.model_validate(response).model_dump(by_alias=True) == response

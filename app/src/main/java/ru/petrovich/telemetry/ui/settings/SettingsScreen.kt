@@ -122,6 +122,12 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                 }
             }
 
+            SectionLabel("История ассистента")
+            Card {
+                SwitchRow("Сохранять разговоры на сервере", "Нужен подтверждённый личный профиль и включённая история на стенде",
+                    s.serverChatHistory, onChecked = { v -> save { it.copy(serverChatHistory = v) } })
+            }
+
             SectionLabel("Доклад")
             Card {
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -20,4 +20,5 @@ class Settings(BaseSettings):
     data_path: str = "data/bot.db"
     # Сколько последних сообщений диалога передаётся ассистенту (история — в памяти бота, /new — сначала).
     history_max_messages: int = Field(20, ge=2)
+    chat_v2_enabled: bool = False
     log_level: str = "INFO"

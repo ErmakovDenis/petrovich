@@ -92,12 +92,34 @@ def build_router(logic: Petrovich) -> Router:
     async def start(message: Message, command: CommandObject) -> None:
         await deliver(message, await logic.start(message.chat.id, command.args or ""))
 
+    @router.message(Command("identity", "identity_status", "forget_identity"))
+    async def identity(message: Message, command: CommandObject) -> None:
+        user_id = message.from_user.id if message.chat.type == "private" and message.from_user else None
+        action = {"identity_status": "status", "forget_identity": "unlink"}.get(command.command, "code")
+        await deliver(message, await logic.identity(message.chat.id, user_id, action))
+
     @router.message(Command("help"))
     async def help_(message: Message) -> None:
         await deliver(message, [logic.help()])
 
+    def personal(message: Message, user_id: int | None = None) -> bool:
+        return message.chat.type == "private" and (user_id or (message.from_user.id if message.from_user else None)) == message.chat.id
+
+    @router.message(Command("history", "delete_conversation"))
+    async def history(message: Message, command: CommandObject) -> None:
+        if not personal(message):
+            await deliver(message, [Reply("История доступна только в личном чате")])
+            return
+        if command.command == "delete_conversation" and command.args != "confirm":
+            await deliver(message, [Reply("Для удаления текущего разговора: /delete_conversation confirm")])
+            return
+        await deliver(message, await logic.conversation(message.chat.id, delete=command.command == "delete_conversation"))
+
     @router.message(Command("new"))
     async def new(message: Message) -> None:
+        if logic.server_history and not personal(message):
+            await deliver(message, [Reply("Личная история доступна только в личном чате")])
+            return
         await deliver(message, [logic.new(message.chat.id)])
 
     @router.message(Command("problems"))
@@ -130,6 +152,9 @@ def build_router(logic: Petrovich) -> Router:
 
     @router.message(F.text)
     async def text(message: Message) -> None:
+        if logic.server_history and not personal(message):
+            await deliver(message, [Reply("Личная история доступна только в личном чате")])
+            return
         # Ассистент отвечает до полутора минут — показываем «печатает…».
         async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
             replies = await logic.text(message.chat.id, message.text)
@@ -140,6 +165,9 @@ def build_router(logic: Petrovich) -> Router:
         msg = query.message
         if msg is None or not hasattr(msg, "chat"):
             await query.answer(T.STALE_BUTTON, show_alert=True)
+            return
+        if logic.server_history and query.data.split(":", 1)[0] in ("rv", "rm", "ms", "mc") and not personal(msg, query.from_user.id):
+            await query.answer("Личная история доступна только в личном чате", show_alert=True)
             return
         # Разбор и письмо — обращение к ассистенту и SMTP, данные и выгрузка — к AutoGRAPH и хранилищу: сразу снимаем
         # «часики» с кнопки.
@@ -186,7 +214,7 @@ async def outbox_loop(bot: Bot, logic: Petrovich, interval: float) -> None:
 async def run(settings: Settings) -> None:
     stand = Stand(settings.stand_url, settings.stand_token.get_secret_value(), settings.stand_timeout_seconds)
     refs = Refs(settings.data_path)
-    logic = Petrovich(stand, refs, settings.history_max_messages)
+    logic = Petrovich(stand, refs, settings.history_max_messages, server_history=settings.chat_v2_enabled)
     bot = Bot(settings.bot_token.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(build_router(logic))
