@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     # P0 памяти: отдельное подтверждение личности. Клиенты подключаются после проверки контракта.
     identity_enabled: bool = False
+    # P2: личные прозвища доступны только с отдельно подтверждённой личностью.
+    memory_aliases_enabled: bool = False
+    # P3: типизированные личные настройки оформления, отдельно от прозвищ.
+    memory_preferences_enabled: bool = False
     # Без стабильного upstream UID нужен подтверждённый регламент управления реестром аккаунтов.
     identity_account_lifecycle: Literal["unconfigured", "managed"] = "unconfigured"
 

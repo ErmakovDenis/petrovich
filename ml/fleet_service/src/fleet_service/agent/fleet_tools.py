@@ -10,9 +10,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..config import Settings
+from ..memory.resolver import VehicleResolver, vehicle_label as _vehicle_label
 from ..rules.check import AnomalyCheckService, CheckResult
 from ..telemetry.mapper import BuildResult
-from ..telemetry.service import TelemetryService, VehicleNotFound
+from ..telemetry.service import TelemetryService
 from .tools import Tool, ToolContext
 
 _TIME = "%Y-%m-%dT%H:%M"
@@ -43,33 +44,9 @@ def period_args(args: dict[str, Any], ctx: ToolContext) -> tuple[datetime, datet
     return from_, to
 
 
-def _vehicle_label(v) -> str:
-    """Имя с гос. номером, если номер ещё не входит в name."""
-    if not v.plate:
-        return v.name
-    compact_name = v.name.replace(" ", "")
-    compact_plate = v.plate.replace(" ", "")
-    if compact_plate.lower() in compact_name.lower() or compact_name.lower() in compact_plate.lower():
-        return v.name
-    return f"{v.name} {v.plate}"
-
-
 async def find_vehicle_id(service: TelemetryService, ctx: ToolContext, vehicle_id: str) -> str:
-    """id машины пользователя. Модель могла передать название/госномер вместо id — только однозначное совпадение."""
-    vehicles = await service.vehicles(ctx.session, ctx.schema_id)
-    if any(v.id == vehicle_id for v in vehicles):
-        return vehicle_id
-    needle = vehicle_id.strip().lower()
-    by_name = [v for v in vehicles if v.name.strip().lower() == needle]
-    if len(by_name) == 1:
-        return by_name[0].id
-    by_plate = [v for v in vehicles if (v.plate or "").strip().lower() == needle]
-    if len(by_plate) == 1:
-        return by_plate[0].id
-    by_label = [v for v in vehicles if _vehicle_label(v).strip().lower() == needle]
-    if len(by_label) != 1:
-        raise VehicleNotFound()
-    return by_label[0].id
+    """Совместимая точка входа старого поиска без персональной памяти."""
+    return await VehicleResolver(service).resolve(ctx, vehicle_id)
 
 
 def _round(x: float) -> float:
@@ -176,9 +153,12 @@ def check_summary(result: CheckResult, max_anomalies: int) -> dict[str, Any]:
     return summary
 
 
-def build_fleet_tools(settings: Settings, service: TelemetryService, checks: AnomalyCheckService) -> list[Tool]:
+def build_fleet_tools(settings: Settings, service: TelemetryService, checks: AnomalyCheckService,
+                      resolver: VehicleResolver | None = None) -> list[Tool]:
+    resolver = resolver or VehicleResolver(service)
     async def list_vehicles(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        vehicles = await service.vehicles(ctx.session, ctx.schema_id)
+        vehicles = await resolver.vehicles(ctx)
+        aliases = await resolver.aliases(ctx, vehicles)
         query = str(args.get("query") or "").strip().lower()
         if query:
             vehicles = [
@@ -187,12 +167,14 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
                 or query in (v.plate or "").lower()
                 or query in _vehicle_label(v).lower()
                 or query in (v.group or "").lower()
+                or any(query in alias.lower() for alias in aliases.get(v.id, []))
             ]
         limit = settings.tool_max_vehicles
         return {
             "total": len(vehicles),
             "vehicles": [
-                {"id": v.id, "name": v.name, "plate": v.plate, "label": _vehicle_label(v), "group": v.group}
+                {"id": v.id, "name": v.name, "plate": v.plate, "label": _vehicle_label(v), "group": v.group,
+                 **({"aliases": aliases[v.id]} if v.id in aliases else {})}
                 for v in vehicles[:limit]
             ],
             "truncated": len(vehicles) > limit,
@@ -203,7 +185,7 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
         if not vehicle_id:
             raise ValueError("не указан vehicle_id")
         from_, to = period_args(args, ctx)
-        return await find_vehicle_id(service, ctx, vehicle_id), from_, to
+        return await resolver.resolve(ctx, vehicle_id), from_, to
 
     async def get_vehicle_summary(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         vehicle_id, from_, to = await vehicle_and_period(args, ctx)
@@ -234,6 +216,7 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
                 },
             },
             handler=list_vehicles,
+            log_arguments=False,
         ),
         Tool(
             name="get_vehicle_summary",
@@ -247,10 +230,11 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
             f"По умолчанию — последние 24 часа; период не длиннее {max_hours} ч.",
             parameters={
                 "type": "object",
-                "properties": {"vehicle_id": {"type": "string", "description": "id машины из list_vehicles"}, **period},
+                "properties": {"vehicle_id": {"type": "string", "description": "ID, точное имя, номер или личное прозвище машины; неоднозначную ссылку уточни"}, **period},
                 "required": ["vehicle_id"],
             },
             handler=get_vehicle_summary,
+            log_arguments=False,
         ),
         Tool(
             name="check_vehicle",
@@ -263,9 +247,10 @@ def build_fleet_tools(settings: Settings, service: TelemetryService, checks: Ano
             f"по умолчанию последние 24 часа; период не длиннее {max_hours} ч.",
             parameters={
                 "type": "object",
-                "properties": {"vehicle_id": {"type": "string", "description": "id машины из list_vehicles"}, **period},
+                "properties": {"vehicle_id": {"type": "string", "description": "ID, точное имя, номер или личное прозвище машины; неоднозначную ссылку уточни"}, **period},
                 "required": ["vehicle_id"],
             },
             handler=check_vehicle,
+            log_arguments=False,
         ),
     ]

@@ -47,8 +47,8 @@ class Agent:
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = str(fn.get("name"))
-                # Аргументы tools — id машин и периоды, секретов в них нет; длинные обрезаются. У tools писем
-                # аргументы (текст письма) в лог не пишутся.
+                # Аргументы писем, памяти и ссылок на машины (включая личные прозвища) не логируются.
+                # Неизвестные tools также не дают права записывать произвольный текст модели в лог.
                 arguments = " ".join(str(fn.get("arguments") or "").split())
                 if not self._tools.logs_arguments(name):
                     arguments = "аргументы не пишутся в лог"

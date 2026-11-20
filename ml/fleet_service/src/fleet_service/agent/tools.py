@@ -10,6 +10,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from ..identity.principal import Principal
+from ..memory.aliases import AliasIntent
+from ..memory.preferences import PreferenceIntent
+from ..memory.resolver import VehicleAmbiguous, vehicle_label
+
 log = logging.getLogger(__name__)
 
 
@@ -25,6 +30,13 @@ class ToolContext:
     user_name: str | None = None
     features: frozenset[str] = frozenset()
     drafts: list[Any] = field(default_factory=list)
+    # Только серверная аутентификация; модель и X-User-Name эти поля не заполняют.
+    principal: Principal | None = field(default=None, repr=False)
+    check_principal: Callable[[], Awaitable[Principal]] | None = field(default=None, repr=False)
+    alias_intent: AliasIntent | None = field(default=None, repr=False)
+    alias_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    preference_intent: PreferenceIntent | None = field(default=None, repr=False)
+    preference_results: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
 
 ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
@@ -66,7 +78,7 @@ class ToolRegistry:
 
     def logs_arguments(self, name: str) -> bool:
         tool = self._tools.get(name)
-        return tool is None or tool.log_arguments
+        return tool is not None and tool.log_arguments
 
     async def execute(self, name: str, raw_arguments: str | None, ctx: ToolContext) -> str:
         """Исполняет tool и возвращает результат JSON-строкой для сообщения role=tool."""
@@ -82,6 +94,9 @@ class ToolRegistry:
         start = time.monotonic()
         try:
             result = await tool.handler(args, ctx)
+        except VehicleAmbiguous as error:
+            result = {"status": "confirmation_required", "message": str(error),
+                      "vehicles": [{"id": v.id, "label": vehicle_label(v)} for v in error.vehicles]}
         except Exception as e:  # noqa: BLE001 — сбой tool не должен ронять ответ ассистента
             log.warning("tool %s: ошибка за %.0f мс: %s", name, (time.monotonic() - start) * 1000, e)
             return _error(f"{name} не выполнен: {e}")

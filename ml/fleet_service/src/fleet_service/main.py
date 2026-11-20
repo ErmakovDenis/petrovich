@@ -18,6 +18,8 @@ from .agent.fleet_tools import build_fleet_tools
 from .agent.llm import ChatCompletionsClient, LLMClient
 from .agent.loop import Agent
 from .agent.mail_tools import build_mail_tools
+from .agent.memory_tools import build_memory_tools
+from .agent.preference_tools import build_preference_tools
 from .agent.prompt import load_system_prompt
 from .agent.store_tools import build_store_tools
 from .agent.tools import ToolRegistry
@@ -44,6 +46,10 @@ from .identity.telegram import TelegramIdentityService
 from .limits import AdmissionLimiter, Limits, TokenBuckets, UpstreamLimiter
 from .log_masking import configure_logging
 from .metrics import Metrics
+from .memory.aliases import AliasService
+from .memory.repository import MemoryRepository
+from .memory.preferences import PreferenceService
+from .memory.resolver import VehicleResolver
 from .mail.recipients import Recipients
 from .mail.sender import SmtpSender
 from .mail.service import EmailService
@@ -69,7 +75,14 @@ def build_tools(
     """Tools ассистента: телеметрия (шаг 2), проверка машины (шаг 3), хранилище аномалий и решений (шаг 4),
     черновики писем (шаг 6; только если письма настроены и разрешены в запросе)."""
     registry = ToolRegistry(max_result_chars=settings.tool_max_result_chars)
-    tools = [*build_fleet_tools(settings, telemetry, checks), *build_store_tools(settings, telemetry, store)]
+    memory = MemoryRepository(store) if (settings.memory_aliases_enabled or settings.memory_preferences_enabled) else None
+    resolver = VehicleResolver(telemetry, memory if settings.memory_aliases_enabled else None)
+    tools = [*build_fleet_tools(settings, telemetry, checks, resolver),
+             *build_store_tools(settings, telemetry, store, resolver)]
+    if memory is not None and settings.memory_aliases_enabled:
+        tools += build_memory_tools(AliasService(memory, resolver), settings.tool_max_vehicles)
+    if memory is not None and settings.memory_preferences_enabled:
+        tools += build_preference_tools(PreferenceService(memory))
     if emails is not None:
         tools += build_mail_tools(settings, emails)
     for tool in tools:

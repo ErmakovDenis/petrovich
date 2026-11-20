@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..config import Settings
+from ..memory.resolver import VehicleResolver
 from ..schemas.contract import Severity
 from ..schemas.store import feed_list_filters
 from ..store.repository import STATUSES, AnomalyFilter, AnomalyRepository, Record, to_utc
 from ..telemetry.service import TelemetryService
-from .fleet_tools import _TIME, find_vehicle_id, period_args
+from .fleet_tools import _TIME, period_args
 from .tools import Tool, ToolContext
 
 _RESOLUTION = {None: "ждёт решения", "CONFIRMED": "подтверждена", "FALSE_ALARM": "ложная тревога"}
@@ -49,12 +50,14 @@ def _item(r: Record, ctx: ToolContext, full: bool = False) -> dict[str, Any]:
     return item
 
 
-def build_store_tools(settings: Settings, service: TelemetryService, store: AnomalyRepository) -> list[Tool]:
+def build_store_tools(settings: Settings, service: TelemetryService, store: AnomalyRepository,
+                      resolver: VehicleResolver | None = None) -> list[Tool]:
+    resolver = resolver or VehicleResolver(service)
     async def list_anomalies(args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]:
         from_, to = period_args(args, ctx)
-        visible = [v.id for v in await service.vehicles(ctx.session, ctx.schema_id)]
+        visible = [v.id for v in await resolver.vehicles(ctx)]
         vehicle = str(args.get("vehicle_id") or "").strip()
-        vehicle_id = await find_vehicle_id(service, ctx, vehicle) if vehicle else None
+        vehicle_id = await resolver.resolve(ctx, vehicle) if vehicle else None
         severity = args.get("severity") or []
         severities = [severity] if isinstance(severity, str) else list(severity)
         known = {s.value for s in Severity}
@@ -98,7 +101,7 @@ def build_store_tools(settings: Settings, service: TelemetryService, store: Anom
         anomaly_id = str(args.get("id") or "").strip()
         if not anomaly_id:
             raise ValueError("не указан id")
-        visible = {v.id for v in await service.vehicles(ctx.session, ctx.schema_id)}
+        visible = {v.id for v in await resolver.vehicles(ctx)}
         record = await store.get(ctx.schema_id, anomaly_id, visible)
         if record is None:
             raise ValueError("аномалия не найдена в хранилище или недоступна этому пользователю")
@@ -128,13 +131,14 @@ def build_store_tools(settings: Settings, service: TelemetryService, store: Anom
                 "properties": {
                     "from": {"type": "string", "description": "Начало периода, местное время (необязательно)"},
                     "to": {"type": "string", "description": "Конец периода, местное время (необязательно)"},
-                    "vehicle_id": {"type": "string", "description": "id машины из list_vehicles (необязательно)"},
+                    "vehicle_id": {"type": "string", "description": "ID, точное имя, номер или личное прозвище машины (необязательно)"},
                     "severity": {"type": "array", "items": {"type": "string", "enum": ["CRITICAL", "WARNING", "INFO"]},
                                  "description": "Важность (необязательно)"},
                     "status": {"type": "string", "enum": list(STATUSES), "description": "Статус разбора (необязательно)"},
                 },
             },
             handler=list_anomalies,
+            log_arguments=False,
         ),
         Tool(
             name="get_anomaly",

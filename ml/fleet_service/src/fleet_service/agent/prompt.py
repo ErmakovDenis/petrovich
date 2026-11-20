@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..config import Settings
+from ..memory.preferences import PreferenceSnapshot, style_message
 from ..schemas.chat import ChatRequest
 from .llm import Message
 
@@ -21,7 +22,8 @@ def load_system_prompt(settings: Settings) -> str:
 
 
 def build_messages(
-    system_prompt: str, request: ChatRequest, now: datetime | None = None, stored_anomaly: dict | None = None
+    system_prompt: str, request: ChatRequest, now: datetime | None = None, stored_anomaly: dict | None = None,
+    preferences: PreferenceSnapshot | None = None
 ) -> list[Message]:
     """[stored_anomaly] — аномалия из хранилища по request.anomaly_id (JSON контракта с решением); None при
     заданном anomaly_id — в хранилище её нет."""
@@ -37,6 +39,10 @@ def build_messages(
             "Время в данных — местное время пользователя.",
         },
     ]
+    if preferences is not None:
+        style = style_message(preferences, request.messages)
+        if style:
+            messages.append({"role": "system", "content": style})
     context = stored_anomaly
     if context is None and request.anomaly is not None:
         context = request.anomaly.model_dump(by_alias=True, mode="json")

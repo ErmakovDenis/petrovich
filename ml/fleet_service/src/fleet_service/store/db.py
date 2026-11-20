@@ -439,13 +439,15 @@ user_preferences = Table(
     Column("key", String(64), nullable=False),
     Column("value_json", Text, nullable=False),
     Column("source_type", String(16), nullable=False),
+    Column("version", Integer, nullable=False, server_default="1"),
+    CheckConstraint("version >= 1", name="ck_preferences_version"),
     Column("status", String(16), nullable=False),
     Column("updated_at", BigInteger, nullable=False),
     Column("deleted_at", BigInteger),
     ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
     CheckConstraint("source_type IN ('explicit','settings')", name="ck_preferences_source"),
     CheckConstraint("status IN ('active','deleted')", name="ck_preferences_status"),
-    CheckConstraint("key IN ('response_length','response_format','technical_detail','language','auto_extract_enabled')", name="ck_preferences_key"),
+    CheckConstraint("key IN ('response_length','response_format','technical_detail','language','auto_extract_enabled','preferred_terms')", name="ck_preferences_key"),
     Index("uq_preferences_active", "tenant_id", "principal_id", "key", unique=True,
           sqlite_where=text("deleted_at IS NULL AND status = 'active'")),
 )
@@ -518,4 +520,33 @@ memory_audit = Table(
     Column("reason", String(32), nullable=False),
     ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
     Index("ix_memory_audit_owner", "tenant_id", "principal_id", "at"),
+)
+
+# Операции P2: повтор запроса не восстанавливает удалённую запись и не удаляет новую привязку.
+memory_alias_operations = Table(
+    "memory_alias_operations", metadata,
+    Column("tenant_id", String(64), primary_key=True),
+    Column("principal_id", String(36), primary_key=True),
+    Column("operation_id", String(128), primary_key=True),
+    Column("request_hash", String(64), nullable=False),
+    Column("action", String(16), nullable=False),
+    Column("target_id", String(36), ForeignKey("user_entity_aliases.id")),
+    Column("at", BigInteger, nullable=False),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("action IN ('set', 'delete')", name="ck_alias_operation_action"),
+)
+
+# P3: повтор старой операции не перезаписывает более новую настройку.
+memory_preference_operations = Table(
+    "memory_preference_operations", metadata,
+    Column("tenant_id", String(64), primary_key=True),
+    Column("principal_id", String(36), primary_key=True),
+    Column("operation_id", String(128), primary_key=True),
+    Column("request_hash", String(64), nullable=False),
+    Column("action", String(16), nullable=False),
+    Column("target_id", String(36), ForeignKey("user_preferences.id"), nullable=False),
+    Column("target_version", Integer, nullable=False),
+    Column("at", BigInteger, nullable=False),
+    ForeignKeyConstraint(["principal_id", "tenant_id"], ["principal_scopes.principal_id", "principal_scopes.tenant_id"]),
+    CheckConstraint("action IN ('set', 'delete')", name="ck_preference_operation_action"),
 )
