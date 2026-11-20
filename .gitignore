@@ -9,6 +9,7 @@
 .externalNativeBuild
 .cxx
 .kotlin/
+ml/fleet_service/certs/*
 
 # Ключи подписи release
 *.jks

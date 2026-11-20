@@ -27,7 +27,7 @@ android {
         testInstrumentationRunner = "ru.petrovich.telemetry.IdentityDeviceTestRunner"
 
         buildConfigField("String", "API_BASE_URL", "\"https://web.tk-ekat.ru/ServiceJSON/\"")
-        buildConfigField("String", "PETROVICH_AI_URL", "\"https://petrovich-dev.duckdns.org/\"")
+        buildConfigField("String", "PETROVICH_AI_URL", "\"https://petrovichai.ru/\"")
         // Адрес стенда по умолчанию: приложение всегда ходит за данными сюда, пока пользователь не сменит адрес в настройках.
         buildConfigField("String", "STAND_URL", "\"https://petrovichai.ru\"")
     }
