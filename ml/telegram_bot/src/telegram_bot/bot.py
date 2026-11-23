@@ -215,7 +215,19 @@ async def run(settings: Settings) -> None:
     stand = Stand(settings.stand_url, settings.stand_token.get_secret_value(), settings.stand_timeout_seconds)
     refs = Refs(settings.data_path)
     logic = Petrovich(stand, refs, settings.history_max_messages, server_history=settings.chat_v2_enabled)
-    bot = Bot(settings.bot_token.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    
+    # bot = Bot(settings.bot_token.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+    proxy = settings.proxy_url.get_secret_value() if settings.proxy_url else None
+    session = AiohttpSession(proxy=proxy) if proxy else None
+    if proxy:
+        log.info("Telegram API через прокси")
+    bot = Bot(
+        settings.bot_token.get_secret_value(),
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+    
     dp = Dispatcher()
     dp.include_router(build_router(logic))
     await bot.set_my_commands(COMMANDS)
