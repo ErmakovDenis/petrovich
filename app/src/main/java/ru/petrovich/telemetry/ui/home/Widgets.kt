@@ -39,17 +39,21 @@ enum class WidgetType(
 
 data class WidgetSlot(val type: WidgetType)
 
-/** Стартовый набор как на варианте «1б» карты экранов. */
+/** Стартовый набор как на варианте «1б» карты экранов + «Заправки». */
 val DefaultLayout = listOf(
     WidgetSlot(WidgetType.FUEL),
     WidgetSlot(WidgetType.OVERCONSUMERS),
     WidgetSlot(WidgetType.IDLE),
+    WidgetSlot(WidgetType.REFUELS),
     WidgetSlot(WidgetType.OFFLINE),
 )
 
+/** Прежний дефолт без «Заправок» — подменяем на [DefaultLayout], чтобы виджет появился у уже настроенных. */
+private const val LegacyDefaultLayout = "fuel,overconsumers,idle,offline"
+
 /** Раскладка хранится строкой `ключ,ключ,...` (формат проще прежнего: у виджетов больше нет размера). */
 fun parseLayout(raw: String): List<WidgetSlot> {
-    if (raw.isBlank()) return DefaultLayout
+    if (raw.isBlank() || raw == LegacyDefaultLayout) return DefaultLayout
     val slots = raw.split(',').mapNotNull { key -> WidgetType.byKey(key.substringBefore(':'))?.let { WidgetSlot(it) } }.distinctBy { it.type }
     return slots.ifEmpty { DefaultLayout }
 }

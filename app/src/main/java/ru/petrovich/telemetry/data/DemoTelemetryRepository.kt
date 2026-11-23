@@ -11,7 +11,7 @@ import kotlin.random.Random
 
 /**
  * Синтетические данные для 10 грузовиков — чтобы приложение работало без доступа к API.
- * В данные намеренно подмешаны аномалии (слив топлива, просадка напряжения, перегрев).
+ * В данные намеренно подмешан слив топлива (уровень + TankMainFuelDnVol) — kind как у API 1 курса.
  */
 class DemoTelemetryRepository : TelemetryRepository {
 
@@ -30,6 +30,7 @@ class DemoTelemetryRepository : TelemetryRepository {
 
     private val fuelLevel = param("TankMainFuelLevel", "Уровень топлива", "л", MetricCategory.FUEL)
     private val fuelRate = param("CANFinstant", "Мгновенный расход", "л/ч", MetricCategory.FUEL)
+    private val fuelDrain = param("TankMainFuelDnVol", "Объём слива", "л", MetricCategory.FUEL)
     private val voltage = param("PowerVoltage", "Напряжение бортсети", "В", MetricCategory.POWER)
     private val battery = param("Power", "Питание (1 — есть)", null, MetricCategory.POWER)
     private val rpm = param("Rotation", "Обороты", "об/мин", MetricCategory.ENGINE)
@@ -44,7 +45,7 @@ class DemoTelemetryRepository : TelemetryRepository {
         val times = generateSequence(start) { it.plus(step) }.takeWhile { !it.isAfter(to) }.toList()
 
         val cols = mutableMapOf<ParameterInfo, MutableList<Double?>>()
-        listOf(fuelLevel, fuelRate, voltage, battery, rpm, coolant, speed).forEach { cols[it] = mutableListOf() }
+        listOf(fuelLevel, fuelRate, fuelDrain, voltage, battery, rpm, coolant, speed).forEach { cols[it] = mutableListOf() }
 
         for (t in times) {
             val epochMin = t.toEpochSecond(ZoneOffset.UTC) / 60
@@ -58,21 +59,18 @@ class DemoTelemetryRepository : TelemetryRepository {
             val cycleMin = 24 * 60 + idx * 37
             val phase = ((epochMin + idx * 211) % cycleMin).toDouble() / cycleMin
             var level = 380 - 300 * phase + rnd.nextDouble(-2.0, 2.0)
-            // Аномалия: слив топлива ночью у некоторых машин.
+            // Аномалия: слив топлива ночью у некоторых машин (уровень + DnVol → fuel_drain).
             val drainAt = (epochMin + idx * 97) % (3 * 24 * 60)
-            if (idx % 3 == 1 && drainAt in 150..(3 * 24 * 60)) level -= 60
+            val draining = idx % 3 == 1 && drainAt in 150..(3 * 24 * 60)
+            if (draining) level -= 60
             level = max(level, 5.0)
 
             var volt = if (engineOn) 28.1 + rnd.nextDouble(-0.3, 0.3) else 25.2 + rnd.nextDouble(-0.2, 0.2)
-            // Аномалия: просадка напряжения.
-            if (idx % 4 == 2 && (epochMin + idx * 13) % (18 * 60) in 0..20) volt = 21.5 + rnd.nextDouble(-0.5, 0.5)
-
             var temp = if (engineOn) 86 + 6 * sin(epochMin / 40.0) + rnd.nextDouble(-1.5, 1.5) else 30.0 + rnd.nextDouble(-2.0, 2.0)
-            // Аномалия: перегрев.
-            if (idx % 5 == 3 && (epochMin + idx * 7) % (20 * 60) in 0..25) temp = 108 + rnd.nextDouble(0.0, 4.0)
 
             cols.getValue(fuelLevel) += level.round1()
             cols.getValue(fuelRate) += if (engineOn) (18 + v * 0.25 + rnd.nextDouble(-2.0, 2.0)).round1() else 0.0
+            cols.getValue(fuelDrain) += if (draining) 60.0 else 0.0
             cols.getValue(voltage) += volt.round1()
             cols.getValue(battery) += 1.0
             cols.getValue(rpm) += if (engineOn) (900 + v * 18 + rnd.nextDouble(-60.0, 60.0)).round1() else 0.0

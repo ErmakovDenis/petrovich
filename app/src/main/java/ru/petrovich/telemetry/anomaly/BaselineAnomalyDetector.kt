@@ -1,23 +1,19 @@
 package ru.petrovich.telemetry.anomaly
 
 import ru.petrovich.telemetry.data.AutoGraphParameters as P
+import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.ParameterColumn
+import ru.petrovich.telemetry.data.ParameterInfo
 import ru.petrovich.telemetry.data.VehicleTelemetry
 import java.time.Duration
-import java.time.LocalDate
 import java.time.LocalDateTime
 import kotlin.math.abs
 
 /**
  * Пороговые правила — временная замена ML-модели, чтобы раздел аномалий и уведомления
- * работали уже сейчас. Пороги подобраны по реальным данным (16.09.2026):
- *  - нормальное падение уровня топлива за 15 мин ≤ 10 л;
- *  - ОЖ ≤ 86 °C; давление масла на оборотах > 800 ≥ 188 кПа;
- *  - напряжение аккумулятора (24 В) на работающем двигателе: медиана 27.4, 1-й перцентиль 24.3 В;
- *    при выключенном зажигании по CAN приходит 0 — это «нет данных»;
- *  - тормозные контуры: 0 кПа — нет данных с датчика.
- * Короткие выбросы отсекаются требованием минимальной длительности.
- * Отключается в [ru.petrovich.telemetry.ServiceLocator], когда будет готова модель.
+ * работали уже сейчас. Пороги подобраны по реальным данным (16.09.2026) и совпадают с
+ * `RuleThresholds` стенда (FS_RULES__*). Виды как у API 1 курса: fuel_drain, towing, data_gap*
+ * плюс drop/power/volt/overheat/oil/brake.
  */
 class BaselineAnomalyDetector : AnomalyDetector {
     override val name = "Базовые правила"
@@ -34,132 +30,210 @@ class BaselineAnomalyDetector : AnomalyDetector {
         val out = mutableListOf<Anomaly>()
         val rpm = col(P.RPM, "оборот", "rpm")
         val ignition = col(P.IGNITION) ?: col(P.IGNITION_CAN)
-        // При выключенном зажигании AutoGRAPH держит последнее значение оборотов и интерполирует
-        // остальные CAN-параметры (проверено на Урал 8904 и FAW №2), поэтому одних оборотов недостаточно.
-        fun engineRunning(i: Int, minRpm: Double): Boolean {
-            if (ignition != null && (ignition.values[i] ?: 0.0) < 0.5) return false
-            return rpm == null || (rpm.values[i] ?: 0.0) > minRpm
-        }
+        val speed = col(P.SPEED) ?: col(P.SPEED_CAN)
+        val gpsSpeed = col(P.GPS_SPEED)
+        val power = col(P.POWER)
 
-        // Топливо: слив по данным AutoGRAPH.
+        // Топливо: слив по данным AutoGRAPH → kind как у API 1 курса.
         col(P.FUEL_DRAIN_VOLUME)?.let { c ->
             out += ctx.episodes(c, { _, v -> v > 0 }) { i, v, _ ->
-                ctx.anomaly(c, i, v, Severity.CRITICAL, "drain", "Слив топлива",
+                ctx.anomaly(c, i, v, Severity.CRITICAL, "fuel_drain", "Слив топлива",
                     "AutoGRAPH зафиксировал слив ${fmt(v)} ${c.parameter.unit.orEmpty()}.")
             }
         }
-        // Топливо: резкое падение уровня за 15 минут.
-        col(P.FUEL_LEVEL, "уровень топлива", "fuellevel")?.let { c ->
-            out += fuelDrop(ctx, c)
-            // Датчик сконфигурирован, но за всё окно — ни одного значения: честно сообщаем, что он молчит,
-            // а не выдумываем причину. Id стабилен на сутки, чтобы не плодить дубликаты, пока не починят.
-            if (c.values.isNotEmpty() && c.values.all { it == null }) {
-                out += Anomaly(
-                    id = "rule|nodata|${telemetry.vehicle.id}|${c.parameter.name}|${LocalDate.now()}",
-                    vehicleId = telemetry.vehicle.id,
-                    vehicleName = telemetry.vehicle.label,
-                    category = c.parameter.category,
-                    parameterName = c.parameter.name,
-                    parameterCaption = c.parameter.caption,
-                    eventTime = times.last().toString(),
-                    detectedAt = System.currentTimeMillis(),
-                    severity = Severity.WARNING,
-                    title = "Нет данных",
-                    description = "Датчик топлива молчит — за всё окно проверки ни одного значения.",
-                    source = "Базовые правила",
+
+        // Буксировка / скорость без движения / пропуски — те же kinds, что у API 1 курса.
+        if (speed != null) {
+            out += towing(ctx, speed, ignition, rpm)
+            if (gpsSpeed != null) out += speedWithoutMovement(ctx, speed, gpsSpeed)
+        }
+        out += gaps(ctx, columns, power, gpsSpeed)
+        return out
+    }
+
+    private fun towing(
+        ctx: Ctx,
+        speed: ParameterColumn,
+        ignition: ParameterColumn?,
+        rpm: ParameterColumn?,
+    ): List<Anomaly> {
+        if (ignition == null && rpm == null) return emptyList()
+        return ctx.episodes(
+            speed,
+            { i, v ->
+                if (v < TOWING_MIN_SPEED) {
+                    false
+                } else {
+                    val ignOff = ignition != null && (ignition.values[i] ?: 0.0) < 0.5
+                    val rpmLow = rpm != null && (rpm.values[i] ?: 0.0) <= TOWING_MAX_RPM
+                    ignOff || rpmLow
+                }
+            },
+            minDuration = Duration.ofMinutes(TOWING_MIN_MINUTES.toLong()),
+        ) { i, v, d ->
+            ctx.anomaly(
+                speed, i, v, Severity.WARNING, "towing", "Буксировка",
+                "Скорость ${fmt(v)} км/ч ≈${d.toMinutes()} мин при выключенном двигателе — возможна буксировка.",
+            )
+        }
+    }
+
+    private fun speedWithoutMovement(ctx: Ctx, speed: ParameterColumn, gpsSpeed: ParameterColumn): List<Anomaly> {
+        // Спидометр ≥ порога, GpsSpeed ≈ 0 — скорость без перемещения по GPS.
+        val gpsMax = SPEED_WITHOUT_MAX_KM * 10 // 0.1 → 1 км/ч
+        return ctx.episodes(
+            speed,
+            { i, v ->
+                if (v < SPEED_WITHOUT_MIN_KMH) false
+                else {
+                    val g = gpsSpeed.values[i]
+                    g != null && g <= gpsMax
+                }
+            },
+            minDuration = Duration.ofMinutes(SPEED_WITHOUT_MIN_MINUTES.toLong()),
+        ) { i, v, d ->
+            ctx.anomaly(
+                speed, i, v, Severity.WARNING, "speed_without_movement", "Скорость без движения",
+                "Спидометр ${fmt(v)} км/ч ≈${d.toMinutes()} мин при GpsSpeed ≈0 — проверьте датчик скорости.",
+            )
+        }
+    }
+
+    private fun gaps(
+        ctx: Ctx,
+        columns: List<ParameterColumn>,
+        power: ParameterColumn?,
+        gpsSpeed: ParameterColumn?,
+    ): List<Anomaly> {
+        if (columns.isEmpty()) return emptyList()
+        val n = ctx.times.size
+        val others = columns.filter { it !== power }
+        val allNull = BooleanArray(n) { i -> columns.all { it.values[i] == null } }
+        val othersNull = BooleanArray(n) { i -> others.isEmpty() || others.all { it.values[i] == null } }
+        val powerOn = BooleanArray(n) { i ->
+            power != null && power.values[i] != null && power.values[i]!! >= 0.5
+        }
+        val anyOther = BooleanArray(n) { i -> others.any { it.values[i] != null } }
+        val claimed = BooleanArray(n)
+        val result = mutableListOf<Anomaly>()
+        val telemetryCol = ParameterColumn(
+            ParameterInfo("telemetry", "Телеметрия", null, MetricCategory.POWER),
+            List(n) { null },
+        )
+
+        fun durationOk(start: Int, endExclusive: Int, minutes: Int): Boolean =
+            ctx.step.multipliedBy((endExclusive - start).toLong()) >= Duration.ofMinutes(minutes.toLong())
+
+        fun emit(kind: String, title: String, description: String, start: Int, endExclusive: Int, col: ParameterColumn, value: Double? = null) {
+            for (i in start until endExclusive) claimed[i] = true
+            result += ctx.anomaly(col, start, value, Severity.WARNING, kind, title, description)
+        }
+
+        fun runs(mask: BooleanArray): List<Pair<Int, Int>> {
+            val out = mutableListOf<Pair<Int, Int>>()
+            var start = -1
+            for (i in mask.indices) {
+                if (mask[i]) {
+                    if (start < 0) start = i
+                } else if (start >= 0) {
+                    out += start to i
+                    start = -1
+                }
+            }
+            if (start >= 0) out += start to mask.size
+            return out
+        }
+
+        fun hasDataBefore(start: Int) = (0 until start).any { !allNull[it] }
+        fun hasDataAfter(end: Int) = (end until n).any { !allNull[it] }
+
+        // Внутренний разрыв — раньше all_channels, чтобы не перекрывать telemetry_gap.
+        for ((start, end) in runs(allNull)) {
+            if (start == 0 || end >= n) continue
+            if (!hasDataBefore(start) || !hasDataAfter(end)) continue
+            if (durationOk(start, end, GAP_TELEMETRY_MIN_MINUTES)) {
+                val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                emit(
+                    "telemetry_gap", "Разрыв телеметрии",
+                    "Пауза в телеметрии ≈$mins мин при данных до и после.", start, end, telemetryCol,
                 )
             }
         }
 
-        // Пропадание питания: короткое — информационное, дольше 2 минут — предупреждение.
-        col(P.POWER)?.let { c ->
-            out += ctx.episodes(c, { _, v -> v < 0.5 }, report = ReportAt.END) { i, v, duration ->
-                val long = duration >= Duration.ofMinutes(2)
-                // ≈ минимальная оценка: с учётом шага интервалов фактическая длительность может быть больше.
-                ctx.anomaly(c, i, v, if (long) Severity.WARNING else Severity.INFO, "power", "Пропадание питания",
-                    "Прибор сообщил об отключении основного питания" +
-                        if (long) " (≈${duration.toMinutes()} мин)." else " (кратковременно).")
+        for ((start, end) in runs(BooleanArray(n) { i -> allNull[i] && !claimed[i] })) {
+            if (durationOk(start, end, GAP_ALL_CHANNELS_MIN_MINUTES)) {
+                val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                emit(
+                    "data_gap_all_channels_unavailable", "Машина не на связи",
+                    "Нет данных ни по одному каналу ≈$mins мин.", start, end, telemetryCol,
+                )
             }
         }
 
-        // Напряжение бортсети/аккумулятора — только на работающем двигателе и дольше 5 минут.
-        val voltageColumns = columns.filter { c ->
-            c.parameter.name == P.BATTERY_VOLTAGE ||
-                (c.parameter.name != P.POWER && listOf("напряж", "volt", "аккум", "батар", "бортсет").any { it in "${c.parameter.name} ${c.parameter.caption}".lowercase() })
-        }
-        voltageColumns.forEach { c ->
-            val present = c.values.filterNotNull().filter { it >= 5 }.sorted()
-            if (present.isEmpty()) return@forEach
-            val median = present[present.size / 2]
-            val (low, critical, high) = if (median > 18) Triple(24.0, 22.0, 30.5) else Triple(12.0, 11.0, 15.0)
-            out += ctx.episodes(
-                c, { i, v -> v >= 5 && (v < low || v > high) && engineRunning(i, 500.0) },
-                minDuration = Duration.ofMinutes(5),
-            ) { i, v, _ ->
-                val severity = if (v < critical || v > high + 1.5) Severity.CRITICAL else Severity.WARNING
-                val what = if (v < low) "ниже ${fmt(low)} В — возможна неисправность генератора или АКБ" else "выше ${fmt(high)} В — перезаряд"
-                ctx.anomaly(c, i, v, severity, "volt", "Напряжение вне нормы",
-                    "${c.parameter.caption}: ${fmt(v)} В на работающем двигателе, $what.")
+        val signalMask = BooleanArray(n) { i -> powerOn[i] && othersNull[i] && !claimed[i] }
+        for ((start, end) in runs(signalMask)) {
+            if (durationOk(start, end, GAP_SIGNAL_MIN_MINUTES)) {
+                val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                emit(
+                    "data_gap_signal_unavailable", "Нет сигнала",
+                    "Питание есть, остальные каналы молчат ≈$mins мин.", start, end, power ?: telemetryCol, 1.0,
+                )
             }
         }
 
-        // Перегрев двигателя.
-        col(P.COOLANT_TEMP, "охл", "coolant")?.let { c ->
-            out += ctx.episodes(c, { _, v -> v > 100 }, minDuration = Duration.ofMinutes(2)) { i, v, _ ->
-                ctx.anomaly(c, i, v, if (v > 105) Severity.CRITICAL else Severity.WARNING, "overheat", "Перегрев двигателя",
-                    "Температура охлаждающей жидкости ${fmt(v)} °C (норма до 100 °C).")
-            }
-        }
-
-        // Низкое давление масла на работающем двигателе (0 — нет данных с датчика).
-        col(P.OIL_PRESSURE, "давление масла")?.let { oil ->
-            if (rpm == null) return@let
-            out += ctx.episodes(oil, { i, v -> v > 0 && v < 100 && engineRunning(i, 800.0) }, minDuration = Duration.ofMinutes(1)) { i, v, _ ->
-                ctx.anomaly(oil, i, v, Severity.CRITICAL, "oil", "Низкое давление масла",
-                    "Давление масла ${fmt(v)} кПа при ${fmt(rpm.values[i] ?: 0.0)} об/мин. Проверьте уровень масла.")
-            }
-        }
-        // Низкое давление в тормозных контурах: дольше 10 минут на работающем двигателе
-        // (после запуска давление набирается несколько минут).
-        if (rpm != null) {
-            listOfNotNull(col(P.BRAKE_PRESSURE_1), col(P.BRAKE_PRESSURE_2)).forEach { brake ->
-                out += ctx.episodes(brake, { i, v -> v < 550 && engineRunning(i, 600.0) }, minDuration = Duration.ofMinutes(10)) { i, v, _ ->
-                    ctx.anomaly(brake, i, v, Severity.WARNING, "brake", "Низкое давление в тормозной системе",
-                        "${brake.parameter.caption}: ${fmt(v)} кПа при работающем двигателе дольше 10 минут (обычно 600–1050 кПа).")
+        if (gpsSpeed != null) {
+            val gpsMask = BooleanArray(n) { i -> gpsSpeed.values[i] == null && anyOther[i] && !claimed[i] }
+            for ((start, end) in runs(gpsMask)) {
+                if (durationOk(start, end, GAP_GPS_MIN_MINUTES)) {
+                    val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                    emit(
+                        "data_gap_gps_unavailable", "Нет GPS",
+                        "Скорость GPS не передавалась ≈$mins мин при других данных.", start, end, gpsSpeed,
+                    )
                 }
             }
         }
-        return out
-    }
 
-    private fun fuelDrop(ctx: Ctx, c: ParameterColumn, window: Duration = Duration.ofMinutes(15), minDrop: Double = 25.0): List<Anomaly> {
-        val result = mutableListOf<Anomaly>()
-        var windowStart = 0
-        var cooldownUntil: LocalDateTime? = null
-        for (i in c.values.indices) {
-            val v = c.values[i] ?: continue
-            while (Duration.between(ctx.times[windowStart], ctx.times[i]) > window) windowStart++
-            if (cooldownUntil != null && ctx.times[i].isBefore(cooldownUntil)) continue
-            val peak = (windowStart until i).mapNotNull { c.values[it] }.maxOrNull() ?: continue
-            if (peak - v >= minDrop) {
-                result += ctx.anomaly(c, i, v, Severity.CRITICAL, "drop", "Резкое падение уровня топлива",
-                    "Уровень упал с ${fmt(peak)} до ${fmt(v)} ${c.parameter.unit.orEmpty()} (−${fmt(peak - v)}) за ≤15 мин. Возможен слив.")
-                cooldownUntil = ctx.times[i].plusMinutes(60)
+        for (c in columns) {
+            if (c === power) continue
+            val mask = BooleanArray(n) { i ->
+                c.values[i] == null && columns.any { it !== c && it.values[i] != null } && !claimed[i]
+            }
+            for ((start, end) in runs(mask)) {
+                if (durationOk(start, end, GAP_CHANNEL_MIN_MINUTES)) {
+                    val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                    emit(
+                        "data_gap_channel_unavailable", "Нет данных с датчика",
+                        "${c.parameter.caption} молчит ≈$mins мин при других данных.", start, end, c,
+                    )
+                }
             }
         }
-        return result
+
+        val partialMask = BooleanArray(n) { i ->
+            if (claimed[i]) return@BooleanArray false
+            val nulls = columns.count { it.values[i] == null }
+            val lives = columns.size - nulls
+            lives > 0 && nulls > 0 && nulls >= maxOf(1, columns.size / 2)
+        }
+        for ((start, end) in runs(partialMask)) {
+            if (durationOk(start, end, GAP_PARTIAL_MIN_MINUTES)) {
+                val mins = ctx.step.multipliedBy((end - start).toLong()).toMinutes()
+                emit(
+                    "data_gap", "Пропуск данных",
+                    "Часть каналов без данных ≈$mins мин.", start, end, telemetryCol,
+                )
+            }
+        }
+
+        return result.sortedWith(compareBy({ GAP_RANK[it.kind] ?: 99 }, { it.eventTime }, { it.id }))
     }
 
     private enum class ReportAt { START, END }
 
     private class Ctx(val t: VehicleTelemetry, val times: List<LocalDateTime>) {
-        private val step: Duration = Duration.between(times[0], times[1])
+        val step: Duration = Duration.between(times[0], times[1])
 
-        /**
-         * Одна аномалия на каждую непрерывную серию интервалов, где выполняется условие,
-         * если серия длится не меньше [minDuration]. Интервал без данных прерывает серию.
-         * [build] получает индекс начала серии, значение в нём и длительность серии.
-         */
         fun episodes(
             c: ParameterColumn,
             condition: (index: Int, value: Double) -> Boolean,
@@ -172,8 +246,7 @@ class BaselineAnomalyDetector : AnomalyDetector {
             var reported = false
             fun close(endExclusive: Int) {
                 if (runStart >= 0 && !reported && report == ReportAt.END) {
-                    // Длительность — от начала первого до начала последнего интервала серии: одиночный интервал = 0.
-                val duration = step.multipliedBy((endExclusive - 1 - runStart).toLong())
+                    val duration = step.multipliedBy((endExclusive - 1 - runStart).toLong())
                     if (duration >= minDuration) result += build(runStart, c.values[runStart]!!, duration)
                 }
                 runStart = -1
@@ -181,7 +254,10 @@ class BaselineAnomalyDetector : AnomalyDetector {
             }
             for (i in c.values.indices) {
                 val v = c.values[i]
-                if (v == null || !condition(i, v)) { close(i); continue }
+                if (v == null || !condition(i, v)) {
+                    close(i)
+                    continue
+                }
                 if (runStart < 0) runStart = i
                 val duration = step.multipliedBy((i - runStart + 1).toLong())
                 if (report == ReportAt.START && !reported && duration >= minDuration) {
@@ -193,23 +269,53 @@ class BaselineAnomalyDetector : AnomalyDetector {
             return result
         }
 
-        fun anomaly(c: ParameterColumn, i: Int, value: Double, severity: Severity, kind: String, title: String, description: String) =
-            Anomaly(
-                id = "rule|$kind|${t.vehicle.id}|${c.parameter.name}|${times[i]}",
-                vehicleId = t.vehicle.id,
-                vehicleName = t.vehicle.label,
-                category = c.parameter.category,
-                parameterName = c.parameter.name,
-                parameterCaption = c.parameter.caption,
-                eventTime = times[i].toString(),
-                detectedAt = System.currentTimeMillis(),
-                severity = severity,
-                title = title,
-                description = description,
-                value = value,
-                source = "Базовые правила",
-            )
+        fun anomaly(
+            c: ParameterColumn,
+            i: Int,
+            value: Double?,
+            severity: Severity,
+            kind: String,
+            title: String,
+            description: String,
+        ) = Anomaly(
+            id = "rule|$kind|${t.vehicle.id}|${c.parameter.name}|${times[i]}",
+            vehicleId = t.vehicle.id,
+            vehicleName = t.vehicle.label,
+            category = c.parameter.category,
+            parameterName = c.parameter.name,
+            parameterCaption = c.parameter.caption,
+            eventTime = times[i].toString(),
+            detectedAt = System.currentTimeMillis(),
+            severity = severity,
+            title = title,
+            description = description,
+            value = value,
+            source = "Базовые правила",
+        )
     }
 
     private fun fmt(v: Double) = if (abs(v - Math.round(v)) < 0.05) Math.round(v).toString() else "%.1f".format(v)
+
+    companion object {
+        private const val TOWING_MIN_SPEED = 5.0
+        private const val TOWING_MAX_RPM = 400.0
+        private const val TOWING_MIN_MINUTES = 3
+        private const val SPEED_WITHOUT_MIN_KMH = 3.0
+        private const val SPEED_WITHOUT_MAX_KM = 0.1
+        private const val SPEED_WITHOUT_MIN_MINUTES = 5
+        private const val GAP_ALL_CHANNELS_MIN_MINUTES = 10
+        private const val GAP_SIGNAL_MIN_MINUTES = 10
+        private const val GAP_TELEMETRY_MIN_MINUTES = 60
+        private const val GAP_GPS_MIN_MINUTES = 15
+        private const val GAP_CHANNEL_MIN_MINUTES = 30
+        private const val GAP_PARTIAL_MIN_MINUTES = 15
+        private val GAP_RANK = mapOf(
+            "telemetry_gap" to 0,
+            "data_gap_all_channels_unavailable" to 1,
+            "data_gap_signal_unavailable" to 2,
+            "data_gap_gps_unavailable" to 3,
+            "data_gap_channel_unavailable" to 4,
+            "data_gap" to 5,
+        )
+    }
 }

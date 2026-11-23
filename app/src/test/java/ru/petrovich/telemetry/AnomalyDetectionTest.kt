@@ -23,7 +23,7 @@ class AnomalyDetectionTest {
         assertEquals(MetricCategory.entries.toSet(), t.tables.keys)
         t.tables.values.forEach { table -> table.columns.forEach { assertEquals(table.timestamps.size, it.values.size) } }
         val features = FeatureExtractor.extract(t)
-        assertEquals(7, features.featureNames.size)
+        assertEquals(8, features.featureNames.size)
         assertEquals(t.tables.values.first().timestamps.size, features.rows.size)
     }
 

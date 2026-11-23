@@ -77,6 +77,8 @@ OIL_PRESSURE = "PressureOIL"
 BRAKE_PRESSURE_1 = "PressureVSBC1"
 BRAKE_PRESSURE_2 = "PressureVSBC2"
 SPEED = "Speed"
+SPEED_CAN = "SpeedCAN"
+GPS_SPEED = "GpsSpeed"
 BATTERY_VOLTAGE = "BattaryVOLTAGE"  # так в схеме AutoGRAPH (sic)
 
 # Параметры-состояния: ноль в них — значимое значение (выключено), а не отсутствие датчика.
@@ -108,7 +110,8 @@ CURATED: list[ParameterSpec] = [
     ParameterSpec("GazLOAD", _E, "Педаль газа"),
 
     ParameterSpec(SPEED, _M, "Скорость"),
-    ParameterSpec("SpeedCAN", _M, "Скорость CAN"),
+    ParameterSpec(SPEED_CAN, _M, "Скорость CAN"),
+    ParameterSpec(GPS_SPEED, _M, "Скорость GPS"),
     ParameterSpec(BRAKE_PRESSURE_1, _M, "Тормозной контур 1", Aggregation.MIN_NONZERO),
     ParameterSpec(BRAKE_PRESSURE_2, _M, "Тормозной контур 2", Aggregation.MIN_NONZERO),
 ]

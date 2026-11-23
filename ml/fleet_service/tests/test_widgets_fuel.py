@@ -73,3 +73,36 @@ def test_refuel_is_level_rise_not_upvol():
     day = aggregate(_fuel_telemetry(levels, ups, start=start), start, start + timedelta(days=1))
     assert abs(day.fuel - 2.0) < 0.01
     assert day.refuels == 1
+
+
+def test_multistep_fill_is_one_refuel():
+    """ДУТ пишет заливку несколькими точками — это одна заправка, не N скачков >1 л."""
+    start = datetime(2026, 11, 19, 8, 0, 0)
+    levels = [40.0, 55.0, 70.0, 68.0]
+    day = aggregate(_fuel_telemetry(levels, start=start), start, start + timedelta(days=1))
+    assert day.refuels == 1
+
+
+def test_two_fills_same_day_are_two_refuels():
+    start = datetime(2026, 11, 19, 8, 0, 0)
+    # 100→150, расход, потом 140→190 — две заправки.
+    levels = [100.0, 150.0, 145.0, 140.0, 190.0, 188.0]
+    day = aggregate(_fuel_telemetry(levels, start=start), start, start + timedelta(days=1))
+    assert day.refuels == 2
+
+
+def test_sensor_glitch_drop_over_tank_is_ignored():
+    """Скачок 200→0 между точками — не 200 л расхода, а обрыв ДУТ."""
+    start = datetime(2026, 11, 19, 8, 0, 0)
+    levels = [200.0, 0.0, 198.0, 196.0]
+    day = aggregate(_fuel_telemetry(levels, start=start), start, start + timedelta(days=1))
+    assert abs(day.fuel - 2.0) < 0.01
+
+
+def test_dut_chatter_drop_and_recover_is_not_consumption():
+    """100→40→100 за минуты — дребезг, не 60 л расхода (иначе «день» > «недели»)."""
+    start = datetime(2026, 11, 19, 8, 0, 0)
+    levels = [100.0, 40.0, 42.0, 95.0, 98.0, 96.0]
+    day = aggregate(_fuel_telemetry(levels, start=start), start, start + timedelta(days=1))
+    # 98→96 = 2 л реального расхода; просадка 100→40 с возвратом отброшена.
+    assert abs(day.fuel - 2.0) < 0.01

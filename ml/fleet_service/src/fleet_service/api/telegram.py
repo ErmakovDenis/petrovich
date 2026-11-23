@@ -23,6 +23,7 @@ from ..schemas.telegram import (
     Subscription,
     TelegramChats,
     WeeklyReport,
+    expand_muted_kinds,
 )
 from ..store.repository import AnomalyFilter, AnomalyRepository
 from ..telegram.links import Link, TelegramLinks
@@ -237,7 +238,8 @@ async def problems(
         user.schema_id,
         AnomalyFilter(
             vehicle_ids=vehicles, status="open", from_utc=since, severities=_AT_LEAST[lists.min_severity],
-            exclude_kinds=sub.muted_kinds, id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
+            exclude_kinds=expand_muted_kinds(sub.muted_kinds), id_prefix=id_prefix,
+            exclude_id_prefix=exclude_id_prefix,
         ),
         limit or lists.page_size, offset, critical_first=lists.order == "severity",
     )

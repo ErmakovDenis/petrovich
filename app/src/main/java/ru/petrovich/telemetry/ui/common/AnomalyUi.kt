@@ -40,8 +40,16 @@ fun Severity.softColor(): Color = with(Petrovich.colors) {
 
 val Anomaly.isNew: Boolean get() = resolution == null && !acknowledged
 
+/** Старый kind правил `drain` и API/правил `fuel_drain` — один mute. */
+private fun Set<String>.mutes(kind: String): Boolean {
+    if (kind in this) return true
+    if (kind == "fuel_drain" && "drain" in this) return true
+    if (kind == "drain" && "fuel_drain" in this) return true
+    return false
+}
+
 /** Выключенный в настройках тип (слив, напряжение и т.д.) не показываем и не присылаем. */
-fun Anomaly.isShown(mutedKinds: Set<String>): Boolean = kind !in mutedKinds
+fun Anomaly.isShown(mutedKinds: Set<String>): Boolean = !mutedKinds.mutes(kind)
 
 fun List<Anomaly>.shown(mutedKinds: Set<String>): List<Anomaly> =
     if (mutedKinds.isEmpty()) this else filter { it.isShown(mutedKinds) }
@@ -96,7 +104,7 @@ fun Anomaly.headline(): String {
     val v = value
     val n = v?.formatValue()
     return when (kind) {
-        "drain" -> if (n != null) "Вероятный слив: −$n л" else "Вероятный слив топлива"
+        "drain", "fuel_drain" -> if (n != null) "Вероятный слив: −$n л" else "Вероятный слив топлива"
         "drop" -> if (n != null) {
             // В value у drop — уровень после падения; объём слива берём из описания «(−N)», иначе показываем уровень.
             val drop = Regex("""[−\-](\d+[.,]?\d*)""").find(description)?.groupValues?.getOrNull(1)?.replace(',', '.')
@@ -133,7 +141,7 @@ fun Anomaly.advice(): String = when (kind) {
     "overheat" -> "Остановите машину и проверьте уровень охлаждающей жидкости и термостат. Не эксплуатируйте с перегревом."
     "oil" -> "Проверьте уровень масла и датчик давления. Если давление действительно низкое — не эксплуатируйте машину."
     "brake" -> "Проверьте пневмосистему и датчик давления в тормозных контурах."
-    "nodata" -> "Датчик не передаёт данные. Проверьте подключение датчика и напомните механику — без этого Петрович не увидит топливо по этой машине."
+    "nodata", "data_gap_channel_unavailable" -> "Датчик не передаёт данные. Проверьте подключение датчика и напомните механику — без этого Петрович не увидит топливо по этой машине."
     else -> "Посмотрите график и уточните у водителя, что происходило в это время."
 }
 

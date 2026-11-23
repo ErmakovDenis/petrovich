@@ -268,7 +268,7 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
 @Composable
 private fun MessageBubble(msg: ChatMessage, onOpenCard: (String) -> Unit) {
     val c = Petrovich.colors
-    // Сообщения владельца — пузырём справа; ответ Петровича — без пузыря, с аватаром (3.11).
+    // Владелец — акцент справа; Петрович — светлый пузырь слева с аватаром (контраст к bg).
     if (msg.author == Author.USER) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
             Surface(
@@ -285,7 +285,19 @@ private fun MessageBubble(msg: ChatMessage, onOpenCard: (String) -> Unit) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         PetrovichAvatar()
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(msg.text, style = MaterialTheme.typography.bodyMedium, color = if (msg.isError) c.high else c.ink)
+            Surface(
+                color = c.surface,
+                contentColor = if (msg.isError) c.high else c.ink,
+                shape = RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp),
+                modifier = Modifier.widthIn(max = 320.dp),
+            ) {
+                Text(
+                    msg.text,
+                    Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (msg.isError) c.high else c.ink,
+                )
+            }
             if (msg.openAnomalyId != null) {
                 SoftButton(
                     msg.actionLabel ?: "Открыть карточку", onClick = { onOpenCard(msg.openAnomalyId) },
@@ -367,6 +379,17 @@ private fun TypingBubble() {
     val c = Petrovich.colors
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
         PetrovichAvatar()
-        Text("Петрович печатает…", style = MaterialTheme.typography.bodySmall, color = c.muted)
+        Surface(
+            color = c.surface,
+            contentColor = c.muted,
+            shape = RoundedCornerShape(topStart = 6.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 18.dp),
+        ) {
+            Text(
+                "Петрович печатает…",
+                Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = c.muted,
+            )
+        }
     }
 }

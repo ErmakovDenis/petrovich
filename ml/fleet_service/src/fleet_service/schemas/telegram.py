@@ -27,13 +27,28 @@ class LinkResponse(CamelModel):
     expires_at: int
 
 
-# События базовых правил (Anomaly.kind), которые можно выключить в боте и в приложении. У аналитики типы свои — они
-# приходят по важности.
+# События (Anomaly.kind) API 1 курса — те же в fallback-правилах. Порядок как в TELEGRAM_KINDS / texts.py.
 KINDS = {
-    "drain": "Слив топлива", "drop": "Резкое падение уровня топлива", "overheat": "Перегрев двигателя",
-    "oil": "Низкое давление масла", "brake": "Низкое давление в тормозной системе", "volt": "Напряжение вне нормы",
-    "power": "Пропадание питания",
+    "fuel_drain": "Слив топлива",
+    "towing": "Буксировка",
+    "speed_without_movement": "Скорость без движения",
+    "data_gap": "Пропуск данных",
+    "data_gap_gps_unavailable": "Нет GPS",
+    "data_gap_channel_unavailable": "Нет данных с датчика",
+    "data_gap_all_channels_unavailable": "Машина не на связи",
+    "data_gap_signal_unavailable": "Нет сигнала",
+    "telemetry_gap": "Разрыв телеметрии",
 }
+
+
+def expand_muted_kinds(kinds: list[str] | set[str]) -> list[str]:
+    """drain (старые правила) и fuel_drain — один mute."""
+    out = set(kinds)
+    if "drain" in out:
+        out.add("fuel_drain")
+    if "fuel_drain" in out:
+        out.add("drain")
+    return list(out)
 
 
 class ListSettings(CamelModel):

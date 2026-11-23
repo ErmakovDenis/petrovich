@@ -332,7 +332,7 @@ class AnomalyRepository:
         return await self.run(work)
 
     async def save_widget_stats(self, schema_id: str, stats: list[DailyVehicleStats]) -> None:
-        """Сохраняет готовые дни. Закрытые дни пересчитываются только при первом заполнении."""
+        """Сохраняет готовые дни (upsert): фон может пересчитать уже известные сутки."""
         def work(conn: Connection) -> None:
             for item in stats:
                 values = {

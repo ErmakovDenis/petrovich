@@ -49,7 +49,10 @@ class AnomalyWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         if (!prefs.isDailyReportDueAt(now.toLocalTime())) return
         val anomalies = ServiceLocator.anomalyStore.anomalies.value.shown(prefs.mutedKinds)
         val vehicleCount = runCatching { ServiceLocator.telemetry.vehicles().size }.getOrNull()?.takeIf { it > 0 }
-        ServiceLocator.notifier.notifyDailyReport(HomeData(anomalies, vehicleCount, scanned = true, today = today))
+        // Доклад в Telegram идёт отдельно; OS-push — только если не выключили из‑за бота.
+        if (prefs.shouldSendAppPush()) {
+            ServiceLocator.notifier.notifyDailyReport(HomeData(anomalies, vehicleCount, scanned = true, today = today))
+        }
         ServiceLocator.settings.update { it.copy(lastReportDate = today.toString()) }
     }
 

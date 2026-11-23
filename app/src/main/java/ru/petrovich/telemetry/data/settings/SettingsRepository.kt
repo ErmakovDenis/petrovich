@@ -35,6 +35,13 @@ data class AppSettings(
     val widgetLayout: String = "",
     val pushCritical: Boolean = true,
     val pushWarning: Boolean = true,
+    /**
+     * Системные push с телефона. Выключить можно только при [telegramLinked] — иначе дубли с ботом.
+     * Без Telegram push всегда идут, даже если здесь false.
+     */
+    val appPushEnabled: Boolean = true,
+    /** Есть хотя бы один подключённый чат бота (кэш с последнего опроса стенда). */
+    val telegramLinked: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** Когда последняя проверка данных завершилась успешно (epoch millis); 0 — ещё не проверяли. */
     val lastScanAt: Long = 0,
@@ -136,6 +143,11 @@ data class AppSettings(
     val anomaliesViaApi: Boolean get() = !demoMode && anomalyApiEnabled && anomalyApiUser.isNotBlank() && anomalyApiPassword.isNotBlank()
 
     /**
+     * Слать ли OS-push с приложения: без Telegram — всегда да; с подключённым ботом — по [appPushEnabled].
+     */
+    fun shouldSendAppPush(): Boolean = appPushEnabled || !telegramLinked
+
+    /**
      * Местное [now] попадает в тихие часы. Как у Telegram-бота: некритичное в это время не присылается,
      * срочное — приходит. Окно через полночь (22:00–07:00) считается; одинаковые границы и выключенная
      * настройка — тихих часов нет.
@@ -181,6 +193,8 @@ class SettingsRepository(private val context: Context) {
         val widgetLayout = stringPreferencesKey("widget_layout")
         val pushCritical = booleanPreferencesKey("push_critical")
         val pushWarning = booleanPreferencesKey("push_warning")
+        val appPushEnabled = booleanPreferencesKey("app_push_enabled")
+        val telegramLinked = booleanPreferencesKey("telegram_linked")
         val themeMode = stringPreferencesKey("theme_mode")
         val lastScanAt = longPreferencesKey("last_scan_at")
         val reportTime = stringPreferencesKey("report_time")
@@ -234,6 +248,8 @@ class SettingsRepository(private val context: Context) {
         widgetLayout = this[Keys.widgetLayout].orEmpty(),
         pushCritical = this[Keys.pushCritical] ?: true,
         pushWarning = this[Keys.pushWarning] ?: true,
+        appPushEnabled = this[Keys.appPushEnabled] ?: true,
+        telegramLinked = this[Keys.telegramLinked] ?: false,
         lastScanAt = this[Keys.lastScanAt] ?: 0,
         themeMode = ThemeMode.entries.firstOrNull { it.name == this[Keys.themeMode] } ?: ThemeMode.SYSTEM,
         reportTime = this[Keys.reportTime] ?: "08:00",
@@ -293,6 +309,8 @@ class SettingsRepository(private val context: Context) {
             p[Keys.widgetLayout] = new.widgetLayout
             p[Keys.pushCritical] = new.pushCritical
             p[Keys.pushWarning] = new.pushWarning
+            p[Keys.appPushEnabled] = new.appPushEnabled
+            p[Keys.telegramLinked] = new.telegramLinked
             p[Keys.themeMode] = new.themeMode.name
             p[Keys.lastScanAt] = new.lastScanAt
             p[Keys.reportTime] = new.reportTime

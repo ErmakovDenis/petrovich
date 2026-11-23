@@ -40,11 +40,13 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TimePickerDefaults
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import ru.petrovich.telemetry.util.runCatchingCancellable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -99,6 +101,10 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
     var quietHoursDialog by remember { mutableStateOf(false) }
     var notificationExample by remember { mutableStateOf(false) }
     var connectionHelp by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        runCatchingCancellable { syncTelegramLinked() }
+    }
 
     Scaffold(topBar = { AppTopBar("Настройки") }, containerColor = c.bg) { padding ->
         val s = settings ?: return@Scaffold
@@ -171,8 +177,20 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                 }
             }
 
-            SectionLabel("Срочные уведомления")
+            SectionLabel("Уведомления на телефоне")
             Card {
+                SwitchRow(
+                    "Push с приложения",
+                    if (s.telegramLinked) {
+                        "Выключите, если уже получаете события в Telegram — тогда не будет дублей"
+                    } else {
+                        "Пока Telegram не подключён, push всегда идут с телефона"
+                    },
+                    checked = if (s.telegramLinked) s.appPushEnabled else true,
+                    onChecked = { v -> save { it.copy(appPushEnabled = v) } },
+                    enabled = s.telegramLinked,
+                )
+                HorizontalDivider(color = c.line)
                 SwitchRow(
                     "Не больше 3 в день", "Остальное — в докладе",
                     s.limitDailyPush, onChecked = { v -> save { it.copy(limitDailyPush = v) } },
@@ -276,7 +294,14 @@ private fun DayToggle(day: DayOfWeek, on: Boolean, modifier: Modifier, onClick: 
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit, onClick: (() -> Unit)? = null) {
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+) {
     val c = Petrovich.colors
     Row(Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Column(
@@ -287,7 +312,9 @@ private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onCheck
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.muted)
         }
         Switch(
-            checked = checked, onCheckedChange = onChecked,
+            checked = checked,
+            onCheckedChange = onChecked,
+            enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.surface, uncheckedTrackColor = c.line, uncheckedThumbColor = c.surface, uncheckedBorderColor = c.line),
         )
     }

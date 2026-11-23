@@ -169,7 +169,8 @@ class TelegramNotifier:
             day_start = _ms(midnight - timedelta(minutes=link.utc_offset_minutes))
             left = max(0, sub.daily_limit - await self._links.delivered_since(link.chat_id, day_start))
         severities = {v.value for v in sub.severities()}
-        muted = set(sub.muted_kinds)
+        from ..schemas.telegram import expand_muted_kinds
+        muted = set(expand_muted_kinds(sub.muted_kinds))
         last, skipped = await self._repeats(link, ids, now)
         window = (sub.repeat_hours or 0) * HOUR_MS
 

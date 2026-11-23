@@ -40,9 +40,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.anomaly.Anomaly
 import ru.petrovich.telemetry.anomaly.VehicleActivity
@@ -63,6 +60,8 @@ import ru.petrovich.telemetry.ui.common.resolutionLabel
 import ru.petrovich.telemetry.ui.common.softColor
 import ru.petrovich.telemetry.ui.common.time
 import ru.petrovich.telemetry.ui.common.title
+import ru.petrovich.telemetry.ui.home.WidgetPeriod
+import ru.petrovich.telemetry.ui.home.loadVehiclePeriodTotals
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Duration
@@ -70,9 +69,10 @@ import java.time.LocalDateTime
 import androidx.compose.foundation.layout.PaddingValues
 
 private val CardPresets = listOf(
+    // Те же окна, что у виджетов сводки (календарные сутки с 00:00), не lastDays(7) с середины дня.
     PeriodPreset("today", "Сегодня") { TimeRange.today() },
-    PeriodPreset("week", "Неделя") { TimeRange.lastDays(7) },
-    PeriodPreset("month", "Месяц") { TimeRange.lastDays(30) },
+    PeriodPreset("week", "Неделя") { WidgetPeriod.WEEK.toRange() },
+    PeriodPreset("month", "Месяц") { WidgetPeriod.MONTH.toRange() },
 )
 
 /**
@@ -123,26 +123,21 @@ fun VehicleCardScreen(
             .onFailure { vehicleLoaded = true; vehicleError = it.message ?: it.toString() }
     }
 
+    // Пресеты по очереди: месяц — десятки кусков AutoGRAPH; параллельно с неделей часто таймаутится → «—».
     LaunchedEffect(vehicleId, vehicle) {
         val v = vehicle ?: return@LaunchedEffect
         statsByPreset = emptyMap()
         presetErrors = emptyMap()
-        val lock = Mutex()
-        CardPresets.forEach { preset ->
-            launch {
-                val range = preset.range()
-                runCatchingCancellable {
-                    computeVehicleStats(
-                        ServiceLocator.telemetry.telemetry(v, range.from, range.to),
-                        range.to,
-                    )
-                }.onSuccess { ready ->
-                    lock.withLock { statsByPreset = statsByPreset + (preset.id to ready) }
-                }.onFailure { e ->
-                    lock.withLock {
-                        presetErrors = presetErrors + (preset.id to (e.message ?: e.toString()))
-                    }
-                }
+        for (preset in CardPresets) {
+            val range = preset.range()
+            runCatchingCancellable {
+                val t = ServiceLocator.telemetry.telemetry(v, range.from, range.to)
+                val totals = loadVehiclePeriodTotals(v.id, range)
+                computeVehicleStats(t, range.to, totals)
+            }.onSuccess { ready ->
+                statsByPreset = statsByPreset + (preset.id to ready)
+            }.onFailure { e ->
+                presetErrors = presetErrors + (preset.id to (e.message ?: e.toString()))
             }
         }
     }
@@ -159,8 +154,12 @@ fun VehicleCardScreen(
         customLoading = true
         customStats = null
         customError = null
-        runCatchingCancellable { ServiceLocator.telemetry.telemetry(v, range.from, range.to) }
-            .onSuccess { t -> customStats = computeVehicleStats(t, range.to); customLoading = false }
+        runCatchingCancellable {
+            val t = ServiceLocator.telemetry.telemetry(v, range.from, range.to)
+            val totals = loadVehiclePeriodTotals(v.id, range)
+            computeVehicleStats(t, range.to, totals)
+        }
+            .onSuccess { ready -> customStats = ready; customLoading = false }
             .onFailure { e -> customError = e.message ?: e.toString(); customLoading = false }
     }
 
@@ -236,10 +235,32 @@ fun VehicleCardScreen(
                     }
                 } else {
                     val periodLabel = periodWord(selectedPresetId, activeRange())
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        StatTile("в баке", stats?.fuelLevel.formatValue(), stats?.fuelUnit ?: "л", Modifier.weight(1f))
-                        StatTile("пробег", periodLabel, stats?.mileageKm.formatValue(), "км", Modifier.weight(1f))
-                        StatTile("холостой ход", periodLabel, stats?.idleHours?.let { "%.1f".format(it) } ?: "—", "ч", Modifier.weight(1f))
+                    // Расход/пробег/заправки/холостой за период + остаток в баке «сейчас».
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StatTile("расход", periodLabel, stats?.fuelUsedL.formatValue(), "л", Modifier.weight(1f))
+                            StatTile("пробег", periodLabel, stats?.mileageKm.formatValue(), "км", Modifier.weight(1f))
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StatTile(
+                                "заправки",
+                                periodLabel,
+                                stats?.refuels?.toString() ?: "—",
+                                "",
+                                Modifier.weight(1f),
+                            )
+                            StatTile(
+                                "холостой ход",
+                                periodLabel,
+                                stats?.idleHours?.let { "%.1f".format(it) } ?: "—",
+                                "ч",
+                                Modifier.weight(1f),
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            StatTile("в баке", stats?.fuelLevel.formatValue(), stats?.fuelUnit ?: "л", Modifier.weight(1f))
+                            Box(Modifier.weight(1f))
+                        }
                     }
                     error?.let { Text("Не удалось обновить данные: $it", style = MaterialTheme.typography.bodySmall, color = c.med) }
 
@@ -285,7 +306,9 @@ private fun StatTile(label: String, period: String, value: String, unit: String,
         Text(label, style = MaterialTheme.typography.labelSmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(value, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = c.ink)
-            Text(unit, style = MaterialTheme.typography.labelSmall, color = c.muted)
+            if (unit.isNotBlank()) {
+                Text(unit, style = MaterialTheme.typography.labelSmall, color = c.muted)
+            }
         }
         Text(period, style = MaterialTheme.typography.labelSmall, color = c.faint, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -299,7 +322,9 @@ private fun StatTile(label: String, value: String, unit: String, modifier: Modif
         Text(label, style = MaterialTheme.typography.labelSmall, color = c.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(value, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = c.ink)
-            Text(unit, style = MaterialTheme.typography.labelSmall, color = c.muted)
+            if (unit.isNotBlank()) {
+                Text(unit, style = MaterialTheme.typography.labelSmall, color = c.muted)
+            }
         }
         Text("сейчас", style = MaterialTheme.typography.labelSmall, color = c.faint)
     }

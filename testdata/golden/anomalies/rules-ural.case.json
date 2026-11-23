@@ -123,8 +123,8 @@
   },
   "expected": [
     {
-      "id": "rule|drain|ural-1|TankMainFuelDnVol|2026-09-16T08:10",
-      "kind": "drain",
+      "id": "rule|fuel_drain|ural-1|TankMainFuelDnVol|2026-09-16T08:10",
+      "kind": "fuel_drain",
       "severity": "CRITICAL",
       "eventTime": "2026-09-16T08:10",
       "parameterName": "TankMainFuelDnVol",
@@ -133,153 +133,13 @@
       "source": "Базовые правила"
     },
     {
-      "id": "rule|drain|ural-1|TankMainFuelDnVol|2026-09-16T08:14",
-      "kind": "drain",
+      "id": "rule|fuel_drain|ural-1|TankMainFuelDnVol|2026-09-16T08:14",
+      "kind": "fuel_drain",
       "severity": "CRITICAL",
       "eventTime": "2026-09-16T08:14",
       "parameterName": "TankMainFuelDnVol",
       "title": "Слив топлива",
       "value": 12.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|drop|ural-1|TankMainFuelLevel|2026-09-16T07:00",
-      "kind": "drop",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T07:00",
-      "parameterName": "TankMainFuelLevel",
-      "title": "Резкое падение уровня топлива",
-      "value": 260.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|drop|ural-1|TankMainFuelLevel|2026-09-16T09:20",
-      "kind": "drop",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T09:20",
-      "parameterName": "TankMainFuelLevel",
-      "title": "Резкое падение уровня топлива",
-      "value": 220.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|power|ural-1|Power|2026-09-16T06:50",
-      "kind": "power",
-      "severity": "INFO",
-      "eventTime": "2026-09-16T06:50",
-      "parameterName": "Power",
-      "title": "Пропадание питания",
-      "value": 0.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|power|ural-1|Power|2026-09-16T07:30",
-      "kind": "power",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T07:30",
-      "parameterName": "Power",
-      "title": "Пропадание питания",
-      "value": 0.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|power|ural-1|Power|2026-09-16T11:59",
-      "kind": "power",
-      "severity": "INFO",
-      "eventTime": "2026-09-16T11:59",
-      "parameterName": "Power",
-      "title": "Пропадание питания",
-      "value": 0.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|ural-1|BattaryVOLTAGE|2026-09-16T06:30",
-      "kind": "volt",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T06:30",
-      "parameterName": "BattaryVOLTAGE",
-      "title": "Напряжение вне нормы",
-      "value": 23.5,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|ural-1|BattaryVOLTAGE|2026-09-16T09:40",
-      "kind": "volt",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T09:40",
-      "parameterName": "BattaryVOLTAGE",
-      "title": "Напряжение вне нормы",
-      "value": 21.5,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|ural-1|BattaryVOLTAGE|2026-09-16T10:00",
-      "kind": "volt",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T10:00",
-      "parameterName": "BattaryVOLTAGE",
-      "title": "Напряжение вне нормы",
-      "value": 31.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|ural-1|BattaryVOLTAGE|2026-09-16T10:20",
-      "kind": "volt",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T10:20",
-      "parameterName": "BattaryVOLTAGE",
-      "title": "Напряжение вне нормы",
-      "value": 32.5,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|overheat|ural-1|TemperatureCOOL|2026-09-16T07:40",
-      "kind": "overheat",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T07:40",
-      "parameterName": "TemperatureCOOL",
-      "title": "Перегрев двигателя",
-      "value": 101.5,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|overheat|ural-1|TemperatureCOOL|2026-09-16T07:50",
-      "kind": "overheat",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T07:50",
-      "parameterName": "TemperatureCOOL",
-      "title": "Перегрев двигателя",
-      "value": 107.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|oil|ural-1|PressureOIL|2026-09-16T07:00",
-      "kind": "oil",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T07:00",
-      "parameterName": "PressureOIL",
-      "title": "Низкое давление масла",
-      "value": 85.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|brake|ural-1|PressureVSBC1|2026-09-16T06:00",
-      "kind": "brake",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T06:00",
-      "parameterName": "PressureVSBC1",
-      "title": "Низкое давление в тормозной системе",
-      "value": 400.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|brake|ural-1|PressureVSBC2|2026-09-16T10:50",
-      "kind": "brake",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T10:50",
-      "parameterName": "PressureVSBC2",
-      "title": "Низкое давление в тормозной системе",
-      "value": 520.0,
       "source": "Базовые правила"
     }
   ]

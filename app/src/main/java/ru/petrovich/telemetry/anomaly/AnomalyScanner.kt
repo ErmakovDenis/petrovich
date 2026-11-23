@@ -157,6 +157,8 @@ class AnomalyScanner(
         // Выключенный тип не приходит совсем, даже срочный — как в Telegram.
         val fresh = fresh.shown(prefs.mutedKinds)
         if (fresh.isEmpty()) return
+        // Без Telegram push всегда; с ботом — по переключателю (иначе дубли в приложении и в чате).
+        if (!prefs.shouldSendAppPush()) return
         val today = LocalDate.now().toString()
         val sentToday = if (prefs.pushCountDate == today) prefs.pushCountToday else 0
         // В тихие часы и сверх дневного лимита продолжают идти только срочные — остальное видно в «Проблемах».

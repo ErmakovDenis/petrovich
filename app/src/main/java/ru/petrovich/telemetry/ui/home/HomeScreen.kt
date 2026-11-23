@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -478,19 +479,23 @@ private fun ProblemLine(a: Anomaly, onClick: () -> Unit) {
 private fun FleetTiles(settings: ru.petrovich.telemetry.data.settings.AppSettings, onOpenFleet: () -> Unit) {
     val c = Petrovich.colors
     val known = settings.fleetUpdatedAt > 0
-    val offlineValue = if (known) "${settings.fleetOffline}" else "—"
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+        Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         FleetTile(
             "На линии", if (known) "${settings.fleetOnline}" else "—",
             if (known && settings.fleetOnline > 0) c.ok else c.ink,
-            Modifier.weight(1f), onOpenFleet,
+            Modifier.weight(1f).fillMaxHeight(), onOpenFleet,
         )
-        FleetTile("Стоят", if (known) "${settings.fleetIdle}" else "—", c.ink, Modifier.weight(1f), onOpenFleet)
         FleetTile(
-            "Без связи", offlineValue,
+            "Стоят", if (known) "${settings.fleetIdle}" else "—",
+            c.ink, Modifier.weight(1f).fillMaxHeight(), onOpenFleet,
+        )
+        FleetTile(
+            "Без связи", if (known) "${settings.fleetOffline}" else "—",
             if (known && settings.fleetOffline > 0) c.med else c.ink,
-            Modifier.weight(1f), onOpenFleet,
-            valueSize = if (known) 24.sp else 14.sp,
+            Modifier.weight(1f).fillMaxHeight(), onOpenFleet,
         )
     }
 }
@@ -502,11 +507,11 @@ private fun FleetTile(
     valueColor: Color,
     modifier: Modifier,
     onClick: () -> Unit,
-    valueSize: androidx.compose.ui.unit.TextUnit = 24.sp,
 ) {
     val c = Petrovich.colors
     Column(
         modifier
+            .fillMaxHeight()
             .clip(RoundedCornerShape(16.dp))
             .background(c.surface)
             .border(1.dp, c.line, RoundedCornerShape(16.dp))
@@ -514,8 +519,16 @@ private fun FleetTile(
             .padding(horizontal = 12.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        Text(value, fontFamily = Petrovich.display, fontWeight = FontWeight.ExtraBold, fontSize = valueSize, color = valueColor, maxLines = 2)
-        Text(label, style = MaterialTheme.typography.bodySmall, color = c.muted)
+        // Одинаковый кегль у всех трёх плиток (в т.ч. «—»), иначе «Без связи» визуально меньше.
+        Text(
+            value,
+            fontFamily = Petrovich.display,
+            fontWeight = FontWeight.ExtraBold,
+            fontSize = 24.sp,
+            color = valueColor,
+            maxLines = 1,
+        )
+        Text(label, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
     }
 }
 
@@ -673,14 +686,14 @@ private fun FuelWidgetBody(summary: WidgetSummary?, periodLabel: String) {
     if (summary.points.isNotEmpty()) {
         WeekBarsWithBaseline(summary.points, summary.usualDaily())
     }
-    summary.leaders.firstOrNull()?.let { top ->
-        // Сравниваем лидера со средним среди лидеров, не с (сумма парка / 3).
-        val peers = summary.leaders.map { it.value }.filter { it > 0.5 }
+    // На главной — только топ; полный список в детали сводки.
+    summary.leaders.take(3).firstOrNull()?.let { top ->
+        val peers = summary.leaders.take(3).map { it.value }.filter { it > 0.5 }
         val avg = peers.average().takeIf { peers.isNotEmpty() }
         val excess = avg?.let { ((top.value - it) / it * 100.0).takeIf { d -> d > 0.5 } }
         Text(
             buildString {
-                append("Больше всех: ${top.name}")
+                append("Больше всех: ${listOfNotNull(top.name, top.subtitle).joinToString(" · ")}")
                 if (excess != null) append(" — +${formatCount(excess)} %")
             },
             style = MaterialTheme.typography.bodySmall, color = c.ink,

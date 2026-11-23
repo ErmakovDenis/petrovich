@@ -274,7 +274,8 @@ fun AnomalyDetailScreen(
 private fun StatusPill(a: Anomaly, modifier: Modifier = Modifier) {
     val c = Petrovich.colors
     val (text, color, soft) = when {
-        a.kind == "nodata" -> Triple("В работе", c.muted, c.surface2)
+        a.kind == "nodata" || a.kind.startsWith("data_gap") || a.kind == "telemetry_gap" ->
+            Triple("В работе", c.muted, c.surface2)
         a.resolution == Resolution.IN_PROGRESS -> Triple(resolutionLabel(a) ?: "В работе", c.muted, c.surface2)
         a.resolution == Resolution.CONFIRMED -> Triple("Закрыто", c.ok, c.okSoft)
         a.resolution == Resolution.FALSE_ALARM -> Triple(resolutionLabel(a) ?: "Ложная тревога", c.muted, c.surface2)
@@ -288,7 +289,7 @@ private fun StatusPill(a: Anomaly, modifier: Modifier = Modifier) {
  * бак и слив всегда в литрах, напряжение в вольтах, ОЖ в градусах, давление в кПа.
  */
 private fun Anomaly.unitLabel(): String? = when (kind) {
-    "drain", "drop" -> "л"
+    "drain", "drop", "fuel_drain" -> "л"
     "volt" -> "В"
     "overheat" -> "°C"
     "oil", "brake" -> "кПа"
@@ -533,13 +534,14 @@ private fun ActionsBar(
     onOpenResolution: () -> Unit,
 ) {
     val c = Petrovich.colors
-    val urgentDrain = anomaly.isNew && anomaly.severity == Severity.CRITICAL && anomaly.kind in setOf("drain", "drop")
+    val urgentDrain = anomaly.isNew && anomaly.severity == Severity.CRITICAL &&
+        anomaly.kind in setOf("drain", "drop", "fuel_drain")
     Column(
         Modifier.fillMaxWidth().background(c.bg).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         when {
-            anomaly.isNew && anomaly.kind == "nodata" -> {
+            anomaly.isNew && (anomaly.kind == "nodata" || anomaly.kind == "data_gap_channel_unavailable") -> {
                 PrimaryButton("Напомнить механику", onRemindMechanic, Modifier.fillMaxWidth())
                 SoftButton("Машина", onCharts, Modifier.fillMaxWidth())
             }

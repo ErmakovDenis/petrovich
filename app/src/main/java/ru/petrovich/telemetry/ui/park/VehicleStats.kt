@@ -7,15 +7,16 @@ import ru.petrovich.telemetry.anomaly.VehicleActivity
 import ru.petrovich.telemetry.anomaly.classifyActivity
 import ru.petrovich.telemetry.data.MetricCategory
 import ru.petrovich.telemetry.data.VehicleTelemetry
+import ru.petrovich.telemetry.ui.home.WidgetType
+import ru.petrovich.telemetry.ui.home.totalOf
 import ru.petrovich.telemetry.ui.theme.Petrovich
-import java.time.Duration
 import java.time.LocalDateTime
 
 /**
- * То, что честно известно о машине из уже загруженной телеметрии — «в баке», пробег и холостой ход
- * за период, последняя связь и состояние датчика топлива. Ничего не выдумываем: если сигнала для
- * расчёта нет (например, нет параметра оборотов), соответствующее поле — null (см. правило
- * «Только известные данные», стр. 1 макета).
+ * То, что честно известно о машине из уже загруженной телеметрии — «в баке», расход, пробег,
+ * заправки и холостой ход за период, последняя связь и состояние датчика топлива. Ничего не
+ * выдумываем: если сигнала для расчёта нет (например, нет параметра оборотов), соответствующее
+ * поле — null (см. правило «Только известные данные», стр. 1 макета).
  */
 data class VehicleStats(
     val activity: VehicleActivity,
@@ -23,19 +24,30 @@ data class VehicleStats(
     /** Текущий уровень топлива, л — последнее известное значение в периоде. */
     val fuelLevel: Double?,
     val fuelUnit: String?,
+    /**
+     * Расход за период, л — та же формула, что у виджета «Расход топлива»
+     * (падение уровня + fallback ConsumptionCAN). Null — посчитать не из чего.
+     */
+    val fuelUsedL: Double?,
     /** Пробег за период, км — честно посчитан интегрированием скорости по времени между точками. */
     val mileageKm: Double?,
-    /** Часы холостого хода за период (двигатель работает, скорость ~0). Null — нет сигнала оборотов. */
+    /** Число заправок за период по скачкам уровня (как виджет «Заправки»). Null — нет сигнала топлива. */
+    val refuels: Int?,
+    /** Часы холостого хода за период (зажигание + скорость ~0). Null — нет сигнала. */
     val idleHours: Double?,
     /** Передаёт ли датчик топлива данные вообще. Null — в периоде нет ни одной точки по топливу. */
     val fuelSensorOk: Boolean?,
 )
 
-private const val MOVING_SPEED_KMH = 3.0
-private const val IDLE_RPM_THRESHOLD = 250.0
-
-/** Считает [VehicleStats] по телеметрии за уже загруженный период [t.from]..[t.to]. */
-fun computeVehicleStats(t: VehicleTelemetry, now: LocalDateTime = LocalDateTime.now()): VehicleStats {
+/**
+ * Считает [VehicleStats] по телеметрии за [t.from]..[t.to].
+ * [periodTotals] — суммы со стенда (как в сводке «По машинам»); если заданы, расход/пробег/мч берём оттуда.
+ */
+fun computeVehicleStats(
+    t: VehicleTelemetry,
+    now: LocalDateTime = LocalDateTime.now(),
+    periodTotals: ru.petrovich.telemetry.ui.home.VehiclePeriodTotals? = null,
+): VehicleStats {
     val activity = classifyActivity(t, now)
 
     val lastContact = t.tables.values
@@ -51,57 +63,55 @@ fun computeVehicleStats(t: VehicleTelemetry, now: LocalDateTime = LocalDateTime.
         if (!hasColumns) null else fuelColumn?.values?.any { it != null } ?: false
     }
 
-    val motionTable = t.tables[MetricCategory.MOTION]
-    val speedColumn = motionTable?.columns?.firstOrNull { it.parameter.name == "Speed" } ?: motionTable?.columns?.firstOrNull()
-    val mileageKm = speedColumn?.let { col -> motionTable?.let { table -> integrateMileage(table.timestamps, col.values) } }
-
-    val engineTable = t.tables[MetricCategory.ENGINE]
-    val rpmColumn = engineTable?.columns?.firstOrNull { it.parameter.name.contains("otation", ignoreCase = true) || it.parameter.name.contains("rpm", ignoreCase = true) }
-    val idleHours = if (rpmColumn != null && motionTable != null && speedColumn != null) {
-        integrateIdle(motionTable.timestamps, speedColumn.values, rpmColumn.values)
-    } else null
+    val hasSignal = lastContact != null
+    // Стенд (тот же источник, что виджет) важнее локального пересчёта — иначе неделя 80 л vs 12 л.
+    val fuelUsedL: Double?
+    val mileageKm: Double?
+    val idleHours: Double?
+    val refuels: Int?
+    if (periodTotals != null) {
+        fuelUsedL = periodTotals.fuelL.coerceAtLeast(0.0)
+        mileageKm = periodTotals.mileageKm.coerceAtLeast(0.0)
+        idleHours = periodTotals.idleHours.coerceAtLeast(0.0)
+        refuels = periodTotals.refuels.coerceAtLeast(0)
+    } else {
+        val fuelUsedRaw = t.totalOf(WidgetType.FUEL)
+        val mileageRaw = t.totalOf(WidgetType.MILEAGE)
+        val idleRaw = t.totalOf(WidgetType.IDLE)
+        val refuelsRaw = t.totalOf(WidgetType.REFUELS)
+        fuelUsedL = when {
+            fuelUsedRaw > 0.01 -> fuelUsedRaw
+            hasSignal && t.tables.containsKey(MetricCategory.FUEL) -> 0.0
+            else -> null
+        }
+        mileageKm = when {
+            mileageRaw > 0.01 -> mileageRaw
+            hasSignal && t.tables.containsKey(MetricCategory.MOTION) -> 0.0
+            else -> null
+        }
+        idleHours = when {
+            idleRaw > 0.005 -> idleRaw
+            hasSignal && t.tables.containsKey(MetricCategory.POWER) -> 0.0
+            else -> null
+        }
+        refuels = when {
+            refuelsRaw > 0.5 -> refuelsRaw.toInt()
+            hasSignal && t.tables.containsKey(MetricCategory.FUEL) -> 0
+            else -> null
+        }
+    }
 
     return VehicleStats(
         activity = activity,
         lastContact = lastContact,
         fuelLevel = fuelLevel,
         fuelUnit = fuelColumn?.parameter?.unit,
+        fuelUsedL = fuelUsedL,
         mileageKm = mileageKm,
+        refuels = refuels,
         idleHours = idleHours,
         fuelSensorOk = fuelSensorOk,
     )
-}
-
-/** Пробег = сумма (средняя скорость между соседними известными точками) × время между ними. */
-private fun integrateMileage(times: List<LocalDateTime>, speeds: List<Double?>): Double? {
-    if (times.size < 2) return null
-    var km = 0.0
-    var any = false
-    for (i in 0 until times.size - 1) {
-        val a = speeds.getOrNull(i) ?: continue
-        val b = speeds.getOrNull(i + 1) ?: continue
-        val hours = Duration.between(times[i], times[i + 1]).seconds / 3600.0
-        if (hours <= 0 || hours > 1.0) continue // большой разрыв — не додумываем, что было между точками
-        km += (a + b) / 2.0 * hours
-        any = true
-    }
-    return if (any) km else null
-}
-
-/** Холостой ход = время, когда скорость < 3 км/ч, а обороты выше порога (двигатель работает). */
-private fun integrateIdle(times: List<LocalDateTime>, speeds: List<Double?>, rpm: List<Double?>): Double? {
-    if (times.size < 2) return null
-    var hours = 0.0
-    var any = false
-    for (i in 0 until times.size - 1) {
-        val s = speeds.getOrNull(i) ?: continue
-        val r = rpm.getOrNull(i) ?: continue
-        val dt = Duration.between(times[i], times[i + 1]).seconds / 3600.0
-        if (dt <= 0 || dt > 1.0) continue
-        any = true
-        if (s < MOVING_SPEED_KMH && r > IDLE_RPM_THRESHOLD) hours += dt
-    }
-    return if (any) hours else null
 }
 
 fun VehicleActivity.label(): String = when (this) {

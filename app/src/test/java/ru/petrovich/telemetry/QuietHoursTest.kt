@@ -11,6 +11,13 @@ class QuietHoursTest {
     private val night = AppSettings(quietHoursEnabled = true, quietHoursStart = "22:00", quietHoursEnd = "07:00")
 
     @Test
+    fun appPushDependsOnTelegramLink() {
+        assertTrue(AppSettings(appPushEnabled = false, telegramLinked = false).shouldSendAppPush())
+        assertFalse(AppSettings(appPushEnabled = false, telegramLinked = true).shouldSendAppPush())
+        assertTrue(AppSettings(appPushEnabled = true, telegramLinked = true).shouldSendAppPush())
+    }
+
+    @Test
     fun overnightWindowMatchesTelegram() {
         assertTrue(night.isQuietAt(LocalTime.of(22, 0)))
         assertTrue(night.isQuietAt(LocalTime.of(23, 30)))

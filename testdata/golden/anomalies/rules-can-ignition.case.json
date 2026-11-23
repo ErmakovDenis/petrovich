@@ -62,16 +62,5 @@
       }
     }
   },
-  "expected": [
-    {
-      "id": "rule|volt|faw-9|BattaryVOLTAGE|2026-09-16T06:50",
-      "kind": "volt",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T06:50",
-      "parameterName": "BattaryVOLTAGE",
-      "title": "Напряжение вне нормы",
-      "value": 23.0,
-      "source": "Базовые правила"
-    }
-  ]
+  "expected": []
 }
