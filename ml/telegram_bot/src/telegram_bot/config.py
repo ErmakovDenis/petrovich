@@ -22,3 +22,6 @@ class Settings(BaseSettings):
     history_max_messages: int = Field(20, ge=2)
     chat_v2_enabled: bool = False
     log_level: str = "INFO"
+    # Прокси до api.telegram.org (HTTP/SOCKS5), например socks5://user:pass@host:port.
+    # Пусто — напрямую. Нужен, если с сервера Telegram недоступен.
+    proxy_url: SecretStr | None = None
