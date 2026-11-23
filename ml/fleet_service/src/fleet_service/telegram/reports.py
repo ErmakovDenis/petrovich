@@ -17,7 +17,7 @@ from ..config import Settings
 from ..rules.baseline import java_time
 from ..schemas.contract import Severity, Vehicle
 from ..schemas.store import feed_list_filters
-from ..schemas.telegram import DailyReport, NamedCount, ReportEvent, ReportGroup, WeeklyReport
+from ..schemas.telegram import DailyReport, NamedCount, ReportEvent, ReportGroup, WeeklyReport, expand_muted_kinds
 from ..store.repository import AnomalyFilter, AnomalyRepository, Record, to_local
 from .links import Link
 
@@ -78,7 +78,8 @@ class TelegramReports:
             link.schema_id,
             AnomalyFilter(
                 vehicle_ids=ids, from_utc=start_utc, to_utc=end_utc,
-                severities=[s.value for s in sub.severities()], exclude_kinds=sub.muted_kinds,
+                severities=[s.value for s in sub.severities()],
+                exclude_kinds=expand_muted_kinds(sub.muted_kinds),
                 id_prefix=id_prefix, exclude_id_prefix=exclude_id_prefix,
             ),
             self._settings.anomalies_max_limit,

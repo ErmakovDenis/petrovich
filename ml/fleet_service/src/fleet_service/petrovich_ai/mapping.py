@@ -28,6 +28,12 @@ _KIND_CATEGORY = {
     "fuel_drain": MetricCategory.FUEL,
     "towing": MetricCategory.MOTION,
     "speed_without_movement": MetricCategory.MOTION,
+    "data_gap": MetricCategory.POWER,
+    "data_gap_channel_unavailable": MetricCategory.POWER,
+    "data_gap_all_channels_unavailable": MetricCategory.POWER,
+    "data_gap_signal_unavailable": MetricCategory.POWER,
+    "data_gap_gps_unavailable": MetricCategory.POWER,
+    "telemetry_gap": MetricCategory.POWER,
 }
 
 _SEVERITY = {"high": Severity.CRITICAL, "med": Severity.WARNING}

@@ -178,7 +178,9 @@ class PetrovichAgent : ChatAgent {
         vehicleMentioned(q)?.let { vehicle ->
             // Честный ответ: если датчик топлива молчит, не выдумываем расход — так и говорим (3.11).
             val silentSensor = anomalies.firstOrNull {
-                it.vehicleId == vehicle.id && it.kind == "nodata" && it.resolution != Resolution.FALSE_ALARM
+                it.vehicleId == vehicle.id &&
+                    it.kind in setOf("nodata", "data_gap_channel_unavailable") &&
+                    it.resolution != Resolution.FALSE_ALARM
             }
             if (silentSensor != null && FUEL_QUESTION.containsMatchIn(q)) {
                 val since = silentSensor.time?.toLocalDate()?.title() ?: silentSensor.eventTime

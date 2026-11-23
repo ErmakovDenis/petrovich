@@ -553,22 +553,24 @@ def test_settings_toggles_go_to_stand(bot, stand):
     press(bot, "s:va")
     assert stand.subscription["vehicleIds"] is None
     [events] = press(bot, "s:ev").replies
-    assert len(events.buttons) == 8 and events.buttons[2][0].text == "✓ Перегрев двигателя"
-    [events] = press(bot, "s:et:overheat").replies
-    assert stand.subscription["mutedKinds"] == ["overheat"] and events.buttons[2][0].text == "· Перегрев двигателя"
-    assert "6 из 7, выключены: перегрев двигателя" in events.text
+    # 9 видов + «Готово»; towing — 2-я кнопка (индекс 1) после fuel_drain.
+    assert len(events.buttons) == 10 and events.buttons[1][0].text == "✓ Буксировка"
+    [events] = press(bot, "s:et:towing").replies
+    assert stand.subscription["mutedKinds"] == ["towing"] and events.buttons[1][0].text == "· Буксировка"
+    assert "8 из 9, выключены: буксировка" in events.text
     [home] = press(bot, "s:home").replies
-    assert "События: 6 из 7, выключены: перегрев двигателя" in home.text
+    assert "События: 8 из 9, выключены: буксировка" in home.text
     press(bot, "s:offy")
     assert stand.linked is False
 
 
 def test_subscription_helpers():
-    sub = {"vehicleIds": None, "mutedKinds": ["oil"], "dailyLimit": 10, "quietFromHour": 23, "quietToHour": 7}
+    sub = {"vehicleIds": None, "mutedKinds": ["towing"], "dailyLimit": 10, "quietFromHour": 23, "quietToHour": 7}
     assert toggle_vehicle(sub, ["a", "b"], "a")["vehicleIds"] == ["b"]
     assert toggle_vehicle({**sub, "vehicleIds": ["b"]}, ["a", "b"], "a")["vehicleIds"] is None
     assert toggle_vehicle({**sub, "vehicleIds": ["b"]}, ["a", "b"], "b")["vehicleIds"] == []
-    assert toggle_kind(sub, "drain")["mutedKinds"] == ["oil", "drain"] and toggle_kind(sub, "oil")["mutedKinds"] == []
+    assert toggle_kind(sub, "fuel_drain")["mutedKinds"] == ["towing", "fuel_drain"] and \
+        toggle_kind(sub, "towing")["mutedKinds"] == []
     assert next_limit(sub)["dailyLimit"] is None and next_limit({"dailyLimit": None})["dailyLimit"] == 3
     assert (next_quiet(sub)["quietFromHour"], next_quiet(sub)["quietToHour"]) == (None, None)
 

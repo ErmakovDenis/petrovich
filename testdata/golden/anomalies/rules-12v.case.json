@@ -63,56 +63,5 @@
       }
     }
   },
-  "expected": [
-    {
-      "id": "rule|drop|gaz-1|FuelLevelX|2026-09-16T11:00",
-      "kind": "drop",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T11:00",
-      "parameterName": "FuelLevelX",
-      "title": "Резкое падение уровня топлива",
-      "value": 30.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|gaz-1|Vbat|2026-09-16T06:10",
-      "kind": "volt",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T06:10",
-      "parameterName": "Vbat",
-      "title": "Напряжение вне нормы",
-      "value": 11.6,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|gaz-1|Vbat|2026-09-16T06:40",
-      "kind": "volt",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T06:40",
-      "parameterName": "Vbat",
-      "title": "Напряжение вне нормы",
-      "value": 10.5,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|volt|gaz-1|Vbat|2026-09-16T07:40",
-      "kind": "volt",
-      "severity": "CRITICAL",
-      "eventTime": "2026-09-16T07:40",
-      "parameterName": "Vbat",
-      "title": "Напряжение вне нормы",
-      "value": 17.0,
-      "source": "Базовые правила"
-    },
-    {
-      "id": "rule|overheat|gaz-1|CoolantT|2026-09-16T09:20",
-      "kind": "overheat",
-      "severity": "WARNING",
-      "eventTime": "2026-09-16T09:20",
-      "parameterName": "CoolantT",
-      "title": "Перегрев двигателя",
-      "value": 103.0,
-      "source": "Базовые правила"
-    }
-  ]
+  "expected": []
 }

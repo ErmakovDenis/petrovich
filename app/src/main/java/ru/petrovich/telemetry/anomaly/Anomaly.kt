@@ -53,7 +53,7 @@ data class Anomaly(
     /** Когда принято решение, epoch millis — только для аномалий из хранилища стенда. */
     val resolvedAt: Long? = null,
 ) {
-    /** Тип события из id (`rule|<kind>|...`) — drain, power, volt, overheat, oil, brake, drop. */
+    /** Тип события из id (`rule|<kind>|…` / `api|<kind>|…`) — fuel_drain, drop, towing, data_gap* и др. */
     val kind: String get() = id.split('|').getOrNull(1).orEmpty()
 
     /** id выдал стенд (хранилище, время начала в UTC с «Z»), а не детектор на устройстве (местное время). */

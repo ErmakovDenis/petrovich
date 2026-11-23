@@ -1,16 +1,10 @@
 """Пороговые правила аномалий — точный перенос `anomaly/BaselineAnomalyDetector.kt` приложения.
 
-Те же типы (drain, drop, power, volt, overheat, oil, brake), логика эпизодов, порядок результатов и формат id
-`rule|<kind>|<vehicleId>|<parameterName>|<время начала эпизода как LocalDateTime.toString()>`. Пороги — в
-RuleThresholds (FS_RULES__*), по умолчанию равны зашитым в Kotlin. Совпадение по id, типу, важности и времени
-события проверяют эталоны `testdata/golden/anomalies` (tests/test_rules_golden.py).
+Только kinds API 1 курса (fallback без ленты): fuel_drain, towing, speed_without_movement, data_gap*,
+telemetry_gap. Формат id `rule|<kind>|<vehicleId>|<parameterName>|<время начала эпизода>`.
+Пороги — в RuleThresholds (FS_RULES__*). Совпадение проверяют эталоны `testdata/golden/anomalies`.
 
-`detect_episodes` дополнительно отдаёт конец эпизода каждой аномалии (в приложении его нет, на результат `detect`
-он не влияет): по нему хранилище стенда узнаёт продолжение уже сохранённого события, обрезанное началом окна.
-
-Особенности данных: при выключенном зажигании AutoGRAPH держит последнее значение оборотов и шлёт нули по CAN,
-поэтому правила двигателя срабатывают только при включённом зажигании; 0 у давления масла и тормозных контуров,
-напряжение ниже voltage_min_value — «нет данных».
+`detect_episodes` дополнительно отдаёт конец эпизода каждой аномалии (в приложении его нет).
 """
 
 import time
@@ -19,14 +13,22 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
-from ..schemas.contract import Anomaly, ParameterColumn, Severity, VehicleTelemetry
+from ..schemas.contract import Anomaly, MetricCategory, ParameterColumn, ParameterInfo, Severity, VehicleTelemetry
 from ..telemetry import parameters as P
 from ..telemetry.mapper import java_round
 from .thresholds import RuleThresholds
 
 SOURCE = "Базовые правила"
 
-_VOLTAGE_KEYWORDS = ["напряж", "volt", "аккум", "батар", "бортсет"]
+# Приоритет gap на одном интервале: сильнее раньше.
+_GAP_RANK = {
+    "telemetry_gap": 0,
+    "data_gap_all_channels_unavailable": 1,
+    "data_gap_signal_unavailable": 2,
+    "data_gap_gps_unavailable": 3,
+    "data_gap_channel_unavailable": 4,
+    "data_gap": 5,
+}
 
 
 def java_time(dt: datetime) -> str:
@@ -112,7 +114,7 @@ class _Ctx:
         close(len(values))
         return result
 
-    def anomaly(self, c: ParameterColumn, i: int, value: float, severity: Severity, kind: str, title: str,
+    def anomaly(self, c: ParameterColumn, i: int, value: float | None, severity: Severity, kind: str, title: str,
                 description: str) -> Anomaly:
         p = c.parameter
         event_time = java_time(self.times[i])
@@ -160,140 +162,220 @@ def detect_episodes(telemetry: VehicleTelemetry, th: RuleThresholds | None = Non
             None,
         )
 
-    def value(c: ParameterColumn | None, i: int) -> float:
-        v = c.values[i] if c is not None else None
-        return v if v is not None else 0.0
-
     ctx = _Ctx(telemetry, times)
     out: list[Anomaly] = []
     rpm = col(P.RPM, "оборот", "rpm")
     ignition = col(P.IGNITION)
     if ignition is None:
         ignition = col(P.IGNITION_CAN)
-
-    # При выключенном зажигании AutoGRAPH держит последнее значение оборотов и интерполирует остальные
-    # CAN-параметры, поэтому одних оборотов недостаточно.
-    def engine_running(i: int, min_rpm: float) -> bool:
-        if ignition is not None and value(ignition, i) < 0.5:
-            return False
-        return rpm is None or value(rpm, i) > min_rpm
+    speed = col(P.SPEED) or col(P.SPEED_CAN)
+    gps_speed = col(P.GPS_SPEED)
+    power = col(P.POWER)
 
     def unit(c: ParameterColumn) -> str:
         return c.parameter.unit or ""
 
-    # Топливо: слив по данным AutoGRAPH.
+    # Топливо: слив по данным AutoGRAPH → kind как у API 1 курса.
     if (c := col(P.FUEL_DRAIN_VOLUME)) is not None:
         out += ctx.episodes(c, lambda _, v: v > 0, lambda i, v, _d, c=c: ctx.anomaly(
-            c, i, v, Severity.CRITICAL, "drain", "Слив топлива", f"AutoGRAPH зафиксировал слив {fmt(v)} {unit(c)}."))
+            c, i, v, Severity.CRITICAL, "fuel_drain", "Слив топлива",
+            f"AutoGRAPH зафиксировал слив {fmt(v)} {unit(c)}."))
 
-    # Топливо: резкое падение уровня за окно.
-    if (c := col(P.FUEL_LEVEL, "уровень топлива", "fuellevel")) is not None:
-        out += _fuel_drop(ctx, c, th)
+    # Буксировка / скорость без движения / пропуски — те же kinds, что у API 1 курса.
+    if speed is not None:
+        out += _towing(ctx, speed, ignition, rpm, th)
+        if gps_speed is not None:
+            out += _speed_without_movement(ctx, speed, gps_speed, th)
 
-    # Пропадание питания: короткое — информационное, дольше power_long_minutes — предупреждение.
-    if (c := col(P.POWER)) is not None:
-        def power(i: int, v: float, duration: timedelta, c: ParameterColumn = c) -> Anomaly:
-            long = duration >= timedelta(minutes=th.power_long_minutes)
-            # ≈ минимальная оценка: с учётом шага интервалов фактическая длительность может быть больше.
-            text = "Прибор сообщил об отключении основного питания" + (
-                f" (≈{int(duration.total_seconds() // 60)} мин)." if long else " (кратковременно).")
-            return ctx.anomaly(c, i, v, Severity.WARNING if long else Severity.INFO, "power", "Пропадание питания", text)
+    out += _gaps(ctx, columns, power, gps_speed, th)
 
-        out += ctx.episodes(c, lambda _, v: v < 0.5, power, report=_Report.END)
-
-    # Напряжение бортсети/аккумулятора — только на работающем двигателе и дольше voltage_min_minutes.
-    voltage_columns = [
-        c for c in columns
-        if c.parameter.name == P.BATTERY_VOLTAGE or (
-            c.parameter.name != P.POWER
-            and any(k in f"{c.parameter.name} {c.parameter.caption}".lower() for k in _VOLTAGE_KEYWORDS)
-        )
-    ]
-    for c in voltage_columns:
-        present = sorted(v for v in c.values if v is not None and v >= th.voltage_min_value)
-        if not present:
-            continue
-        median = present[len(present) // 2]
-        if median > th.voltage_24v_median:
-            low, critical, high = th.voltage_24v_low, th.voltage_24v_critical, th.voltage_24v_high
-        else:
-            low, critical, high = th.voltage_12v_low, th.voltage_12v_critical, th.voltage_12v_high
-
-        def voltage(i: int, v: float, _d: timedelta, c: ParameterColumn = c, low: float = low,
-                    critical: float = critical, high: float = high) -> Anomaly:
-            severity = Severity.CRITICAL if v < critical or v > high + th.voltage_critical_over_high else Severity.WARNING
-            what = (f"ниже {fmt(low)} В — возможна неисправность генератора или АКБ" if v < low
-                    else f"выше {fmt(high)} В — перезаряд")
-            return ctx.anomaly(c, i, v, severity, "volt", "Напряжение вне нормы",
-                               f"{c.parameter.caption}: {fmt(v)} В на работающем двигателе, {what}.")
-
-        out += ctx.episodes(
-            c,
-            lambda i, v, low=low, high=high: v >= th.voltage_min_value and (v < low or v > high)
-            and engine_running(i, th.voltage_min_rpm),
-            voltage,
-            min_duration=timedelta(minutes=th.voltage_min_minutes),
-        )
-
-    # Перегрев двигателя.
-    if (c := col(P.COOLANT_TEMP, "охл", "coolant")) is not None:
-        out += ctx.episodes(
-            c, lambda _, v: v > th.overheat_celsius,
-            lambda i, v, _d, c=c: ctx.anomaly(
-                c, i, v, Severity.CRITICAL if v > th.overheat_critical_celsius else Severity.WARNING, "overheat",
-                "Перегрев двигателя",
-                f"Температура охлаждающей жидкости {fmt(v)} °C (норма до {fmt(th.overheat_celsius)} °C)."),
-            min_duration=timedelta(minutes=th.overheat_min_minutes),
-        )
-
-    # Низкое давление масла на работающем двигателе (0 — нет данных с датчика).
-    if (oil := col(P.OIL_PRESSURE, "давление масла")) is not None and rpm is not None:
-        out += ctx.episodes(
-            oil, lambda i, v: 0 < v < th.oil_low_kpa and engine_running(i, th.oil_min_rpm),
-            lambda i, v, _d: ctx.anomaly(
-                oil, i, v, Severity.CRITICAL, "oil", "Низкое давление масла",
-                f"Давление масла {fmt(v)} кПа при {fmt(value(rpm, i))} об/мин. Проверьте уровень масла."),
-            min_duration=timedelta(minutes=th.oil_min_minutes),
-        )
-
-    # Низкое давление в тормозных контурах на работающем двигателе (после запуска давление набирается
-    # несколько минут).
-    if rpm is not None:
-        for brake in (b for b in (col(P.BRAKE_PRESSURE_1), col(P.BRAKE_PRESSURE_2)) if b is not None):
-            out += ctx.episodes(
-                brake, lambda i, v: v < th.brake_low_kpa and engine_running(i, th.brake_min_rpm),
-                lambda i, v, _d, brake=brake: ctx.anomaly(
-                    brake, i, v, Severity.WARNING, "brake", "Низкое давление в тормозной системе",
-                    f"{brake.parameter.caption}: {fmt(v)} кПа при работающем двигателе дольше "
-                    f"{th.brake_min_minutes} минут (обычно 600–1050 кПа)."),
-                min_duration=timedelta(minutes=th.brake_min_minutes),
-            )
     return [Episode(a, ctx.ends.get(a.id, times[-1])) for a in out]
 
 
-def _fuel_drop(ctx: _Ctx, c: ParameterColumn, th: RuleThresholds) -> list[Anomaly]:
-    window = timedelta(minutes=th.fuel_drop_window_minutes)
+def _towing(
+    ctx: _Ctx,
+    speed: ParameterColumn,
+    ignition: ParameterColumn | None,
+    rpm: ParameterColumn | None,
+    th: RuleThresholds,
+) -> list[Anomaly]:
+    min_dur = timedelta(minutes=th.towing_min_minutes)
+
+    def towed(i: int, v: float) -> bool:
+        if v < th.towing_min_speed_kmh:
+            return False
+        ign_off = ignition is not None and (ignition.values[i] or 0.0) < 0.5
+        rpm_low = rpm is not None and (rpm.values[i] or 0.0) <= th.towing_max_rpm
+        # Без зажигания и оборотов — только по скорости не считаем (мало контекста).
+        if ignition is None and rpm is None:
+            return False
+        return ign_off or rpm_low
+
+    return ctx.episodes(
+        speed, towed,
+        lambda i, v, d: ctx.anomaly(
+            speed, i, v, Severity.WARNING, "towing", "Буксировка",
+            f"Скорость {fmt(v)} км/ч ≈{int(d.total_seconds() // 60)} мин при выключенном двигателе — возможна буксировка."),
+        min_duration=min_dur,
+    )
+
+
+def _speed_without_movement(
+    ctx: _Ctx, speed: ParameterColumn, gps_speed: ParameterColumn, th: RuleThresholds,
+) -> list[Anomaly]:
+    """Спидометр ≥ порога, а GpsSpeed ≈ 0 — скорость без перемещения по GPS."""
+    min_dur = timedelta(minutes=th.speed_without_min_minutes)
+
+    def stuck(i: int, v: float) -> bool:
+        if v < th.speed_without_min_kmh:
+            return False
+        g = gps_speed.values[i]
+        return g is not None and g <= th.speed_without_max_km * 10  # max_km 0.1 → порог GPS 1 км/ч
+
+    return ctx.episodes(
+        speed, stuck,
+        lambda i, v, d: ctx.anomaly(
+            speed, i, v, Severity.WARNING, "speed_without_movement", "Скорость без движения",
+            f"Спидометр {fmt(v)} км/ч ≈{int(d.total_seconds() // 60)} мин при GpsSpeed ≈0 — "
+            "проверьте датчик скорости."),
+        min_duration=min_dur,
+    )
+
+
+def _pseudo_column(name: str, caption: str, category: MetricCategory, n: int) -> ParameterColumn:
+    return ParameterColumn(
+        parameter=ParameterInfo(name=name, caption=caption, unit=None, category=category),
+        values=[None] * n,
+    )
+
+
+def _gap_runs(mask: list[bool]) -> list[tuple[int, int]]:
+    """Непрерывные серии True → (start, end_exclusive)."""
+    runs: list[tuple[int, int]] = []
+    start = -1
+    for i, on in enumerate(mask):
+        if on:
+            if start < 0:
+                start = i
+        elif start >= 0:
+            runs.append((start, i))
+            start = -1
+    if start >= 0:
+        runs.append((start, len(mask)))
+    return runs
+
+
+def _gaps(
+    ctx: _Ctx,
+    columns: list[ParameterColumn],
+    power: ParameterColumn | None,
+    gps_speed: ParameterColumn | None,
+    th: RuleThresholds,
+) -> list[Anomaly]:
+    if not columns:
+        return []
+    n = len(ctx.times)
+    others = [c for c in columns if c is not power]
+    all_null = [all(c.values[i] is None for c in columns) for i in range(n)]
+    others_null = [
+        (not others) or all(c.values[i] is None for c in others)
+        for i in range(n)
+    ]
+    power_on = [
+        power is not None and power.values[i] is not None and power.values[i] >= 0.5
+        for i in range(n)
+    ]
+    any_other = [any(c.values[i] is not None for c in others) for i in range(n)] if others else [False] * n
+
+    claimed = [False] * n  # индексы, уже покрытые более сильным gap
     result: list[Anomaly] = []
-    values, times = c.values, ctx.times
-    window_start = 0
-    cooldown_until: datetime | None = None
-    for i, v in enumerate(values):
-        if v is None:
+    telemetry_col = _pseudo_column("telemetry", "Телеметрия", MetricCategory.POWER, n)
+
+    def emit(kind: str, title: str, description: str, start: int, end_exclusive: int,
+             col: ParameterColumn, value: float | None = None) -> None:
+        for i in range(start, end_exclusive):
+            claimed[i] = True
+        a = ctx.anomaly(col, start, value, Severity.WARNING, kind, title, description)
+        result.append(a)
+        ctx.ends[a.id] = ctx.times[end_exclusive - 1]
+
+    def duration_ok(start: int, end_exclusive: int, minutes: int) -> bool:
+        return ctx.step * (end_exclusive - start) >= timedelta(minutes=minutes)
+
+    def has_data_before(start: int) -> bool:
+        return any(not all_null[i] for i in range(0, start))
+
+    def has_data_after(end: int) -> bool:
+        return any(not all_null[i] for i in range(end, n))
+
+    # 1) Внутренний разрыв телеметрии (all-null с данными до и после) — раньше all_channels.
+    for start, end in _gap_runs(all_null):
+        if start == 0 or end >= n:
             continue
-        while times[i] - times[window_start] > window:
-            window_start += 1
-        if cooldown_until is not None and times[i] < cooldown_until:
+        if not has_data_before(start) or not has_data_after(end):
             continue
-        previous = [values[k] for k in range(window_start, i) if values[k] is not None]
-        if not previous:
+        if duration_ok(start, end, th.gap_telemetry_min_minutes):
+            mins = int((ctx.step * (end - start)).total_seconds() // 60)
+            emit("telemetry_gap", "Разрыв телеметрии",
+                 f"Пауза в телеметрии ≈{mins} мин при данных до и после.", start, end, telemetry_col)
+
+    # 2) Все каналы null (offline), не перекрытые telemetry_gap.
+    for start, end in _gap_runs([all_null[i] and not claimed[i] for i in range(n)]):
+        if duration_ok(start, end, th.gap_all_channels_min_minutes):
+            mins = int((ctx.step * (end - start)).total_seconds() // 60)
+            emit("data_gap_all_channels_unavailable", "Машина не на связи",
+                 f"Нет данных ни по одному каналу ≈{mins} мин.", start, end, telemetry_col)
+
+    # 3) Питание есть, остальные каналы молчат.
+    signal_mask = [power_on[i] and others_null[i] and not claimed[i] for i in range(n)]
+    for start, end in _gap_runs(signal_mask):
+        if duration_ok(start, end, th.gap_signal_min_minutes):
+            mins = int((ctx.step * (end - start)).total_seconds() // 60)
+            emit("data_gap_signal_unavailable", "Нет сигнала",
+                 f"Питание есть, остальные каналы молчат ≈{mins} мин.", start, end,
+                 power or telemetry_col, 1.0)
+
+    # 4) Нет GPS при живых других каналах.
+    if gps_speed is not None:
+        gps_mask = [
+            gps_speed.values[i] is None and any_other[i] and not claimed[i]
+            for i in range(n)
+        ]
+        for start, end in _gap_runs(gps_mask):
+            if duration_ok(start, end, th.gap_gps_min_minutes):
+                mins = int((ctx.step * (end - start)).total_seconds() // 60)
+                emit("data_gap_gps_unavailable", "Нет GPS",
+                     f"Скорость GPS не передавалась ≈{mins} мин при других данных.", start, end, gps_speed)
+
+    # 5) Отдельный канал молчит, пока другие живы.
+    for c in columns:
+        if c is power:
             continue
-        peak = max(previous)
-        if peak - v >= th.fuel_drop_min_liters:
-            unit = c.parameter.unit or ""
-            result.append(ctx.anomaly(
-                c, i, v, Severity.CRITICAL, "drop", "Резкое падение уровня топлива",
-                f"Уровень упал с {fmt(peak)} до {fmt(v)} {unit} (−{fmt(peak - v)}) за ≤{th.fuel_drop_window_minutes} "
-                "мин. Возможен слив."))
-            cooldown_until = times[i] + timedelta(minutes=th.fuel_drop_cooldown_minutes)
-            ctx.ends[result[-1].id] = times[i]
+        mask = [
+            c.values[i] is None and any(o.values[i] is not None for o in columns if o is not c) and not claimed[i]
+            for i in range(n)
+        ]
+        for start, end in _gap_runs(mask):
+            if duration_ok(start, end, th.gap_channel_min_minutes):
+                mins = int((ctx.step * (end - start)).total_seconds() // 60)
+                emit("data_gap_channel_unavailable", "Нет данных с датчика",
+                     f"{c.parameter.caption} молчит ≈{mins} мин при других данных.", start, end, c)
+
+    # 6) Частичный пропуск: часть колонок null, без более сильного gap.
+    partial_mask = []
+    for i in range(n):
+        if claimed[i]:
+            partial_mask.append(False)
+            continue
+        nulls = sum(1 for c in columns if c.values[i] is None)
+        lives = len(columns) - nulls
+        partial_mask.append(lives > 0 and nulls > 0 and nulls >= max(1, len(columns) // 2))
+    for start, end in _gap_runs(partial_mask):
+        if duration_ok(start, end, th.gap_partial_min_minutes):
+            mins = int((ctx.step * (end - start)).total_seconds() // 60)
+            emit("data_gap", "Пропуск данных",
+                 f"Часть каналов без данных ≈{mins} мин.", start, end, telemetry_col)
+
+    # Сортировка по приоритету kind, затем по времени — стабильный порядок с остальными правилами: gaps в конце.
+    result.sort(key=lambda a: (_GAP_RANK.get(a.id.split("|")[1], 99), a.event_time, a.id))
     return result

@@ -44,3 +44,23 @@ class RuleThresholds(BaseModel):
     brake_low_kpa: float = 550
     brake_min_rpm: float = 600
     brake_min_minutes: int = Field(10, ge=0)
+
+    # Буксировка: скорость при выключенном зажигании или низких оборотах.
+    towing_min_speed_kmh: float = 5.0
+    towing_max_rpm: float = 400.0
+    towing_min_minutes: int = Field(3, ge=0)
+
+    # Скорость без перемещения (интеграл км по Speed ниже порога).
+    speed_without_min_kmh: float = 3.0
+    speed_without_max_km: float = 0.1
+    speed_without_min_minutes: int = Field(5, ge=0)
+
+    # Пропуски данных / связь (fallback без API 1 курса).
+    gap_all_channels_min_minutes: int = Field(10, ge=0)
+    gap_signal_min_minutes: int = Field(10, ge=0)
+    gap_telemetry_min_minutes: int = Field(60, ge=0)
+    gap_gps_min_minutes: int = Field(15, ge=0)
+    gap_channel_min_minutes: int = Field(30, ge=0)
+    gap_partial_min_minutes: int = Field(15, ge=0)
+    # Шаг скорости для интеграла км: длиннее — не считаем (как в widgets).
+    mileage_max_gap_seconds: int = Field(2 * 60 * 60, ge=1)

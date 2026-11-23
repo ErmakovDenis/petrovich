@@ -35,6 +35,23 @@ data class Vehicle(
             ) name else "$name $p"
         }
 
+    /** Номер из [plate] или из [name] — для списков виджетов («По машинам»). */
+    fun withPlateResolved(): Vehicle =
+        if (!plate.isNullOrBlank()) this else copy(plate = VehiclePlate.fromName(name))
+
+    /** Первая строка в виджете: гос. номер, иначе имя. */
+    fun widgetListTitle(): String = withPlateResolved().shortLabel
+
+    /** Вторая строка: модель/имя без номера; null если совпадает с [widgetListTitle]. */
+    fun widgetListSubtitle(): String? {
+        val v = withPlateResolved()
+        val model = v.nameWithoutPlate
+        return model.takeIf { it.isNotBlank() && !it.equals(v.shortLabel, ignoreCase = true) }
+    }
+
+    /** Однострочно: «номер · модель» или просто номер/имя. */
+    fun widgetListName(): String = listOfNotNull(widgetListTitle(), widgetListSubtitle()).joinToString(" · ")
+
     /** Имя без гос. номера — для подписи под крупным номером на карточке. */
     val nameWithoutPlate: String
         get() {

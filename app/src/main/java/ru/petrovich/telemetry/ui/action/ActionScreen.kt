@@ -123,7 +123,11 @@ fun ActionScreen(anomalyId: String, onBack: () -> Unit, onMail: (String) -> Unit
                     Fact("Когда", anomaly.time?.let { "${it.toLocalDate().title()}, ${it.hhmm()}" } ?: anomaly.eventTime)
                     signals?.ignitionOn?.let { Fact("Двигатель", if (it) "включен" else "выключен") }
                     signals?.movingKmh?.let { Fact("Машина", if (it < 1.0) "стояла" else "в пути · ${it.formatValue()} км/ч") }
-                    Fact("Датчик", if (anomaly.kind == "nodata") "молчит" else "исправен")
+                    Fact(
+                        "Датчик",
+                        if (anomaly.kind == "nodata" || anomaly.kind == "data_gap_channel_unavailable") "молчит"
+                        else "исправен",
+                    )
                 }
             }
 

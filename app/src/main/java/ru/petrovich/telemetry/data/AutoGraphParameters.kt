@@ -42,6 +42,8 @@ object AutoGraphParameters {
     const val BRAKE_PRESSURE_1 = "PressureVSBC1"
     const val BRAKE_PRESSURE_2 = "PressureVSBC2"
     const val SPEED = "Speed"
+    const val SPEED_CAN = "SpeedCAN"
+    const val GPS_SPEED = "GpsSpeed"
     const val BATTERY_VOLTAGE = "BattaryVOLTAGE" // так в схеме AutoGRAPH (sic)
 
     val curated: List<ParameterSpec> = listOf(
@@ -67,7 +69,8 @@ object AutoGraphParameters {
         ParameterSpec("GazLOAD", MetricCategory.ENGINE, "Педаль газа"),
 
         ParameterSpec(SPEED, MetricCategory.MOTION, "Скорость"),
-        ParameterSpec("SpeedCAN", MetricCategory.MOTION, "Скорость CAN"),
+        ParameterSpec(SPEED_CAN, MetricCategory.MOTION, "Скорость CAN"),
+        ParameterSpec(GPS_SPEED, MetricCategory.MOTION, "Скорость GPS"),
         ParameterSpec(BRAKE_PRESSURE_1, MetricCategory.MOTION, "Тормозной контур 1", Aggregation.MIN_NONZERO),
         ParameterSpec(BRAKE_PRESSURE_2, MetricCategory.MOTION, "Тормозной контур 2", Aggregation.MIN_NONZERO),
     )

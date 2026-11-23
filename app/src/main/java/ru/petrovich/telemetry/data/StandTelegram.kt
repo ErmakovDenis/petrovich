@@ -94,15 +94,28 @@ data class TelegramSubscription(
     val reports: TelegramReportSettings = TelegramReportSettings(),
 )
 
-/** Группы событий на экране — как MetricCategory стенда. */
-val TELEGRAM_CATEGORIES = linkedMapOf("FUEL" to "Топливо", "ENGINE" to "Двигатель", "POWER" to "Питание", "MOTION" to "Движение")
+/** Группы событий на экране — kinds API 1 курса (и те же в fallback-правилах). */
+val TELEGRAM_CATEGORIES = linkedMapOf(
+    "FUEL" to "Топливо",
+    "MOTION" to "Движение",
+    "LINK" to "Связь и GPS",
+)
 
-/** События, которые можно выключить, по группам — как KINDS стенда (schemas/telegram.py) и /settings → «События» в боте. */
+/** События, которые можно выключить — как KINDS стенда / бота; только kinds API 1 курса. */
 val TELEGRAM_KINDS: Map<String, List<Pair<String, String>>> = linkedMapOf(
-    "FUEL" to listOf("drain" to "Слив топлива", "drop" to "Резкое падение уровня топлива"),
-    "ENGINE" to listOf("overheat" to "Перегрев двигателя", "oil" to "Низкое давление масла"),
-    "POWER" to listOf("volt" to "Напряжение вне нормы", "power" to "Пропадание питания"),
-    "MOTION" to listOf("brake" to "Низкое давление в тормозной системе"),
+    "FUEL" to listOf("fuel_drain" to "Слив топлива"),
+    "MOTION" to listOf(
+        "towing" to "Буксировка",
+        "speed_without_movement" to "Скорость без движения",
+    ),
+    "LINK" to listOf(
+        "data_gap" to "Пропуск данных",
+        "data_gap_gps_unavailable" to "Нет GPS",
+        "data_gap_channel_unavailable" to "Нет данных с датчика",
+        "data_gap_all_channels_unavailable" to "Машина не на связи",
+        "data_gap_signal_unavailable" to "Нет сигнала",
+        "telemetry_gap" to "Разрыв телеметрии",
+    ),
 )
 
 @Serializable

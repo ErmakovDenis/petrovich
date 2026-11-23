@@ -349,11 +349,12 @@ fun WidgetDetailScreen(
                 if (s == null) Loading() else {
                     MetricHero(type = type, summary = s, periodLabel = periodLabel)
                     if (s.leaders.isNotEmpty()) {
-                        SectionLabel("Больше всего")
+                        SectionLabel("По машинам")
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             s.leaders.forEach { leader ->
                                 LeaderRow(
                                     name = leader.name,
+                                    subtitle = leader.subtitle,
                                     value = "${formatCount(leader.value)}${if (s.unit.isNotEmpty()) " ${s.unit}" else ""}",
                                     onClick = { onOpenVehicle(leader.vehicleId) },
                                 )
@@ -598,6 +599,7 @@ private fun LeaderRow(
     onClick: () -> Unit,
     marker: Color = Petrovich.colors.accent,
     valueColor: Color = Petrovich.colors.muted,
+    subtitle: String? = null,
 ) {
     val c = Petrovich.colors
     SurfaceCard(Modifier.fillMaxWidth(), onClick = onClick, shape = RoundedCornerShape(14.dp)) {
@@ -607,7 +609,12 @@ private fun LeaderRow(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Box(Modifier.size(8.dp).clip(CircleShape).background(marker))
-            Text(name, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f), maxLines = 1)
+            Column(Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                if (!subtitle.isNullOrBlank()) {
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.muted, maxLines = 1)
+                }
+            }
             Text(value, style = MaterialTheme.typography.bodyMedium, color = valueColor)
             Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(16.dp), tint = c.muted)
         }
@@ -633,7 +640,10 @@ private fun CommentCard(text: String) {
  * Без домыслов вроде «в основном на трассе М-5»: маршрутов у нас нет, выдумывать нельзя.
  */
 private fun comment(s: WidgetSummary): String {
-    val leader = s.leaders.firstOrNull()?.let { " Больше всего у ${it.name} — ${formatCount(it.value)}${if (s.unit.isNotEmpty()) " ${s.unit}" else ""}." } ?: ""
+    val leader = s.leaders.firstOrNull()?.let {
+        val who = listOfNotNull(it.name, it.subtitle).joinToString(" · ")
+        " Больше всего у $who — ${formatCount(it.value)}${if (s.unit.isNotEmpty()) " ${s.unit}" else ""}."
+    } ?: ""
     val change = s.changePercent
     return when {
         change == null -> "Данных за прошлый период пока нет — сравнивать не с чем.$leader"

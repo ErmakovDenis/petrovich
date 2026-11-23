@@ -73,6 +73,7 @@ import ru.petrovich.telemetry.ui.resolution.ResolutionScreen
 import ru.petrovich.telemetry.ui.settings.ConnectionSettingsScreen
 import ru.petrovich.telemetry.ui.settings.TelegramScreen
 import ru.petrovich.telemetry.ui.settings.SettingsScreen
+import ru.petrovich.telemetry.ui.settings.syncTelegramLinked
 import ru.petrovich.telemetry.ui.tables.TablesScreen
 import ru.petrovich.telemetry.ui.theme.Petrovich
 
@@ -137,10 +138,12 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
     val unreadNotifications = notifications.count { !it.read }
     var problemsTab by rememberSaveable { mutableStateOf(ProblemsTab.NEW) }
     val scope = rememberCoroutineScope()
-    // Один подключённый чат: выключенные в боте события — те же, что скрывает приложение.
+    // Кэш «Telegram подключён» + один чат: выключенные в боте события — те же, что скрывает приложение.
     LaunchedEffect(Unit) {
         runCatchingCancellable {
-            val only = ServiceLocator.telegram.chats().chats.singleOrNull() ?: return@runCatchingCancellable
+            val chats = ServiceLocator.telegram.chats()
+            syncTelegramLinked(chats.chats)
+            val only = chats.chats.singleOrNull() ?: return@runCatchingCancellable
             val muted = only.subscription.mutedKinds.toSet()
             ServiceLocator.settings.update { if (it.mutedKinds == muted) it else it.copy(mutedKinds = muted) }
         }

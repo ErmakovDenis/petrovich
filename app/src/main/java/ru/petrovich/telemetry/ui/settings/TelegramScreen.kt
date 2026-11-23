@@ -83,6 +83,15 @@ internal suspend fun pushMutedKinds(kinds: Set<String>) {
     }
 }
 
+/** Обновить кэш «Telegram подключён» — от него зависит, можно ли выключить push на телефоне. */
+internal suspend fun syncTelegramLinked(chats: List<TelegramChat>? = null) {
+    val list = chats ?: runCatchingCancellable { ServiceLocator.telegram.chats() }.getOrNull()?.chats ?: return
+    val linked = list.isNotEmpty()
+    ServiceLocator.settings.update { cur ->
+        if (cur.telegramLinked == linked) cur else cur.copy(telegramLinked = linked)
+    }
+}
+
 /** Варианты как в боте (/settings): лимит в день и тихие часы. */
 private val LIMITS = listOf<Int?>(3, 5, 10, null)
 private val QUIET = listOf<Pair<Int?, Int?>>(22 to 7, 23 to 7, null to null)
@@ -113,6 +122,7 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
             .onSuccess {
                 data = it
                 error = null
+                syncTelegramLinked(it.chats)
                 // Один чат: правка в боте (/settings) становится фильтром приложения.
                 val only = it.chats.singleOrNull() ?: return@onSuccess
                 val muted = only.subscription.mutedKinds.toSet()
@@ -267,7 +277,11 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
                     unlinking = null
                     scope.launch {
                         runCatchingCancellable { ServiceLocator.telegram.unlink(chat.chatId) }
-                            .onSuccess { data = it; status = "${chat.label()} отключён" }
+                            .onSuccess {
+                                data = it
+                                syncTelegramLinked(it.chats)
+                                status = "${chat.label()} отключён"
+                            }
                             .onFailure { error = "Не получилось отключить: ${it.message}" }
                     }
                 }) { Text("Отключить") }

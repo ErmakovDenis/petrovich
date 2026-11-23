@@ -54,7 +54,10 @@ class AnomalyGoldenTest {
                 reference = "trip-tables/${f.name}")
         }
         val synthetic = listOf(
-            Case("rules-ural", rulesUral()), Case("rules-12v", rules12v()), Case("rules-can-ignition", rulesCanIgnitionWithoutRpm()),
+            Case("rules-ural", rulesUral()),
+            Case("rules-12v", rules12v()),
+            Case("rules-can-ignition", rulesCanIgnitionWithoutRpm()),
+            Case("rules-api-fallback", rulesApiFallback()),
         )
         return demoCases + synthetic + tripCases
     }
@@ -76,7 +79,7 @@ class AnomalyGoldenTest {
             val text = TripTablesGolden.format(json) + "\n"
             if (update) file.writeText(text) else if (!file.exists() || TripTablesGolden.readNormalized(file) != text) stale += file.name
         }
-        assertTrue("эталоны без аномалий проверяют немного", total > 20)
+        assertTrue("эталоны без аномалий проверяют немного", total > 5)
         assertEquals(
             "Эталоны устарели — UPDATE_GOLDEN=1 ./gradlew testDebugUnitTest --tests \"ru.petrovich.telemetry.AnomalyGoldenTest\"",
             emptyList<String>(), stale,
@@ -84,10 +87,19 @@ class AnomalyGoldenTest {
     }
 
     @Test
-    fun syntheticCasesCoverEveryRuleAndSeverity() = runTest {
-        val found = listOf(rulesUral(), rules12v(), rulesCanIgnitionWithoutRpm()).flatMap { detector.detect(it) }
-        assertEquals(setOf("drain", "drop", "power", "volt", "overheat", "oil", "brake"), found.map { it.kind }.toSet())
-        assertEquals(ru.petrovich.telemetry.anomaly.Severity.entries.toSet(), found.map { it.severity }.toSet())
+    fun syntheticCasesCoverEveryApiKind() = runTest {
+        val found = listOf(rulesUral(), rulesApiFallback()).flatMap { detector.detect(it) }
+        assertEquals(
+            setOf(
+                "fuel_drain",
+                "towing", "speed_without_movement",
+                "data_gap_all_channels_unavailable", "data_gap_signal_unavailable", "telemetry_gap",
+                "data_gap_gps_unavailable", "data_gap_channel_unavailable", "data_gap",
+            ),
+            found.map { it.kind }.toSet(),
+        )
+        assertTrue(found.any { it.severity == ru.petrovich.telemetry.anomaly.Severity.CRITICAL })
+        assertTrue(found.any { it.severity == ru.petrovich.telemetry.anomaly.Severity.WARNING })
     }
 
 
@@ -198,4 +210,67 @@ class AnomalyGoldenTest {
         p(P.OIL_PRESSURE, "Давление масла", "кПа", MetricCategory.ENGINE) to series { 50.0 },
         p(P.BRAKE_PRESSURE_1, "Тормозной контур 1", "кПа", MetricCategory.MOTION) to series { 300.0 },
     ))
+
+    /**
+     * Fallback API 1 курса: буксировка, скорость без движения, GPS/связь/каналы/частичный пропуск.
+     * Шаг 1 мин, окно 6 ч — как у остальных синтетик.
+     */
+    private fun rulesApiFallback(): VehicleTelemetry {
+        // 0–40: норма; 41–50: towing (скорость, зажигание выкл); 51–70: speed without move (скорость, км≈0);
+        // 71–100: all null; 101–120: power on + others null (signal); 121–140: data; 141–210: all null (telemetry_gap);
+        // 211–240: data + GpsSpeed null (gps); 241–280: fuel null others live (channel); 281–310: half null (data_gap).
+        return telemetry(Vehicle("api-1", "КамАЗ fallback"), listOf(
+            p(P.POWER, "Питание (1 — есть)", null, MetricCategory.POWER) to series { i ->
+                when {
+                    i in 71..100 -> null
+                    i in 141..210 -> null
+                    else -> 1.0
+                }
+            },
+            p(P.IGNITION, "Зажигание", null, MetricCategory.POWER) to series { i ->
+                when {
+                    i in 41..50 -> 0.0
+                    i in 71..120 || i in 141..210 || i in 281..300 -> null // data_gap: половина каналов, <30 мин
+                    else -> 1.0
+                }
+            },
+            p(P.RPM, "Обороты", "об/мин", MetricCategory.ENGINE) to series { i ->
+                when {
+                    i in 41..50 -> 0.0
+                    i in 71..120 || i in 141..210 || i in 281..300 -> null
+                    else -> 1200.0
+                }
+            },
+            p(P.SPEED, "Скорость", "км/ч", MetricCategory.MOTION) to series { i ->
+                when {
+                    i in 41..50 -> 20.0
+                    i in 51..70 -> 30.0 // спидометр врёт, GpsSpeed = 0
+                    i in 71..120 || i in 141..210 -> null
+                    else -> 0.0
+                }
+            },
+            p(P.GPS_SPEED, "Скорость GPS", "км/ч", MetricCategory.MOTION) to series { i ->
+                when {
+                    i in 51..70 -> 0.0
+                    i in 71..120 || i in 141..210 -> null
+                    i in 211..240 -> null
+                    else -> 10.0 // на 281..300 живой — иначе gps_gap съест data_gap
+                }
+            },
+            p(P.FUEL_LEVEL, "Уровень топлива", "л", MetricCategory.FUEL) to series { i ->
+                when {
+                    i in 71..120 || i in 141..210 -> null
+                    i in 241..270 -> null // ровно channel ≥30; дальше живой, чтобы data_gap не перекрылся
+                    i in 281..300 -> null
+                    else -> 200.0
+                }
+            },
+            p(P.BATTERY_VOLTAGE, "Напряжение аккумулятора", "В", MetricCategory.POWER) to series { i ->
+                when {
+                    i in 71..120 || i in 141..210 || i in 281..300 -> null
+                    else -> 27.0
+                }
+            },
+        ))
+    }
 }

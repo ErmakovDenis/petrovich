@@ -54,13 +54,16 @@ import java.time.LocalDate
 
 /** Иконка по типу события — честно по тому же правилу, что завело аномалию (см. BaselineAnomalyDetector). */
 fun Anomaly.kindIcon(): ImageVector = when (kind) {
-    "drain", "drop" -> Icons.Outlined.LocalGasStation
+    "drain", "drop", "fuel_drain" -> Icons.Outlined.LocalGasStation
     "power" -> Icons.Outlined.ElectricBolt
     "volt" -> Icons.Outlined.BatteryAlert
     "overheat" -> Icons.Outlined.Thermostat
     "oil" -> Icons.Outlined.OilBarrel
     "brake" -> Icons.Outlined.Compress
-    "nodata" -> Icons.Outlined.WifiOff
+    "towing", "speed_without_movement" -> Icons.Outlined.ReportProblem
+    "nodata", "data_gap", "data_gap_channel_unavailable", "data_gap_all_channels_unavailable",
+    "data_gap_signal_unavailable", "data_gap_gps_unavailable", "telemetry_gap",
+    -> Icons.Outlined.WifiOff
     else -> Icons.Outlined.ReportProblem
 }
 
@@ -83,7 +86,8 @@ private fun String.oneLine(): String = substringBefore(" — ").substringBefore(
 private fun StatusPill(a: Anomaly, modifier: Modifier = Modifier) {
     val c = Petrovich.colors
     val (text, color, soft) = when {
-        a.kind == "nodata" -> Triple("В работе", c.muted, c.surface2)
+        a.kind == "nodata" || a.kind.startsWith("data_gap") || a.kind == "telemetry_gap" ->
+            Triple("В работе", c.muted, c.surface2)
         a.resolution == Resolution.IN_PROGRESS -> Triple(resolutionLabel(a) ?: "В работе", c.muted, c.surface2)
         a.resolution == Resolution.CONFIRMED -> Triple("Закрыто", c.ok, c.okSoft)
         a.resolution == Resolution.FALSE_ALARM -> Triple(

@@ -24,10 +24,15 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,6 +50,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +58,10 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import ru.petrovich.telemetry.BuildConfig
 import ru.petrovich.telemetry.ServiceLocator
+import ru.petrovich.telemetry.data.TELEGRAM_CATEGORIES
+import ru.petrovich.telemetry.data.TELEGRAM_KINDS
+import ru.petrovich.telemetry.data.settings.DefaultReportDays
+import ru.petrovich.telemetry.data.settings.ThemeMode
 import ru.petrovich.telemetry.ui.common.PChip
 import ru.petrovich.telemetry.ui.common.PrimaryButton
 import ru.petrovich.telemetry.ui.common.SoftButton
@@ -59,20 +69,27 @@ import ru.petrovich.telemetry.ui.common.SurfaceCard
 import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.MailIntent
 import ru.petrovich.telemetry.util.runCatchingCancellable
+import java.time.DayOfWeek
+import java.time.format.TextStyle
+import java.util.Locale
 
-/** Шаги мастера первого запуска (3.1 «Первый запуск и ошибка подключения»). */
-private enum class Step { WELCOME, SETUP }
+/** Шаги мастера: вход → настройки после AutoGRAPH. */
+private enum class Step { WELCOME, THEME, REPORT, PROBLEMS, NOTIFY }
 
 private val ReportTimeOptions = listOf("07:00", "08:00", "09:00", "10:00")
+private val QuietStartOptions = listOf("21:00", "22:00", "23:00")
+private val QuietEndOptions = listOf("06:00", "07:00", "08:00")
+private val WeekdayOrder = listOf(
+    DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
+    DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY,
+)
 
 /** Что сказать владельцу при ошибке подключения — настоящий код ошибки, без выдумывания. */
 private data class ConnectError(val message: String, val supportCode: String?)
 
 /**
- * Первый запуск: знакомство → подключение к AutoGRAPH → время доклада.
- * Парк и находки не ждём здесь: после входа в приложение Home сам запускает первую проверку,
- * а список машин и телеметрия подгружаются по экранам, пока пользователь уже может ходить по приложению.
- * Контракт с AppRoot не меняется: один колбэк [onConnected], вызывается один раз, когда мастер завершён.
+ * Первый запуск: знакомство → AutoGRAPH → тема, доклад, типы проблем, уведомления.
+ * После входа в учётку пользователь выбирает то же, что потом в «Настройках».
  */
 @Composable
 fun OnboardingScreen(onConnected: () -> Unit) {
@@ -92,10 +109,38 @@ fun OnboardingScreen(onConnected: () -> Unit) {
     var connectError by remember { mutableStateOf<ConnectError?>(null) }
     var showError by remember { mutableStateOf(false) }
 
+    var themeMode by rememberSaveable { mutableStateOf(ThemeMode.SYSTEM.name) }
     var reportTime by rememberSaveable { mutableStateOf("08:00") }
+    var reportDaysCsv by rememberSaveable {
+        mutableStateOf(DefaultReportDays.joinToString(",") { it.name })
+    }
+    var voiceReport by rememberSaveable { mutableStateOf(true) }
+    var mutedCsv by rememberSaveable { mutableStateOf("") }
+    var limitDailyPush by rememberSaveable { mutableStateOf(true) }
+    var quietHoursEnabled by rememberSaveable { mutableStateOf(true) }
+    var quietStart by rememberSaveable { mutableStateOf("22:00") }
+    var quietEnd by rememberSaveable { mutableStateOf("07:00") }
+
+    val reportDays = remember(reportDaysCsv) {
+        reportDaysCsv.split(',').mapNotNull { runCatching { DayOfWeek.valueOf(it) }.getOrNull() }.toSet()
+    }
+    val mutedKinds = remember(mutedCsv) {
+        mutedCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    }
+    val theme = remember(themeMode) {
+        ThemeMode.entries.firstOrNull { it.name == themeMode } ?: ThemeMode.SYSTEM
+    }
 
     fun supportCodeFor(e: Throwable): String =
         (e as? HttpException)?.let { "HTTP ${it.code()}" } ?: e.message?.take(70) ?: (e::class.simpleName ?: "неизвестная ошибка")
+
+    fun goNext() {
+        if (stepOrdinal < Step.entries.lastIndex) stepOrdinal++
+    }
+
+    fun goBack() {
+        if (stepOrdinal > 0) stepOrdinal--
+    }
 
     fun attemptLogin() {
         busy = true; loginError = null
@@ -107,10 +152,13 @@ fun OnboardingScreen(onConnected: () -> Unit) {
                         loginError = "Для этого логина нет доступных схем."
                     } else {
                         ServiceLocator.settings.update {
-                            it.copy(userName = user.trim(), password = password, demoMode = false, schemaId = schema.id, schemaName = schema.name)
+                            it.copy(
+                                userName = user.trim(), password = password, demoMode = false,
+                                schemaId = schema.id, schemaName = schema.name,
+                            )
                         }
                         ServiceLocator.onDataSourceChanged()
-                        stepOrdinal = Step.SETUP.ordinal
+                        stepOrdinal = Step.THEME.ordinal
                     }
                 }
                 .onFailure { e ->
@@ -124,10 +172,27 @@ fun OnboardingScreen(onConnected: () -> Unit) {
         }
     }
 
+    fun applyTheme(mode: ThemeMode) {
+        themeMode = mode.name
+        scope.launch { ServiceLocator.settings.update { it.copy(themeMode = mode) } }
+    }
+
     fun finish() {
         scope.launch {
             // Порядок важен: после onboarded=true этот экран уходит из композиции и корутина отменяется.
-            ServiceLocator.settings.update { it.copy(reportTime = reportTime) }
+            ServiceLocator.settings.update {
+                it.copy(
+                    themeMode = theme,
+                    reportTime = reportTime,
+                    reportDays = reportDays.ifEmpty { DefaultReportDays },
+                    voiceReportEnabled = voiceReport,
+                    mutedKinds = mutedKinds,
+                    limitDailyPush = limitDailyPush,
+                    quietHoursEnabled = quietHoursEnabled,
+                    quietHoursStart = quietStart,
+                    quietHoursEnd = quietEnd,
+                )
+            }
             onConnected()
             ServiceLocator.settings.update { it.copy(onboarded = true) }
         }
@@ -167,9 +232,39 @@ fun OnboardingScreen(onConnected: () -> Unit) {
                 onSubmit = ::attemptLogin,
                 onCantLogin = { showError = true },
             )
-            Step.SETUP -> SetupStep(
-                reportTime = reportTime, onReportTimeChange = { reportTime = it },
+            Step.THEME -> ThemeStep(
+                theme = theme,
+                onTheme = ::applyTheme,
+                onNext = ::goNext,
+                onBack = ::goBack,
+            )
+            Step.REPORT -> ReportStep(
+                reportTime = reportTime, onReportTime = { reportTime = it },
+                reportDays = reportDays,
+                onToggleDay = { day ->
+                    val next = if (day in reportDays) reportDays - day else reportDays + day
+                    reportDaysCsv = next.joinToString(",") { it.name }
+                },
+                voiceReport = voiceReport, onVoice = { voiceReport = it },
+                onNext = ::goNext,
+                onBack = ::goBack,
+            )
+            Step.PROBLEMS -> ProblemsStep(
+                mutedKinds = mutedKinds,
+                onToggle = { kind, on ->
+                    val next = if (on) mutedKinds - kind else mutedKinds + kind
+                    mutedCsv = next.joinToString(",")
+                },
+                onNext = ::goNext,
+                onBack = ::goBack,
+            )
+            Step.NOTIFY -> NotifyStep(
+                limitDailyPush = limitDailyPush, onLimit = { limitDailyPush = it },
+                quietHoursEnabled = quietHoursEnabled, onQuiet = { quietHoursEnabled = it },
+                quietStart = quietStart, onQuietStart = { quietStart = it },
+                quietEnd = quietEnd, onQuietEnd = { quietEnd = it },
                 onStart = ::finish,
+                onBack = ::goBack,
             )
         }
     }
@@ -208,6 +303,25 @@ private fun Logo() {
 }
 
 @Composable
+private fun EditableLaterNote() {
+    val c = Petrovich.colors
+    Text(
+        "Эти настройки можно изменить позже в разделе «Настройки» приложения.",
+        style = MaterialTheme.typography.bodySmall,
+        color = c.muted,
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surface2).padding(12.dp),
+    )
+}
+
+@Composable
+private fun StepNav(onBack: () -> Unit, onNext: () -> Unit, nextLabel: String = "Далее") {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        SoftButton("Назад", onClick = onBack, modifier = Modifier.weight(1f))
+        PrimaryButton(nextLabel, onClick = onNext, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
 private fun WelcomeStep(
     user: String, onUserChange: (String) -> Unit,
     password: String, onPasswordChange: (String) -> Unit,
@@ -223,10 +337,10 @@ private fun WelcomeStep(
             Box(Modifier.size(64.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
                 Text("П", color = c.onAccent, fontFamily = Petrovich.display, fontWeight = FontWeight.Bold, fontSize = 26.sp)
             }
-            Text("Здравствуйте!\nЯ Петрович", textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = MaterialTheme.typography.headlineSmall)
+            Text("Здравствуйте!\nЯ Петрович", textAlign = TextAlign.Center, style = MaterialTheme.typography.headlineSmall)
             Text(
                 "Слежу за вашим автопарком и коротко расскажу, что важно.",
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = c.muted, style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center, color = c.muted, style = MaterialTheme.typography.bodyMedium,
             )
         }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -270,12 +384,12 @@ private fun WelcomeStep(
         }
         Text(
             "Данные берём только из вашей системы мониторинга АвтоГРАФ",
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = c.faint, style = MaterialTheme.typography.labelSmall,
+            textAlign = TextAlign.Center, color = c.faint, style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.fillMaxWidth(),
         )
         Text(
             "Не получается войти?",
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = c.accent, fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center, color = c.accent, fontWeight = FontWeight.SemiBold,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.fillMaxWidth().clickable(onClick = onCantLogin).padding(vertical = 4.dp),
         )
@@ -294,27 +408,181 @@ private fun Promise(icon: androidx.compose.ui.graphics.vector.ImageVector, text:
 }
 
 @Composable
-private fun SetupStep(
-    reportTime: String, onReportTimeChange: (String) -> Unit,
-    onStart: () -> Unit,
+private fun ThemeStep(
+    theme: ThemeMode,
+    onTheme: (ThemeMode) -> Unit,
+    onNext: () -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Оформление", style = MaterialTheme.typography.headlineSmall)
+            Text("Как показывать экраны Петровича.", style = MaterialTheme.typography.bodyMedium, color = Petrovich.colors.muted)
+        }
+        EditableLaterNote()
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.entries.forEach { mode ->
+                PChip(mode.title, selected = theme == mode, onClick = { onTheme(mode) })
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        StepNav(onBack = onBack, onNext = onNext)
+    }
+}
+
+@Composable
+private fun ReportStep(
+    reportTime: String, onReportTime: (String) -> Unit,
+    reportDays: Set<DayOfWeek>, onToggleDay: (DayOfWeek) -> Unit,
+    voiceReport: Boolean, onVoice: (Boolean) -> Unit,
+    onNext: () -> Unit,
+    onBack: () -> Unit,
 ) {
     val c = Petrovich.colors
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Column {
-            Text("Готово к работе", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "Парк и первые находки подгрузятся уже в приложении — можно сразу ходить по экранам.",
-                style = MaterialTheme.typography.bodySmall, color = c.muted,
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Утренний доклад", style = MaterialTheme.typography.headlineSmall)
+            Text("Когда и в какие дни присылать сводку по парку.", style = MaterialTheme.typography.bodyMedium, color = c.muted)
         }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Когда присылать утренний доклад?", style = MaterialTheme.typography.titleSmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ReportTimeOptions.forEach { t -> PChip(t, selected = t == reportTime, onClick = { onReportTimeChange(t) }) }
+        EditableLaterNote()
+        Text("Время", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReportTimeOptions.forEach { t -> PChip(t, selected = t == reportTime, onClick = { onReportTime(t) }) }
+        }
+        Text("Дни недели", style = MaterialTheme.typography.titleSmall)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            WeekdayOrder.forEach { day ->
+                val on = day in reportDays
+                val label = day.getDisplayName(TextStyle.SHORT, Locale("ru")).replaceFirstChar { it.uppercase() }.take(2)
+                FilledTonalButton(
+                    onClick = { onToggleDay(day) },
+                    modifier = Modifier.weight(1f).height(44.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (on) c.accent else c.surface,
+                        contentColor = if (on) c.onAccent else c.muted,
+                    ),
+                ) { Text(label, style = MaterialTheme.typography.labelMedium) }
             }
         }
-        Spacer(Modifier.weight(1f, fill = false).height(8.dp))
-        PrimaryButton("Начать работу", onClick = onStart, modifier = Modifier.fillMaxWidth())
+        Text("Формат", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PChip("Только текст", selected = !voiceReport, onClick = { onVoice(false) })
+            PChip("Текст и голос", selected = voiceReport, onClick = { onVoice(true) })
+        }
+        Spacer(Modifier.height(8.dp))
+        StepNav(onBack = onBack, onNext = onNext)
+    }
+}
+
+@Composable
+private fun ProblemsStep(
+    mutedKinds: Set<String>,
+    onToggle: (kind: String, enabled: Boolean) -> Unit,
+    onNext: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val c = Petrovich.colors
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Какие проблемы показывать", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Выключенное не видно в списках и не приходит уведомлением, даже срочное.",
+                style = MaterialTheme.typography.bodyMedium, color = c.muted,
+            )
+        }
+        EditableLaterNote()
+        SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                TELEGRAM_KINDS.forEach { (category, kinds) ->
+                    Text(
+                        TELEGRAM_CATEGORIES.getValue(category),
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                    )
+                    kinds.forEach { (kind, name) ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onToggle(kind, kind in mutedKinds) },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = kind !in mutedKinds,
+                                onCheckedChange = { on -> onToggle(kind, on) },
+                            )
+                            Text(name, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        StepNav(onBack = onBack, onNext = onNext)
+    }
+}
+
+@Composable
+private fun NotifyStep(
+    limitDailyPush: Boolean, onLimit: (Boolean) -> Unit,
+    quietHoursEnabled: Boolean, onQuiet: (Boolean) -> Unit,
+    quietStart: String, onQuietStart: (String) -> Unit,
+    quietEnd: String, onQuietEnd: (String) -> Unit,
+    onStart: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val c = Petrovich.colors
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Уведомления", style = MaterialTheme.typography.headlineSmall)
+            Text("Сколько обычных push в день и когда тихие часы.", style = MaterialTheme.typography.bodyMedium, color = c.muted)
+        }
+        EditableLaterNote()
+        SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                SwitchRow(
+                    "Не больше 3 в день", "Остальное — в утреннем докладе. Срочные без лимита.",
+                    limitDailyPush, onLimit,
+                )
+                SwitchRow(
+                    "Тихие часы", "Ночью push только для срочных случаев.",
+                    quietHoursEnabled, onQuiet,
+                )
+            }
+        }
+        if (quietHoursEnabled) {
+            Text("Начало тихих часов", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuietStartOptions.forEach { t -> PChip(t, selected = t == quietStart, onClick = { onQuietStart(t) }) }
+            }
+            Text("Конец тихих часов", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuietEndOptions.forEach { t -> PChip(t, selected = t == quietEnd, onClick = { onQuietEnd(t) }) }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        StepNav(onBack = onBack, onNext = onStart, nextLabel = "Начать работу")
+    }
+}
+
+@Composable
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    val c = Petrovich.colors
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.muted)
+        }
+        Switch(
+            checked = checked, onCheckedChange = onChecked,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = c.accent, checkedThumbColor = c.surface,
+                uncheckedTrackColor = c.line, uncheckedThumbColor = c.surface, uncheckedBorderColor = c.line,
+            ),
+        )
     }
 }
 
@@ -334,11 +602,11 @@ private fun ConnectionErrorScreen(error: ConnectError?, onRetry: () -> Unit, onW
             }
             Text(
                 "Не получилось подключиться к АвтоГРАФ",
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = MaterialTheme.typography.headlineSmall,
+                textAlign = TextAlign.Center, style = MaterialTheme.typography.headlineSmall,
             )
             Text(
                 error?.message ?: "Проверьте логин, пароль и адрес сервера в АвтоГРАФ.WEB. Если всё верно — скорее всего, у дилера старая версия сервера.",
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = c.muted, style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center, color = c.muted, style = MaterialTheme.typography.bodyMedium,
             )
         }
         SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {

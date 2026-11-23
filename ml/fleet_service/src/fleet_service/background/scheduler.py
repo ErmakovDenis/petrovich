@@ -265,27 +265,36 @@ class BackgroundScanner:
             ]
             await self._store.save_widget_stats(schema_id, stats)
 
-        # Сначала сегодня — иначе после очистки таблицы главная часами показывает 0,
-        # пока фон тащит историю с первого дня окна.
-        await _load_and_save(
-            datetime.combine(today, datetime_time()),
-            now_local,
-            [today],
-        )
-        known.add(today)
+        # Всегда пересчитываем последние ~14 дней (в т.ч. уже в БД): иначе после смены формулы
+        # расхода (level-drop) старые строки с UpVol/DnVol остаются и раздувают виджеты.
+        refresh_days = 14
+        refresh: list = []
+        cursor = today
+        while cursor >= first and len(refresh) < refresh_days:
+            refresh.append(cursor)
+            cursor -= timedelta(days=1)
+        chunk_size = 7
+        for i in range(0, len(refresh), chunk_size):
+            chunk = refresh[i:i + chunk_size]
+            start_day, end_day = min(chunk), max(chunk)
+            range_to = now_local if end_day == today else datetime.combine(end_day + timedelta(days=1), datetime_time())
+            await _load_and_save(
+                datetime.combine(start_day, datetime_time()),
+                range_to,
+                sorted(chunk),
+            )
+        known.update(refresh)
 
-        # Добрать пропуски от новых к старым. Не больше ~2 недель за один проход машины:
-        # иначе одна машина на 180 днях держит слот, а остальные не попадают в виджеты (нули на главной).
+        # Дальше — только дырки старше окна refresh (от новых к старым), до 14 за проход.
         missing: list = []
-        cursor = today - timedelta(days=1)
+        cursor = today - timedelta(days=refresh_days)
         while cursor >= first:
             if cursor not in known:
                 missing.append(cursor)
             cursor -= timedelta(days=1)
         missing = missing[:14]
-        chunk_size = 7
         for i in range(0, len(missing), chunk_size):
-            chunk = missing[i:i + chunk_size]  # уже от новых к старым
+            chunk = missing[i:i + chunk_size]
             start_day, end_day = min(chunk), max(chunk)
             await _load_and_save(
                 datetime.combine(start_day, datetime_time()),

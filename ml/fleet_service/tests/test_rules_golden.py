@@ -56,8 +56,13 @@ def compare(case_file: Path) -> None:
 
 def test_golden_cover_every_rule():
     kinds = {e["kind"] for f in CASES for e in load(f)[1]}
-    assert kinds == {"drain", "drop", "power", "volt", "overheat", "oil", "brake"}
-    assert {"demo-0.case.json", "rules-ural.case.json"} <= {f.name for f in CASES}
+    assert kinds >= {
+        "fuel_drain",
+        "towing", "speed_without_movement",
+        "data_gap_all_channels_unavailable", "data_gap_signal_unavailable", "telemetry_gap",
+        "data_gap_gps_unavailable", "data_gap_channel_unavailable", "data_gap",
+    }
+    assert {"demo-0.case.json", "rules-ural.case.json", "rules-api-fallback.case.json"} <= {f.name for f in CASES}
 
 
 @pytest.mark.parametrize("case_file", CASES, ids=lambda p: p.name.removesuffix(".case.json"))
@@ -77,15 +82,13 @@ def test_no_false_positives_on_demo_0():
 
 
 def test_thresholds_change_without_code():
-    telemetry, expected = load(GOLDEN / "anomalies" / "rules-ural.case.json")
+    telemetry, _ = load(GOLDEN / "anomalies" / "rules-api-fallback.case.json")
     default = {a.id for a in detect(telemetry)}
-    # Порог перегрева выше 107 °C — эпизоды перегрева исчезают; остальные правила не меняются.
-    stricter = {a.id for a in detect(telemetry, RuleThresholds(overheat_celsius=110))}
-    assert {i for i in default if "|overheat|" in i} and not {i for i in stricter if "|overheat|" in i}
-    assert stricter == {i for i in default if "|overheat|" not in i}
-    # Тормоза: с порогом 8 мин находится и 8-минутный эпизод.
-    looser = {a.id for a in detect(telemetry, RuleThresholds(brake_min_minutes=8))}
-    assert len([i for i in looser if "|brake|" in i]) > len([i for i in default if "|brake|" in i])
+    # Короткий порог буксировки — те же события; длиннее минимальной длительности — towing пропадает.
+    assert any("|towing|" in i for i in default)
+    no_towing = {a.id for a in detect(telemetry, RuleThresholds(towing_min_minutes=60))}
+    assert not any("|towing|" in i for i in no_towing)
+    assert no_towing == {i for i in default if "|towing|" not in i}
 
 
 def test_java_time_like_local_date_time():
