@@ -30,3 +30,6 @@ keystore.properties
 
 # Локальные артефакты приёмки P0 (снимки тестового эмулятора)
 /ml/docs/artifacts/p0/
+
+# сертификаты
+/ml/fleet_service/certs/
