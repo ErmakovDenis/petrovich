@@ -47,7 +47,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -492,21 +494,7 @@ private fun DetailChart(points: List<WidgetPoint>, unit: String) {
             }
         }
         ChartSelectionLabel(points.getOrNull(selected), unit)
-        if (points.size <= 14) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                points.forEachIndexed { i, p ->
-                    Text(
-                        p.label,
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (i == selected) c.ink else c.muted,
-                        maxLines = 2,
-                        textAlign = TextAlign.Center,
-                        fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
-                    )
-                }
-            }
-        }
+        ChartAxisLabels(points, selected)
     }
 }
 
@@ -563,20 +551,31 @@ private fun DetailChartWithBaseline(points: List<WidgetPoint>, baseline: Double?
             }
         }
         ChartSelectionLabel(points.getOrNull(selected), unit)
-        if (points.size <= 14) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                points.forEachIndexed { i, p ->
-                    Text(
-                        p.label,
-                        Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (i == selected) c.ink else c.muted,
-                        maxLines = 2,
-                        textAlign = TextAlign.Center,
-                        fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
-                    )
-                }
-            }
+        ChartAxisLabels(points, selected)
+    }
+}
+
+/** Подписи оси: явный перевод строки, без soft-wrap — иначе «9.09» рвётся на «9.0» / «9». */
+@Composable
+private fun ChartAxisLabels(points: List<WidgetPoint>, selected: Int) {
+    if (points.size > 14) return
+    val c = Petrovich.colors
+    val dense = points.size >= 10
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(if (dense) 2.dp else 4.dp)) {
+        points.forEachIndexed { i, p ->
+            Text(
+                p.label,
+                Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = if (dense) 9.sp else MaterialTheme.typography.labelSmall.fontSize,
+                color = if (i == selected) c.ink else c.muted,
+                maxLines = 2,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+                textAlign = TextAlign.Center,
+                fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
+                lineHeight = if (dense) 11.sp else MaterialTheme.typography.labelSmall.lineHeight,
+            )
         }
     }
 }
@@ -586,7 +585,13 @@ private fun ChartSelectionLabel(point: WidgetPoint?, unit: String) {
     val c = Petrovich.colors
     if (point == null) return
     val value = "${formatCount(point.value)}${if (unit.isNotEmpty()) " $unit" else ""}"
-    val label = point.label.replace('\n', ' ')
+    // Неделя: «пт» / «20.11» → пробел; недельная группа квартала: «7.10» / «13.10» → тире.
+    val parts = point.label.split('\n')
+    val label = when {
+        parts.size == 2 && parts.all { it.contains('.') && it.any(Char::isDigit) } ->
+            "${parts[0]}–${parts[1]}"
+        else -> parts.joinToString(" ")
+    }
     Text(
         "$label · $value",
         style = MaterialTheme.typography.labelLarge,

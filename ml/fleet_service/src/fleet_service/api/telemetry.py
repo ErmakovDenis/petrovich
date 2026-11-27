@@ -55,10 +55,12 @@ async def widget_stats(
 ) -> WidgetStatsResponse:
     """Готовые суточные суммы для главной; AutoGRAPH здесь не вызывается.
 
-    Клиент для «своего периода» запрашивает текущее окно и такое же предыдущее (для %),
-    поэтому потолок — 2× макс. периода телеметрии в сутках.
+    Клиент для месяца/квартала и «своего» запрашивает текущее окно + прошлое (для %),
+    поэтому потолок шире, чем у живой телеметрии: это чтение из БД, не GetTripTables.
     """
-    max_days = max(1, (settings.telemetry_max_period_hours // 24) * 2)
+    # Не меньше 400 суток (~2× квартал + запас): иначе месяц/3 месяца на проде с коротким
+    # FS_TELEMETRY_MAX_PERIOD_HOURS дают 422 и виджеты показывают нули.
+    max_days = max(400, (settings.telemetry_max_period_hours // 24) * 2)
     if to < from_ or (to - from_).days > max_days:
         raise HTTPException(UNPROCESSABLE, f"Период виджетов должен быть от 0 до {max_days} дней")
     visible = {v.id for v in await service.vehicles(user.session, user.schema_id)}

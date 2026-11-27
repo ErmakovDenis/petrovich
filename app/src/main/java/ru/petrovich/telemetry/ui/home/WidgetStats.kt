@@ -15,6 +15,7 @@ import ru.petrovich.telemetry.data.VehicleTelemetry
 import ru.petrovich.telemetry.ui.common.TimeRange
 import ru.petrovich.telemetry.ui.common.plural
 import java.time.Duration
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
@@ -51,12 +52,6 @@ private const val FUEL_NOISE_RECOVER = 0.7
 
 /** Суточный расход машины выше этого — скорее мусор в widget_daily_stats, чем реал. */
 private const val ABSURD_VEHICLE_DAY_FUEL_L = 400.0
-
-/**
- * Парк проехал, а расход в суточных статах ≈ 0 — стенд ещё со старой/пустой формулой.
- * Таким данным для топлива нельзя верить (иначе неделя показывает «0 л»).
- */
-private const val HOLLOW_FUEL_MIN_KM = 30.0
 
 /** Свежими считаем данные не старше этого — как в [ru.petrovich.telemetry.anomaly.classifyActivity]. */
 private val FRESHNESS: Duration = Duration.ofMinutes(45)
@@ -409,7 +404,11 @@ private fun changePercentByTotals(currentTotal: Double, previousTotal: Double): 
 private fun groupChartPoints(points: List<WidgetPoint>, groupDays: Int): List<WidgetPoint> {
     if (groupDays <= 1 || points.size <= groupDays) return points
     return points.chunked(groupDays).map { chunk ->
-        val label = if (chunk.size == 1) chunk.first().label else "${chunk.first().label}–${chunk.last().label}"
+        // Две строки («7.10» / «13.10»): в узком столбце «7.10–13.10» ломается посередине.
+        val label = when {
+            chunk.size == 1 -> chunk.first().label
+            else -> "${chunk.first().label}\n${chunk.last().label}"
+        }
         WidgetPoint(label, chunk.sumOf { it.value })
     }
 }
@@ -477,11 +476,9 @@ suspend fun loadVehiclePeriodTotals(vehicleId: String, range: TimeRange): Vehicl
     if (range.span.toHours() < 36) return null
     val fromDay = range.from.toLocalDate()
     val toDay = range.to.toLocalDate()
-    val bucketDays = max(1, java.time.temporal.ChronoUnit.DAYS.between(fromDay, toDay).toInt() + 1)
-    val response = runCatching {
-        ServiceLocator.widgetStats.load(fromDay.toString(), toDay.toString())
-    }.getOrNull() ?: return null
-    val items = response.items
+    val bucketDays = max(1, ChronoUnit.DAYS.between(fromDay, toDay).toInt() + 1)
+    val items = sanitizeWidgetItems(loadWidgetStatsItems(fromDay, toDay))
+    if (items.isEmpty()) return null
     val recent = items.map { it.day }.toSortedSet().toList().takeLast(bucketDays).toSet()
     if (!serverDailyStatsUsable(items, recent, bucketDays)) return null
     val daySet = (0 until bucketDays).map { fromDay.plusDays(it.toLong()).toString() }.toSet()
@@ -496,8 +493,51 @@ suspend fun loadVehiclePeriodTotals(vehicleId: String, range: TimeRange): Vehicl
 }
 
 /**
- * Можно ли брать суточные статы со стенда: есть покрытие, нет фантастического расхода
- * и нет «проехали, а топлива 0» (пустой level-drop / не обновлённый стенд).
+ * Суточные статы со стенда — DB, не AutoGRAPH. Прод часто режет длинный from–to (422),
+ * поэтому грузим кусками по [WIDGET_STATS_CHUNK_DAYS] и склеиваем.
+ * 13 суток: неделя (2×7−1) проходит на стенде с лимитом ~14, месяц/квартал — кусками.
+ */
+private const val WIDGET_STATS_CHUNK_DAYS = 13
+
+/**
+ * Дольше этого живая телеметрия на стенде тоже даёт 422 PeriodInvalid.
+ * Fallback на /telemetry для месяца/квартала только плодит нули и шум в логах.
+ */
+private const val TELEMETRY_FALLBACK_MAX_DAYS = 10
+
+private suspend fun loadWidgetStatsItems(from: LocalDate, to: LocalDate): List<ru.petrovich.telemetry.data.DailyVehicleStats> {
+    if (to.isBefore(from)) return emptyList()
+    val full = runCatching {
+        ServiceLocator.widgetStats.load(from.toString(), to.toString())
+    }.getOrNull()
+    if (full != null) return enrichWidgetVehicles(full.items)
+
+    // 422 / сеть: режем на куски — иначе месяц и квартал остаются пустыми.
+    val merged = ArrayList<ru.petrovich.telemetry.data.DailyVehicleStats>()
+    var cursor = from
+    while (!cursor.isAfter(to)) {
+        val end = minOf(cursor.plusDays(WIDGET_STATS_CHUNK_DAYS.toLong() - 1), to)
+        val part = runCatching {
+            ServiceLocator.widgetStats.load(cursor.toString(), end.toString())
+        }.getOrNull()
+        if (part != null) merged += part.items
+        cursor = end.plusDays(1)
+    }
+    return enrichWidgetVehicles(merged)
+}
+
+/** Выкидываем фантастический суточный расход; idle/пробег/заправки не трогаем. */
+private fun sanitizeWidgetItems(
+    items: List<ru.petrovich.telemetry.data.DailyVehicleStats>,
+): List<ru.petrovich.telemetry.data.DailyVehicleStats> =
+    items.map { item ->
+        if (item.fuel > ABSURD_VEHICLE_DAY_FUEL_L) item.copy(fuel = 0.0) else item
+    }
+
+/**
+ * Можно ли брать суточные статы со стенда.
+ * Раньше hollow/absurd по топливу отбрасывали весь ответ — из‑за этого простой/пробег
+ * за месяц становились нулями при живой неделе.
  */
 private fun serverDailyStatsUsable(
     items: List<ru.petrovich.telemetry.data.DailyVehicleStats>,
@@ -506,39 +546,39 @@ private fun serverDailyStatsUsable(
 ): Boolean {
     if (items.isEmpty()) return false
     val recentRows = items.filter { it.day in recentDays }
+    if (recentRows.isEmpty()) return false
+    val covered = items.map { it.vehicle.id }.toSet().size
+    if (covered < 1) return false
     val recentFuel = recentRows.sumOf { it.fuel }
     val recentKm = recentRows.sumOf { it.mileage }
-    val covered = items.map { it.vehicle.id }.toSet().size
-    if (covered < 2) return false
-    if (recentFuel <= 0.01 && recentKm <= 0.01) return false
-    val maxVehicleDayFuel = recentRows.groupBy { it.vehicle.id to it.day }
-        .values.maxOfOrNull { rows -> rows.sumOf { it.fuel } } ?: 0.0
-    if (maxVehicleDayFuel > ABSURD_VEHICLE_DAY_FUEL_L) return false
+    val recentIdle = recentRows.sumOf { it.idle }
+    val recentRefuels = recentRows.sumOf { it.refuels }
+    // Хоть какая-то активность в окне — статы годны (топливо может быть пустым после смены формулы).
+    if (recentFuel <= 0.01 && recentKm <= 0.01 && recentIdle <= 0.01 && recentRefuels <= 0) return false
     if (covered > 0 && recentFuel > covered * bucketDays * 250.0) return false
-    // Пробег есть, расход обнулился — считаем на клиенте, пока стенд не пересчитает.
-    if (recentKm >= HOLLOW_FUEL_MIN_KM && recentFuel <= 0.01) return false
     return true
 }
 
 /** Независимая загрузка для «Подробной сводки» (3.15): свой запрос под выбранный период. */
 suspend fun loadWidgetSummary(type: WidgetType, period: WidgetPeriod): WidgetSummary = coroutineScope {
     val settings = ServiceLocator.settings.current()
+    val bucketCount = period.bucketCount
+    val now = LocalDateTime.now()
     if (settings.telemetryOnServer && period != WidgetPeriod.DAY) {
-        val now = LocalDateTime.now()
-        val bucketCount = period.bucketCount
         val from = now.toLocalDate().minusDays((bucketCount * 2 - 1).toLong())
-        val response = runCatching { ServiceLocator.widgetStats.load(from.toString(), now.toLocalDate().toString()) }.getOrNull()
-        val items = enrichWidgetVehicles(response?.items.orEmpty())
+        val items = sanitizeWidgetItems(loadWidgetStatsItems(from, now.toLocalDate()))
         val recent = items.map { it.day }.toSortedSet().toList().takeLast(bucketCount).toSet()
         if (serverDailyStatsUsable(items, recent, bucketCount)) {
+            return@coroutineScope buildDailySummary(type, period, items, from, bucketCount)
+        }
+        // Месяц/квартал: не падаем в /telemetry (там тот же короткий лимит → 422 → нули).
+        if (bucketCount > TELEMETRY_FALLBACK_MAX_DAYS) {
             return@coroutineScope buildDailySummary(type, period, items, from, bucketCount)
         }
     }
     val repo = ServiceLocator.telemetry
     val vehicles = repo.vehicles().let { if (type == WidgetType.FUEL_TRUCKS) it.filter(Vehicle::isTruck) else it }
     val unit = if (period == WidgetPeriod.DAY) ChronoUnit.HOURS else ChronoUnit.DAYS
-    val bucketCount = period.bucketCount
-    val now = LocalDateTime.now()
     val bucketStart = if (unit == ChronoUnit.HOURS) {
         now.minusHours((bucketCount * 2 - 1).toLong()).withMinute(0).withSecond(0).withNano(0)
     } else {
@@ -557,10 +597,13 @@ suspend fun loadWidgetSummary(type: WidgetType, range: TimeRange): WidgetSummary
     if (settings.telemetryOnServer && unit == ChronoUnit.DAYS) {
         val fromDay = windowStart.toLocalDate()
         val toDay = range.to.toLocalDate()
-        val response = runCatching { ServiceLocator.widgetStats.load(fromDay.toString(), toDay.toString()) }.getOrNull()
-        val items = enrichWidgetVehicles(response?.items.orEmpty())
+        val items = sanitizeWidgetItems(loadWidgetStatsItems(fromDay, toDay))
         val recent = items.map { it.day }.toSortedSet().toList().takeLast(bucketCount).toSet()
         if (serverDailyStatsUsable(items, recent, bucketCount)) {
+            return@coroutineScope buildDailySummary(type, null, items, fromDay, bucketCount)
+        }
+        val spanDays = ChronoUnit.DAYS.between(range.from.toLocalDate(), toDay).toInt() + 1
+        if (spanDays > TELEMETRY_FALLBACK_MAX_DAYS) {
             return@coroutineScope buildDailySummary(type, null, items, fromDay, bucketCount)
         }
     }
@@ -637,11 +680,13 @@ suspend fun loadFleetPeriod(period: WidgetPeriod): FleetWeek = coroutineScope {
     val fromDay = to.toLocalDate().minusDays((bucketDays * 2 - 1).toLong())
     val from = fromDay.atStartOfDay()
     if (settings.telemetryOnServer) {
-        val response = runCatching { ServiceLocator.widgetStats.load(fromDay.toString(), to.toLocalDate().toString()) }.getOrNull()
-        val items = enrichWidgetVehicles(response?.items.orEmpty())
+        val items = sanitizeWidgetItems(loadWidgetStatsItems(fromDay, to.toLocalDate()))
         val recent = items.map { it.day }.toSortedSet().toList().takeLast(bucketDays).toSet()
-        // Фон не догнал / пустой расход при пробеге / UpVol-мусор — считаем по телеметрии.
         if (serverDailyStatsUsable(items, recent, bucketDays)) {
+            return@coroutineScope FleetWeek(emptyList(), from, to, items, period)
+        }
+        // Месяц / 3 месяца: /telemetry на стенде с коротким лимитом → 422 → нули на UI.
+        if (bucketDays > TELEMETRY_FALLBACK_MAX_DAYS) {
             return@coroutineScope FleetWeek(emptyList(), from, to, items, period)
         }
     }
@@ -656,14 +701,18 @@ suspend fun loadFleetPeriod(period: WidgetPeriod): FleetWeek = coroutineScope {
 suspend fun loadFleetRange(range: TimeRange): FleetWeek = coroutineScope {
     val windowStart = range.previousOfSameLength().from
     val settings = ServiceLocator.settings.current()
+    val bucketDays = max(1, ChronoUnit.DAYS.between(range.from.toLocalDate(), range.to.toLocalDate()).toInt() + 1)
     if (settings.telemetryOnServer && range.span.toHours() >= 36) {
         val fromDay = windowStart.toLocalDate()
         val toDay = range.to.toLocalDate()
-        val response = runCatching { ServiceLocator.widgetStats.load(fromDay.toString(), toDay.toString()) }.getOrNull()
-        val items = enrichWidgetVehicles(response?.items.orEmpty())
-        val bucketDays = max(1, java.time.temporal.ChronoUnit.DAYS.between(range.from.toLocalDate(), toDay).toInt() + 1)
+        val items = sanitizeWidgetItems(loadWidgetStatsItems(fromDay, toDay))
         val recent = items.map { it.day }.toSortedSet().toList().takeLast(bucketDays).toSet()
         if (serverDailyStatsUsable(items, recent, bucketDays)) {
+            return@coroutineScope FleetWeek(
+                emptyList(), windowStart, range.to, items, period = null, customRange = range,
+            )
+        }
+        if (bucketDays > TELEMETRY_FALLBACK_MAX_DAYS) {
             return@coroutineScope FleetWeek(
                 emptyList(), windowStart, range.to, items, period = null, customRange = range,
             )
