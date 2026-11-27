@@ -4,14 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +31,10 @@ import kotlinx.coroutines.launch
 import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.AssistantIdentityState
 import ru.petrovich.telemetry.data.settings.AppSettings
+import ru.petrovich.telemetry.ui.common.PrimaryButton
+import ru.petrovich.telemetry.ui.common.SectionLabel
+import ru.petrovich.telemetry.ui.common.SoftButton
+import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Instant
 import java.time.ZoneId
@@ -42,6 +45,7 @@ import java.time.format.DateTimeFormatter
 fun AssistantIdentitySection(settings: AppSettings) {
     val identity = ServiceLocator.assistantIdentity
     val scope = rememberCoroutineScope()
+    val c = Petrovich.colors
     var password by remember(settings.identityGeneration) { mutableStateOf("") }
     var consent by remember(settings.identityGeneration) { mutableStateOf(false) }
     var state by remember { mutableStateOf(AssistantIdentityState()) }
@@ -68,66 +72,113 @@ fun AssistantIdentitySection(settings: AppSettings) {
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Личный профиль Петровича", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Привязка аккаунта для будущей памяти ассистента. Прозвища машин и история памяти пока недоступны.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        if (!state.pendingRevocation && settings.userName.isNotBlank()) {
-            Text("Аккаунт: ${settings.userName}. Схема: ${settings.schemaName.ifBlank { settings.schemaId }}", style = MaterialTheme.typography.bodySmall)
-        }
-        when {
-            state.error != null -> Text(state.error.orEmpty(), color = MaterialTheme.colorScheme.error)
-            state.pendingRevocation -> Text("Привязка отключена на устройстве. Отзыв на прежнем стенде повторится при доступной сети.")
-            state.connected -> Text("Привязка сохранена до " + Instant.ofEpochMilli(state.expiresAt!!).atZone(ZoneId.systemDefault())
-                .format(DateTimeFormatter.ofPattern("dd.MM HH:mm")))
-            else -> Text("Аккаунт не привязан. Обычный чат доступен без личного профиля.")
-        }
-        if (!state.connected && !state.pendingRevocation && state.error == null) {
-            OutlinedTextField(
-                value = password, onValueChange = { password = it }, singleLine = true,
-                enabled = !busy, modifier = Modifier.fillMaxWidth(), label = { Text("Подтвердите пароль AutoGRAPH") },
-                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+    SectionLabel("Личный профиль Петровича")
+    SettingsCard {
+        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Привязка аккаунта для будущей памяти ассистента. Прозвища машин и история памяти пока недоступны.",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.muted,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = consent, onCheckedChange = { consent = it }, enabled = !busy)
-                Text("Разрешаю передать пароль стенду ${settings.serverUrl} для проверки аккаунта. Стенд не сохраняет этот пароль.", style = MaterialTheme.typography.bodySmall)
+            if (!state.pendingRevocation && settings.userName.isNotBlank()) {
+                Text(
+                    "Аккаунт: ${settings.userName}. Схема: ${settings.schemaName.ifBlank { settings.schemaId }}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.muted,
+                )
             }
-            Button(enabled = !busy && consent && password.isNotEmpty() && settings.assistantOnServer &&
-                settings.userName.isNotBlank() && settings.schemaId.isNotBlank(), onClick = {
-                val suppliedPassword = password
-                val generation = settings.identityGeneration
-                password = ""
-                consent = false
-                action { identity.connect(suppliedPassword, consent = true, expectedGeneration = generation); "Аккаунт привязан" }
-            }) { Text("Подтвердить личность") }
-        }
-        if (state.connected) {
-            OutlinedButton(enabled = !busy, onClick = { action { identity.verify(); "Стенд подтвердил привязку" } }) {
-                Text("Проверить привязку")
+            when {
+                state.error != null -> Text(state.error.orEmpty(), color = c.high, style = MaterialTheme.typography.bodyMedium)
+                state.pendingRevocation -> Text(
+                    "Привязка отключена на устройстве. Отзыв на прежнем стенде повторится при доступной сети.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                state.connected -> Text(
+                    "Привязка сохранена до " + Instant.ofEpochMilli(state.expiresAt!!).atZone(ZoneId.systemDefault())
+                        .format(DateTimeFormatter.ofPattern("dd.MM HH:mm")),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                else -> Text(
+                    "Аккаунт не привязан. Обычный чат доступен без личного профиля.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
-        }
-        if (state.connected) TelegramIdentitySection(settings)
-        if (settings.identityCiphertext.isNotEmpty()) {
-            OutlinedButton(enabled = !busy, onClick = {
-                action { if (identity.disconnect()) "Привязка отключена; отзыв сохранён и будет повторён" else "Привязка отключена" }
-            }) { Text(if (state.pendingRevocation) "Повторить отзыв" else "Отключить привязку") }
-            if (state.error != null || state.pendingRevocation) {
-                TextButton(enabled = !busy, onClick = { confirmForget = true }) { Text("Удалить только с устройства") }
+            if (!state.connected && !state.pendingRevocation && state.error == null) {
+                OutlinedTextField(
+                    value = password, onValueChange = { password = it }, singleLine = true,
+                    enabled = !busy, modifier = Modifier.fillMaxWidth(), label = { Text("Подтвердите пароль AutoGRAPH") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                )
+                Row(verticalAlignment = Alignment.Top) {
+                    Checkbox(checked = consent, onCheckedChange = { consent = it }, enabled = !busy)
+                    Text(
+                        "Разрешаю передать пароль стенду ${settings.serverUrl} для проверки аккаунта. Стенд не сохраняет этот пароль.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.muted,
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+                PrimaryButton(
+                    text = "Подтвердить личность",
+                    enabled = !busy && consent && password.isNotEmpty() && settings.assistantOnServer &&
+                        settings.userName.isNotBlank() && settings.schemaId.isNotBlank(),
+                    onClick = {
+                        val suppliedPassword = password
+                        val generation = settings.identityGeneration
+                        password = ""
+                        consent = false
+                        action { identity.connect(suppliedPassword, consent = true, expectedGeneration = generation); "Аккаунт привязан" }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
+            if (state.connected) {
+                SoftButton(
+                    text = "Проверить привязку",
+                    enabled = !busy,
+                    onClick = { action { identity.verify(); "Стенд подтвердил привязку" } },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (state.connected) TelegramIdentitySection(settings)
+            if (settings.identityCiphertext.isNotEmpty()) {
+                SoftButton(
+                    text = if (state.pendingRevocation) "Повторить отзыв" else "Отключить привязку",
+                    enabled = !busy,
+                    onClick = {
+                        action {
+                            if (identity.disconnect()) "Привязка отключена; отзыв сохранён и будет повторён"
+                            else "Привязка отключена"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (state.error != null || state.pendingRevocation) {
+                    TextButton(enabled = !busy, onClick = { confirmForget = true }) {
+                        Text("Удалить только с устройства", color = c.high)
+                    }
+                }
+            }
+            if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.accent)
+            message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted) }
         }
-        if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-        message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
     if (confirmForget) AlertDialog(
         onDismissRequest = { confirmForget = false },
         title = { Text("Удалить локальную привязку?") },
-        text = { Text("Стенд не подтвердил отзыв. Его ключ доступа может действовать до исходного срока — не более часа после выдачи. После удаления повторить отзыв с устройства не получится.") },
-        confirmButton = { TextButton(onClick = {
-            confirmForget = false
-            action { identity.forgetLocally(); "Локальные данные удалены; отзыв на стенде не подтверждён" }
-        }) { Text("Удалить с устройства") } },
+        text = {
+            Text(
+                "Стенд не подтвердил отзыв. Его ключ доступа может действовать до исходного срока — не более часа после выдачи. " +
+                    "После удаления повторить отзыв с устройства не получится.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                confirmForget = false
+                action { identity.forgetLocally(); "Локальные данные удалены; отзыв на стенде не подтверждён" }
+            }) { Text("Удалить с устройства") }
+        },
         dismissButton = { TextButton(onClick = { confirmForget = false }) { Text("Отмена") } },
     )
 }

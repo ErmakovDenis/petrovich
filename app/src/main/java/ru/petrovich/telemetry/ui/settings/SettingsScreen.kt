@@ -31,8 +31,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -113,7 +111,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             SectionLabel("Оформление")
-            Card {
+            SettingsCard {
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -129,13 +127,13 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             }
 
             SectionLabel("История ассистента")
-            Card {
-                SwitchRow("Сохранять разговоры на сервере", "Нужен подтверждённый личный профиль и включённая история на стенде",
+            SettingsCard {
+                SettingsSwitchRow("Сохранять разговоры на сервере", "Нужен подтверждённый личный профиль и включённая история на стенде",
                     s.serverChatHistory, onChecked = { v -> save { it.copy(serverChatHistory = v) } })
             }
 
             SectionLabel("Доклад")
-            Card {
+            SettingsCard {
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Время", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
                     SoftButton(s.reportTime, onClick = { timePicker = true }, container = c.accentSoft, content = c.accent)
@@ -155,7 +153,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             }
 
             SectionLabel("Какие проблемы показывать")
-            Card {
+            SettingsCard {
                 Text(
                     "Выключенное не видно в «Проблемах», на главной и в «Парке» и не приходит уведомлением, даже если оно срочное. " +
                         "В Telegram скрывается то же.",
@@ -184,8 +182,8 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             }
 
             SectionLabel("Уведомления на телефоне")
-            Card {
-                SwitchRow(
+            SettingsCard {
+                SettingsSwitchRow(
                     "Push с приложения",
                     if (s.telegramLinked) {
                         "Выключите, если уже получаете события в Telegram — тогда не будет дублей"
@@ -197,12 +195,12 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
                     enabled = s.telegramLinked,
                 )
                 HorizontalDivider(color = c.line)
-                SwitchRow(
+                SettingsSwitchRow(
                     "Не больше 3 в день", "Остальное — в докладе",
                     s.limitDailyPush, onChecked = { v -> save { it.copy(limitDailyPush = v) } },
                 )
                 HorizontalDivider(color = c.line)
-                SwitchRow(
+                SettingsSwitchRow(
                     "Тихие часы", "${s.quietHoursStart}–${s.quietHoursEnd} — ночью push только для срочных",
                     s.quietHoursEnabled, onChecked = { v -> save { it.copy(quietHoursEnabled = v) } },
                     onClick = { quietHoursDialog = true },
@@ -211,7 +209,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
 
             SectionLabel("Кому звонить и писать")
             if (s.contacts.isNotEmpty()) {
-                Card {
+                SettingsCard {
                     s.contacts.forEachIndexed { i, contact ->
                         if (i > 0) HorizontalDivider(color = c.line)
                         ContactRow(contact, onClick = { editingContact = contact })
@@ -221,7 +219,7 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
             SoftButton("Добавить сотрудника", onClick = { addingContact = true }, modifier = Modifier.fillMaxWidth(), leading = Icons.Filled.Add)
 
             SectionLabel("Помощь")
-            Card {
+            SettingsCard {
                 HelpRow("Как выглядит срочное уведомление", onClick = { notificationExample = true })
                 HorizontalDivider(color = c.line)
                 HelpRow("Если не удаётся подключиться", onClick = { connectionHelp = true })
@@ -277,13 +275,6 @@ fun SettingsScreen(onOpenConnection: () -> Unit, onRestartOnboarding: () -> Unit
 }
 
 @Composable
-private fun Card(content: @Composable () -> Unit) {
-    SurfaceCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(horizontal = 16.dp)) { content() }
-    }
-}
-
-@Composable
 private fun DayToggle(day: DayOfWeek, on: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val c = Petrovich.colors
     val label = day.getDisplayName(TextStyle.SHORT, Locale("ru")).replaceFirstChar { it.uppercase() }.take(2)
@@ -297,33 +288,6 @@ private fun DayToggle(day: DayOfWeek, on: Boolean, modifier: Modifier, onClick: 
             contentColor = if (on) c.onAccent else c.muted,
         ),
     ) { Text(label, style = MaterialTheme.typography.labelMedium) }
-}
-
-@Composable
-private fun SwitchRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onChecked: (Boolean) -> Unit,
-    onClick: (() -> Unit)? = null,
-    enabled: Boolean = true,
-) {
-    val c = Petrovich.colors
-    Row(Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(
-            (if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.muted)
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onChecked,
-            enabled = enabled,
-            colors = SwitchDefaults.colors(checkedTrackColor = c.accent, checkedThumbColor = c.surface, uncheckedTrackColor = c.line, uncheckedThumbColor = c.surface, uncheckedBorderColor = c.line),
-        )
-    }
 }
 
 /** Строка раздела «Помощь»: заголовок и шеврон, целиком кликабельна. */

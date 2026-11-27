@@ -5,13 +5,14 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -19,22 +20,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -56,13 +48,18 @@ import ru.petrovich.telemetry.ServiceLocator
 import ru.petrovich.telemetry.data.TELEGRAM_CATEGORIES
 import ru.petrovich.telemetry.data.TELEGRAM_KINDS
 import ru.petrovich.telemetry.data.TelegramCardSettings
-import ru.petrovich.telemetry.data.TelegramListSettings
-import ru.petrovich.telemetry.data.TelegramReportSettings
 import ru.petrovich.telemetry.data.TelegramChat
 import ru.petrovich.telemetry.data.TelegramChats
+import ru.petrovich.telemetry.data.TelegramListSettings
+import ru.petrovich.telemetry.data.TelegramReportSettings
 import ru.petrovich.telemetry.data.TelegramSubscription
 import ru.petrovich.telemetry.data.TelegramVehicle
 import ru.petrovich.telemetry.ui.common.AppTopBar
+import ru.petrovich.telemetry.ui.common.PChip
+import ru.petrovich.telemetry.ui.common.PrimaryButton
+import ru.petrovich.telemetry.ui.common.SectionLabel
+import ru.petrovich.telemetry.ui.common.SoftButton
+import ru.petrovich.telemetry.ui.theme.Petrovich
 import ru.petrovich.telemetry.util.runCatchingCancellable
 import java.time.Instant
 import java.time.ZoneId
@@ -101,12 +98,12 @@ private val DATE = DateTimeFormatter.ofPattern("d.MM.yyyy")
  * Telegram-бот: подключение (код из бота или ссылка на этом телефоне) и что присылать в каждый подключённый чат.
  * Подписка хранится на стенде — те же настройки видны в боте (/settings).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
     val settings by ServiceLocator.settings.settings.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val c = Petrovich.colors
 
     var data by remember { mutableStateOf<TelegramChats?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -135,119 +132,171 @@ fun TelegramScreen(onBack: () -> Unit, onOpenConnection: () -> Unit) {
     fun open(url: String): Boolean = try {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         true
-    } catch (e: ActivityNotFoundException) {
+    } catch (_: ActivityNotFoundException) {
         false
     }
 
     val ready = settings?.let { it.backgroundOnServer && it.standAccessGranted } == true
     LaunchedEffect(ready) { if (ready) reload() }
 
-    Scaffold(topBar = { AppTopBar(title = "Telegram", onBack = onBack) }) { padding ->
+    Scaffold(
+        topBar = { AppTopBar(title = "Telegram", onBack = onBack) },
+        containerColor = c.bg,
+    ) { padding ->
         val s = settings ?: return@Scaffold
         Column(
-            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                "Бот «Петровича» присылает события парка, даёт принять решение, спросить ассистента и написать " +
-                    "сотруднику прямо в Telegram. Он работает по доступу фоновой проверки — пароль в Telegram не передаётся",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (!ready) {
+            SettingsCard {
                 Text(
-                    if (!s.backgroundOnServer) "Сначала включите «Фоновая проверка» в настройках уведомлений: " +
-                        "бот работает по доступу стенда к AutoGRAPH"
-                    else "Ждём, пока стенд получит доступ фоновой проверки, — обычно это занимает несколько секунд",
-                    style = MaterialTheme.typography.bodyMedium,
+                    "Бот «Петровича» присылает события парка, даёт принять решение, спросить ассистента и написать " +
+                        "сотруднику прямо в Telegram. Он работает по доступу фоновой проверки — пароль в Telegram не передаётся",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.muted,
+                    modifier = Modifier.padding(vertical = 12.dp),
                 )
-                OutlinedButton(onClick = onOpenConnection) { Text("Открыть «Подключение и данные»") }
+            }
+
+            if (!ready) {
+                SectionLabel("Подключение")
+                SettingsCard {
+                    Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            if (!s.backgroundOnServer) {
+                                "Сначала включите «Фоновая проверка» в настройках уведомлений: " +
+                                    "бот работает по доступу стенда к AutoGRAPH"
+                            } else {
+                                "Ждём, пока стенд получит доступ фоновой проверки, — обычно это занимает несколько секунд"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        SoftButton(
+                            text = "Открыть «Подключение и данные»",
+                            onClick = onOpenConnection,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
                 return@Column
             }
+
             val d = data
             when {
-                d == null && loading -> CircularProgressIndicator()
-                d == null -> {
-                    error?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    OutlinedButton(onClick = { reload() }) { Text("Повторить") }
+                d == null && loading -> {
+                    Row(Modifier.fillMaxWidth().padding(24.dp), horizontalArrangement = Arrangement.Center) {
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp, color = c.accent)
+                    }
                 }
-                !d.configured -> Text(
-                    "Telegram-бот на стенде не настроен (FS_TELEGRAM_BOT_USERNAME и FS_TELEGRAM_SERVICE_TOKEN)",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                else -> {
-                    Text(if (d.chats.isEmpty()) "Подключить бота" else "Подключить ещё один чат", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "1. Откройте бота в Telegram — на этом телефоне или любом другом устройстве — и отправьте /start.\n" +
-                            "2. Введите здесь код, который пришлёт бот.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    d.botUrl?.let { url ->
-                        OutlinedButton(onClick = { if (!open(url)) status = "Откройте в Telegram: $url" }) {
-                            Text("Открыть бота ${url.substringAfterLast('/').let { "@$it" }}")
+                d == null -> {
+                    SettingsCard {
+                        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.high) }
+                            SoftButton(text = "Повторить", onClick = { reload() }, modifier = Modifier.fillMaxWidth())
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = code, onValueChange = { code = it.uppercase().take(12) },
-                            label = { Text("Код из бота") }, placeholder = { Text("XXXX-XXXX") }, singleLine = true,
-                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
-                            modifier = Modifier.weight(1f),
+                }
+                !d.configured -> {
+                    SettingsCard {
+                        Text(
+                            "Telegram-бот на стенде не настроен (FS_TELEGRAM_BOT_USERNAME и FS_TELEGRAM_SERVICE_TOKEN)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(vertical = 12.dp),
                         )
-                        Button(
-                            enabled = code.count { it.isLetterOrDigit() } >= 8 && !busy,
-                            onClick = {
-                                busy = true
-                                status = null
-                                scope.launch {
-                                    runCatchingCancellable { ServiceLocator.telegram.pair(s.deviceId, s.schemaName, code) }
-                                        .onSuccess { chat ->
-                                            code = ""
-                                            status = "Подключено: ${chat.label()}. Бот уже поздоровался в чате"
-                                            reload()
-                                        }
-                                        .onFailure { status = it.message }
-                                    busy = false
-                                }
-                            },
-                        ) { Text("Подключить") }
                     }
-                    TextButton(
-                        enabled = !busy,
-                        onClick = {
-                            busy = true
-                            status = null
-                            scope.launch {
-                                status = runCatchingCancellable { ServiceLocator.telegram.link(s.deviceId, s.schemaName) }.fold(
-                                    { link ->
-                                        if (open(link.url)) "Нажмите «Начать» в боте — чат подключится сам, затем обновите этот экран"
-                                        else "Не нашлось Telegram на этом телефоне — подключитесь кодом из бота"
-                                    },
-                                    { "Не получилось: ${it.message}" },
+                }
+                else -> {
+                    SectionLabel(if (d.chats.isEmpty()) "Подключить бота" else "Подключить ещё один чат")
+                    SettingsCard {
+                        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                "1. Откройте бота в Telegram — на этом телефоне или любом другом устройстве — и отправьте /start.\n" +
+                                    "2. Введите здесь код, который пришлёт бот.",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            d.botUrl?.let { url ->
+                                val bot = url.substringAfterLast('/').let { "@$it" }
+                                SoftButton(
+                                    text = "Открыть $bot",
+                                    onClick = { if (!open(url)) status = "Откройте в Telegram: $url" },
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
-                                busy = false
                             }
-                        },
-                    ) { Text("Telegram на этом телефоне? Подключить по ссылке") }
-                    status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                            OutlinedTextField(
+                                value = code, onValueChange = { code = it.uppercase().take(12) },
+                                label = { Text("Код из бота") }, placeholder = { Text("XXXX-XXXX") }, singleLine = true,
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            PrimaryButton(
+                                text = "Подключить",
+                                enabled = code.count { it.isLetterOrDigit() } >= 8 && !busy,
+                                onClick = {
+                                    busy = true
+                                    status = null
+                                    scope.launch {
+                                        runCatchingCancellable { ServiceLocator.telegram.pair(s.deviceId, s.schemaName, code) }
+                                            .onSuccess { chat ->
+                                                code = ""
+                                                status = "Подключено: ${chat.label()}. Бот уже поздоровался в чате"
+                                                reload()
+                                            }
+                                            .onFailure { status = it.message }
+                                        busy = false
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            TextButton(
+                                enabled = !busy,
+                                onClick = {
+                                    busy = true
+                                    status = null
+                                    scope.launch {
+                                        status = runCatchingCancellable { ServiceLocator.telegram.link(s.deviceId, s.schemaName) }.fold(
+                                            { link ->
+                                                if (open(link.url)) {
+                                                    "Нажмите «Начать» в боте — чат подключится сам, затем обновите этот экран"
+                                                } else {
+                                                    "Не нашлось Telegram на этом телефоне — подключитесь кодом из бота"
+                                                }
+                                            },
+                                            { "Не получилось: ${it.message}" },
+                                        )
+                                        busy = false
+                                    }
+                                },
+                            ) { Text("Telegram на этом телефоне? Подключить по ссылке") }
+                            status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.muted) }
+                        }
+                    }
 
                     if (d.chats.isNotEmpty()) {
-                        HorizontalDivider()
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Что присылать", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { reload() }, enabled = !loading) { Text("Обновить") }
+                        SectionLabel("Что присылать")
+                        SettingsCard {
+                            Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "«Критично» по выбранным машинам приходит всегда, кроме выключенных событий. " +
+                                            "Основное можно поменять и в боте командой /settings",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.muted,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextButton(onClick = { reload() }, enabled = !loading) { Text("Обновить") }
+                                }
+                                d.vehiclesError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.high) }
+                                error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.high) }
+                            }
                         }
-                        Text(
-                            "«Критично» по выбранным машинам приходит всегда, кроме выключенных событий. Основное можно " +
-                                "поменять и в боте командой /settings",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        d.vehiclesError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                        error?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         d.chats.forEach { chat ->
                             ChatCard(
                                 chat, d.vehicles,
                                 onChange = { sub ->
-                                    // Сразу на экране; отказ стенда — возвращаем как было.
                                     data = d.copy(chats = d.chats.map { if (it.chatId == chat.chatId) it.copy(subscription = sub) else it })
                                     scope.launch {
                                         if (sub.mutedKinds.toSet() != chat.subscription.mutedKinds.toSet()) {
@@ -295,20 +344,24 @@ private fun TelegramChat.label(): String = title ?: "чат $chatId"
 
 @Composable
 private fun ChatCard(chat: TelegramChat, vehicles: List<TelegramVehicle>, onChange: (TelegramSubscription) -> Unit, onUnlink: () -> Unit) {
+    val c = Petrovich.colors
     val sub = chat.subscription
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    SettingsCard {
+        Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(chat.label(), style = MaterialTheme.typography.titleSmall)
             val since = Instant.ofEpochMilli(chat.linkedAt).atZone(ZoneId.systemDefault()).format(DATE)
-            Text("Подключён $since · ${chat.userName}, «${chat.schemaName}»", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "Подключён $since · ${chat.userName}, «${chat.schemaName}»",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.muted,
+            )
             Section("Машины", vehiclesSummary(sub, vehicles)) { VehiclesSettings(sub, vehicles, onChange) }
             Section("События", eventsSummary(sub)) { EventsSettings(sub, onChange) }
             Section("Когда присылать", whenSummary(sub)) { WhenSettings(sub, onChange) }
             Section("Доклад и сводка", reportsSummary(sub.reports)) { ReportsSettings(sub, onChange) }
             Section("Списки «Проблемы» и «Парк»", listsSummary(sub.lists)) { ListsSettings(sub, onChange) }
             Section("Карточка события", cardSummary(sub.card)) { CardSettingsEditor(sub, onChange) }
-            TextButton(onClick = onUnlink) { Text("Отключить этот чат") }
+            TextButton(onClick = onUnlink) { Text("Отключить этот чат", color = c.high) }
         }
     }
 }
@@ -316,14 +369,18 @@ private fun ChatCard(chat: TelegramChat, vehicles: List<TelegramVehicle>, onChan
 /** Раздел настроек: заголовок и краткое «что сейчас», по нажатию — сами настройки. */
 @Composable
 private fun Section(title: String, summary: String, content: @Composable () -> Unit) {
+    val c = Petrovich.colors
     var open by rememberSaveable(title) { mutableStateOf(false) }
-    HorizontalDivider()
-    Row(Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    HorizontalDivider(color = c.line)
+    Row(
+        Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = c.muted)
         }
-        Icon(if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, contentDescription = null)
+        Icon(if (open) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, contentDescription = null, tint = c.muted)
     }
     if (open) Column(Modifier.padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
 }
@@ -359,13 +416,13 @@ private fun reportsSummary(r: TelegramReportSettings): String = listOf(
 private fun ReportsSettings(sub: TelegramSubscription, onChange: (TelegramSubscription) -> Unit) {
     val r = sub.reports
     fun set(next: TelegramReportSettings) = onChange(sub.copy(reports = next))
-    ToggleRow("Утренний доклад", "События за сутки по вашим машинам и событиям", r.daily) { set(r.copy(daily = it)) }
+    TgToggleRow("Утренний доклад", "События за сутки по вашим машинам и событиям", r.daily) { set(r.copy(daily = it)) }
     if (r.daily) {
         TimeChips(r.dailyTime, DAILY_TIMES) { set(r.copy(dailyTime = it)) }
         Choice("Дни", listOf(false to "Каждый день", true to "По будням"), r.weekdaysOnly) { set(r.copy(weekdaysOnly = it)) }
-        ToggleRow("Если событий не было", "Прислать короткое «всё спокойно»", r.whenEmpty) { set(r.copy(whenEmpty = it)) }
+        TgToggleRow("Если событий не было", "Прислать короткое «всё спокойно»", r.whenEmpty) { set(r.copy(whenEmpty = it)) }
     }
-    ToggleRow("Недельная сводка", "Итоги прошлой недели: события, решения, машины", r.weekly) { set(r.copy(weekly = it)) }
+    TgToggleRow("Недельная сводка", "Итоги прошлой недели: события, решения, машины", r.weekly) { set(r.copy(weekly = it)) }
     if (r.weekly) {
         Choice("День", WEEKDAYS, r.weeklyDay) { set(r.copy(weeklyDay = it)) }
         TimeChips(r.weeklyTime, DAILY_TIMES) { set(r.copy(weeklyTime = it)) }
@@ -377,9 +434,9 @@ private fun ReportsSettings(sub: TelegramSubscription, onChange: (TelegramSubscr
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TimeChips(selected: String, options: List<String>, onSelect: (String) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         (options + selected).distinct().sorted().forEach { t ->
-            FilterChip(selected = t == selected, onClick = { onSelect(t) }, label = { Text(t) })
+            PChip(t, selected = t == selected, onClick = { onSelect(t) })
         }
     }
 }
@@ -402,7 +459,7 @@ private fun cardSummary(card: TelegramCardSettings): String {
 
 @Composable
 private fun VehiclesSettings(sub: TelegramSubscription, vehicles: List<TelegramVehicle>, onChange: (TelegramSubscription) -> Unit) {
-    ToggleRow("Все машины", "И новые, когда появятся", sub.vehicleIds == null) { all ->
+    TgToggleRow("Все машины", "И новые, когда появятся", sub.vehicleIds == null) { all ->
         onChange(sub.copy(vehicleIds = if (all) null else vehicles.map { it.id }))
     }
     val chosen = sub.vehicleIds ?: return
@@ -414,8 +471,10 @@ private fun VehiclesSettings(sub: TelegramSubscription, vehicles: List<TelegramV
 
 @Composable
 private fun EventsSettings(sub: TelegramSubscription, onChange: (TelegramSubscription) -> Unit) {
-    Note("Выключенное событие не приходит совсем, даже критичное, и не показывается в «Проблемах», на главной и в «Парке» — " +
-        "и в приложении, и в боте. То же — в боте: /settings → «События»")
+    Note(
+        "Выключенное событие не приходит совсем, даже критичное, и не показывается в «Проблемах», на главной и в «Парке» — " +
+            "и в приложении, и в боте. То же — в боте: /settings → «События»",
+    )
     TELEGRAM_KINDS.forEach { (category, kinds) ->
         Text(TELEGRAM_CATEGORIES.getValue(category), style = MaterialTheme.typography.labelLarge)
         kinds.forEach { (kind, name) ->
@@ -424,8 +483,8 @@ private fun EventsSettings(sub: TelegramSubscription, onChange: (TelegramSubscri
             }
         }
     }
-    ToggleRow("Предупреждения", "Не только критичное", sub.warnings) { onChange(sub.copy(warnings = it)) }
-    ToggleRow("Инфо", "Справочные события", sub.info) { onChange(sub.copy(info = it)) }
+    TgToggleRow("Предупреждения", "Не только критичное", sub.warnings) { onChange(sub.copy(warnings = it)) }
+    TgToggleRow("Инфо", "Справочные события", sub.info) { onChange(sub.copy(info = it)) }
 }
 
 @Composable
@@ -434,7 +493,11 @@ private fun WhenSettings(sub: TelegramSubscription, onChange: (TelegramSubscript
         onChange(sub.copy(dailyLimit = it))
     }
     val quiet = quietLabel(sub)?.let { sub.quietFromHour to sub.quietToHour } ?: (null to null)
-    Choice("Тихие часы (кроме критичных)", QUIET.map { it to (if (it.first == null) "Выкл" else "%02d–%02d".format(it.first, it.second)) }, quiet) {
+    Choice(
+        "Тихие часы (кроме критичных)",
+        QUIET.map { it to (if (it.first == null) "Выкл" else "%02d–%02d".format(it.first, it.second)) },
+        quiet,
+    ) {
         onChange(sub.copy(quietFromHour = it.first, quietToHour = it.second))
     }
     if (quiet !in QUIET) Note("Сейчас: %02d:00–%02d:00".format(quiet.first, quiet.second))
@@ -447,7 +510,7 @@ private fun ListsSettings(sub: TelegramSubscription, onChange: (TelegramSubscrip
     val lists = sub.lists
     fun set(next: TelegramListSettings) = onChange(sub.copy(lists = next))
     Note("Выключенные в «Событиях» не показываются и здесь")
-    ToggleRow("Только мои машины", "Как в уведомлениях; выключено — все машины, что вам видны", lists.subscribedOnly) {
+    TgToggleRow("Только мои машины", "Как в уведомлениях; выключено — все машины, что вам видны", lists.subscribedOnly) {
         set(lists.copy(subscribedOnly = it))
     }
     Choice("Важность", SEVERITIES, lists.minSeverity) { set(lists.copy(minSeverity = it)) }
@@ -492,19 +555,16 @@ private val PERIODS = listOf<Pair<Int?, String>>(24 to "Сутки", 72 to "3 д
 private val PAGE_SIZES = listOf(5, 10, 20)
 private val ORDERS = listOf("newest" to "Сначала новые", "severity" to "Сначала критичные")
 
-/** Выбор одного из вариантов: подпись и сегменты. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Выбор одного из вариантов — чипы как на вкладке «Настройки». */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun <T> Choice(title: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
-    Text(title, style = MaterialTheme.typography.bodyMedium)
-    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-        options.forEachIndexed { i, (value, label) ->
-            SegmentedButton(
-                selected = value == selected,
-                onClick = { onSelect(value) },
-                shape = SegmentedButtonDefaults.itemShape(i, options.size),
-                label = { Text(label, maxLines = 1, style = MaterialTheme.typography.labelMedium) },
-            )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, style = MaterialTheme.typography.bodyMedium)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            options.forEach { (value, label) ->
+                PChip(label, selected = value == selected, onClick = { onSelect(value) })
+            }
         }
     }
 }
@@ -519,16 +579,10 @@ private fun CheckRow(title: String, checked: Boolean, onChecked: (Boolean) -> Un
 
 @Composable
 private fun Note(text: String) {
-    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(text, style = MaterialTheme.typography.bodySmall, color = Petrovich.colors.muted)
 }
 
 @Composable
-private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        Switch(checked = checked, onCheckedChange = onChecked)
-    }
+private fun TgToggleRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    SettingsSwitchRow(title, subtitle, checked, onChecked)
 }

@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ru.petrovich.telemetry.data.Vehicle
 import ru.petrovich.telemetry.ui.theme.Petrovich
@@ -196,7 +197,7 @@ fun SoftButton(
         border = BorderStroke(1.dp, border),
     ) {
         if (leading != null) { Icon(leading, null, Modifier.size(18.dp)); Spacer(Modifier.size(8.dp)) }
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

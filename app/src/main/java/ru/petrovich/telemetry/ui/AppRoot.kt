@@ -363,7 +363,6 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
             composable(CONNECTION) {
                 ConnectionSettingsScreen(
                     onBack = { nav.popBackStack() }, onChanged = { telemetryVm.reloadVehicles() },
-                    onOpenTelegram = { push(TELEGRAM) },
                 )
             }
             composable(TELEGRAM) { TelegramScreen(onBack = { nav.popBackStack() }, onOpenConnection = openConnection) }
