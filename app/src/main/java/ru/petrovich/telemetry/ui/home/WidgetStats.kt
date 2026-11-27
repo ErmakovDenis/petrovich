@@ -17,7 +17,6 @@ import ru.petrovich.telemetry.ui.common.plural
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 import kotlin.math.ceil
@@ -331,11 +330,14 @@ private fun accumulate(type: WidgetType, t: VehicleTelemetry, bucketStart: Local
  */
 fun VehicleTelemetry.totalOf(type: WidgetType): Double = accumulate(type, this, from, ChronoUnit.DAYS, 1).sum()
 
+/** Подпись столбца недели: день недели + дата («пт» / «20.11»), две строки на оси. */
+private val WeekChartLabelFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE'\n'd.MM", RuLocale)
+
 private fun bucketLabel(period: WidgetPeriod?, start: LocalDateTime, unit: ChronoUnit, i: Int): String {
     val t = if (unit == ChronoUnit.HOURS) start.plusHours(i.toLong()) else start.plusDays(i.toLong())
     return when (period) {
         WidgetPeriod.DAY -> t.format(DateTimeFormatter.ofPattern("HH", RuLocale))
-        WidgetPeriod.WEEK -> t.dayOfWeek.getDisplayName(TextStyle.SHORT, RuLocale).replaceFirstChar { c -> c.uppercase() }
+        WidgetPeriod.WEEK -> t.format(WeekChartLabelFmt)
         WidgetPeriod.MONTH, WidgetPeriod.QUARTER -> t.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
         null -> if (unit == ChronoUnit.HOURS) {
             t.format(DateTimeFormatter.ofPattern("HH:mm", RuLocale))
@@ -594,15 +596,15 @@ private fun buildDailySummary(
         !day.isBefore(previousFrom) && day.isBefore(currentFrom)
     }
     val total = current.sumOf(::value)
-    val pattern = when (period) {
-        WidgetPeriod.WEEK -> "EEE"
-        WidgetPeriod.DAY -> "HH"
-        else -> "d.MM"
-    }
     val dailyPoints = (0 until bucketCount).map { index ->
         val day = currentFrom.plusDays(index.toLong())
+        val label = when (period) {
+            WidgetPeriod.WEEK -> day.format(WeekChartLabelFmt)
+            WidgetPeriod.DAY -> day.format(DateTimeFormatter.ofPattern("HH", RuLocale))
+            else -> day.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
+        }
         WidgetPoint(
-            day.format(DateTimeFormatter.ofPattern(pattern, RuLocale)),
+            label,
             current.filter { java.time.LocalDate.parse(it.day) == day }.sumOf(::value),
         )
     }
@@ -698,9 +700,9 @@ fun FleetWeek.summary(type: WidgetType): WidgetSummary {
         val filtered = if (type == WidgetType.FUEL_TRUCKS) serverItems.filter { it.vehicle.name.contains(truckHint) } else serverItems
         val dailyPoints = currentDays.sorted().map { day ->
             val label = runCatching {
-                java.time.LocalDate.parse(day).format(
-                    DateTimeFormatter.ofPattern(if (period == WidgetPeriod.WEEK) "EEE" else "d.MM", RuLocale),
-                )
+                val parsed = java.time.LocalDate.parse(day)
+                if (period == WidgetPeriod.WEEK) parsed.format(WeekChartLabelFmt)
+                else parsed.format(DateTimeFormatter.ofPattern("d.MM", RuLocale))
             }.getOrDefault(day.takeLast(2))
             WidgetPoint(label, filtered.filter { it.day == day }.sumOf(::value))
         }

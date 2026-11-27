@@ -500,7 +500,8 @@ private fun DetailChart(points: List<WidgetPoint>, unit: String) {
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (i == selected) c.ink else c.muted,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
                     )
                 }
@@ -570,7 +571,8 @@ private fun DetailChartWithBaseline(points: List<WidgetPoint>, baseline: Double?
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (i == selected) c.ink else c.muted,
-                        maxLines = 1,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
                         fontWeight = if (i == selected) FontWeight.SemiBold else FontWeight.Normal,
                     )
                 }
@@ -584,8 +586,9 @@ private fun ChartSelectionLabel(point: WidgetPoint?, unit: String) {
     val c = Petrovich.colors
     if (point == null) return
     val value = "${formatCount(point.value)}${if (unit.isNotEmpty()) " $unit" else ""}"
+    val label = point.label.replace('\n', ' ')
     Text(
-        "${point.label} · $value",
+        "$label · $value",
         style = MaterialTheme.typography.labelLarge,
         color = c.ink,
         fontWeight = FontWeight.SemiBold,

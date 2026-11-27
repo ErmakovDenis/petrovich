@@ -78,7 +78,7 @@ import ru.petrovich.telemetry.ui.tables.TablesScreen
 import ru.petrovich.telemetry.ui.theme.Petrovich
 
 private const val HOME = "home"
-private const val CHAT = "chat?anomaly={anomaly}"
+private const val CHAT = "chat?anomaly={anomaly}&vehicle={vehicle}"
 private const val PROBLEMS = "problems"
 private const val TRIAGE = "triage"
 private const val SETTINGS = "settings"
@@ -167,7 +167,13 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
         popUpTo(CARD) { inclusive = false }
         launchSingleTop = true
     }
-    fun openChat(anomalyId: String?) = push(if (anomalyId == null) "chat" else "chat?anomaly=${Uri.encode(anomalyId)}")
+    fun openChat(anomalyId: String? = null, vehicleId: String? = null) {
+        val q = buildList {
+            if (!anomalyId.isNullOrBlank()) add("anomaly=${Uri.encode(anomalyId)}")
+            if (!vehicleId.isNullOrBlank()) add("vehicle=${Uri.encode(vehicleId)}")
+        }.joinToString("&")
+        push(if (q.isEmpty()) "chat" else "chat?$q")
+    }
     fun openVehicle(id: String) = push("vehicle/${Uri.encode(id)}")
     fun openWidgetDetail(type: WidgetType, lockedPeriod: WidgetPeriod? = null) {
         val q = lockedPeriod?.let { "?period=${it.name.lowercase()}" }.orEmpty()
@@ -246,7 +252,7 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
                     onBack = { nav.popBackStack() },
                     onShowOnMap = { push("vehicle/${Uri.encode(it)}/map") },
                     onOpenAnomaly = ::openCard,
-                    onAsk = { openChat(null) },
+                    onAsk = { openChat(vehicleId = it) },
                 )
             }
             composable(VEHICLE_MAP, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
@@ -288,10 +294,20 @@ private fun MainNavigation(telemetryVm: TelemetryViewModel, requestedTab: String
             }
             composable(
                 CHAT,
-                arguments = listOf(navArgument("anomaly") { type = NavType.StringType; nullable = true; defaultValue = null }),
+                arguments = listOf(
+                    navArgument("anomaly") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("vehicle") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
             ) { entry ->
                 val anomalyId = entry.arguments?.getString("anomaly")
-                ChatScreen(anomalyId, onBack = if (anomalyId != null) ({ nav.popBackStack() }) else null, onOpenCard = ::openCard, vm = chatVm)
+                val vehicleId = entry.arguments?.getString("vehicle")
+                ChatScreen(
+                    anomalyId = anomalyId,
+                    vehicleId = vehicleId,
+                    onBack = if (anomalyId != null || vehicleId != null) ({ nav.popBackStack() }) else null,
+                    onOpenCard = ::openCard,
+                    vm = chatVm,
+                )
             }
             composable(CARD, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
                 AnomalyDetailScreen(

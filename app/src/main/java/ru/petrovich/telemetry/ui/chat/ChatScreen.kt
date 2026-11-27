@@ -105,6 +105,8 @@ class ChatViewModel(
 
     private var epoch = 0L
     private var requestJob: Job? = null
+    /** Госномер/имя машины с карточки ТС — вопросы без номера всё равно уходят про неё. */
+    private var vehicleFocus: String? = null
 
     init {
         viewModelScope.launch {
@@ -116,6 +118,30 @@ class ChatViewModel(
                 runCatchingCancellable { restore(current) }.onFailure { showError(current, it) }
                 if (epoch == current) _state.update { it.copy(agentTyping = false) }
             }
+        }
+    }
+
+    /**
+     * Привязка чата к машине: чип контекста + префикс «Про машину …» у исходящих вопросов.
+     * Если диалог ещё только с приветствием — меняем его на приветствие про эту машину.
+     */
+    fun bindVehicle(label: String?) {
+        val focus = label?.trim()?.takeIf { it.isNotEmpty() }
+        vehicleFocus = focus
+        if (focus == null) return
+        _state.update { st ->
+            val onlyGreeting = st.messages.size == 1 &&
+                st.messages.first().author == Author.AGENT &&
+                !st.agentTyping
+            if (!onlyGreeting) st
+            else st.copy(
+                messages = listOf(
+                    ChatMessage(
+                        author = Author.AGENT,
+                        text = "Смотрю на $focus. Спросите про расход, связь или аномалии — уже в контексте этой машины.",
+                    ),
+                ),
+            )
         }
     }
 
@@ -135,7 +161,8 @@ class ChatViewModel(
         val trimmed = text.trim()
         if (trimmed.isEmpty() || _state.value.agentTyping) return
         val current = epoch
-        _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = trimmed), agentTyping = true) }
+        val forAgent = withVehicleFocus(trimmed)
+        _state.update { it.copy(messages = it.messages + ChatMessage(author = Author.USER, text = forAgent), agentTyping = true) }
         requestJob = viewModelScope.launch {
             try {
                 runCatchingCancellable { agent.reply(_state.value.messages, contextAnomalyId) }.fold(
@@ -231,6 +258,13 @@ class ChatViewModel(
     fun clear() = restart(delete = false)
     fun deleteConversation() = restart(delete = true)
 
+    private fun withVehicleFocus(text: String): String {
+        val focus = vehicleFocus ?: return text
+        val compactText = text.lowercase().replace(" ", "")
+        val compactFocus = focus.lowercase().replace(" ", "")
+        if (compactFocus.isNotEmpty() && compactText.contains(compactFocus)) return text
+        return "Про машину $focus: $text"
+    }
 }
 
 private val suggestions = listOf(
@@ -242,12 +276,29 @@ private val suggestions = listOf(
 
 private val contextSuggestions = listOf("Он раньше так делал?", "Как это доказать?")
 
-/** [anomalyId] — если чат открыт из карточки аномалии, показываем контекст разговора. */
+private val vehicleSuggestions = listOf(
+    "Что с этой машиной?",
+    "Откуда повышенный расход?",
+    "Аномалии за неделю",
+    "Есть проблемы со связью?",
+)
+
+/**
+ * [anomalyId] — чат из карточки аномалии.
+ * [vehicleId] — чат с карточки машины: вопросы сразу про это ТС.
+ */
 @Composable
-fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -> Unit, vm: ChatViewModel = viewModel()) {
+fun ChatScreen(
+    anomalyId: String?,
+    vehicleId: String? = null,
+    onBack: (() -> Unit)?,
+    onOpenCard: (String) -> Unit,
+    vm: ChatViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     val anomalies by ServiceLocator.anomalyStore.anomalies.collectAsStateWithLifecycle()
     val context = anomalyId?.let { id -> anomalies.firstOrNull { it.id == id } }
+    var vehicle by remember(vehicleId) { mutableStateOf<ru.petrovich.telemetry.data.Vehicle?>(null) }
     val connected by vm.connected.collectAsStateWithLifecycle()
     var input by rememberSaveable { mutableStateOf("") }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -258,6 +309,17 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
         onResult = { input = it },
         onUnavailable = { Toast.makeText(appContext, "Голосовой ввод недоступен на этом устройстве", Toast.LENGTH_SHORT).show() },
     )
+
+    LaunchedEffect(vehicleId) {
+        vehicle = if (vehicleId.isNullOrBlank()) {
+            null
+        } else {
+            runCatchingCancellable {
+                ServiceLocator.telemetry.vehicles().firstOrNull { it.id == vehicleId }
+            }.getOrNull()
+        }
+        vm.bindVehicle(vehicle?.shortLabel)
+    }
 
     LaunchedEffect(state.messages.size, state.agentTyping) {
         val count = state.messages.size + if (state.agentTyping) 1 else 0
@@ -305,6 +367,16 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
                             style = MaterialTheme.typography.labelSmall, color = c.muted,
                         )
                     }
+                } else if (vehicle != null) item(key = "ctx-vehicle") {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "Контекст: ${vehicle!!.shortLabel}" +
+                                vehicle!!.takeIf { it.plate != null && it.nameWithoutPlate != it.shortLabel }
+                                    ?.nameWithoutPlate?.let { " · $it" }.orEmpty(),
+                            Modifier.clip(RoundedCornerShape(12.dp)).background(c.surface2).padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall, color = c.muted,
+                        )
+                    }
                 }
                 items(state.messages, key = { it.id }) { m ->
                     if (m.standDraft != null) StandDraftCard(m, onSend = { vm.sendDraft(m.id) }, onCancel = { vm.cancelDraft(m.id) })
@@ -318,7 +390,13 @@ fun ChatScreen(anomalyId: String?, onBack: (() -> Unit)?, onOpenCard: (String) -
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.padding(bottom = 8.dp),
             ) {
-                items(if (context != null) contextSuggestions else suggestions) { s -> PChip(s, selected = false, onClick = { vm.send(s, anomalyId) }) }
+                items(
+                    when {
+                        context != null -> contextSuggestions
+                        vehicle != null -> vehicleSuggestions
+                        else -> suggestions
+                    },
+                ) { s -> PChip(s, selected = false, onClick = { vm.send(s, anomalyId) }) }
             }
             Row(
                 Modifier.fillMaxWidth().background(c.surface).padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 10.dp),
