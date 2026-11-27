@@ -1,0 +1,86 @@
+# Codemagic CI — сборка iOS → TestFlight без локального Mac.
+# Документация: ios/TESTFLIGHT.md, ios/README.md
+#
+# Одноразовая настройка в UI Codemagic (секреты не коммитить):
+# 1. Integrations → Developer Portal: API key с именем ровно
+#    "Petrovich App Store Connect" (Issuer ID, Key ID, .p8).
+# 2. Code signing identities: Apple Distribution cert + App Store profile
+#    для bundle id ru.petrovich.telemetry (Generate/Fetch по тому же API key).
+# 3. Environment variables (workflow или group): APP_STORE_APPLE_ID =
+#    числовой Apple ID приложения из App Store Connect → App Information.
+#
+# Триггер: push в feature/ios-app или ручной Start build в UI.
+
+workflows:
+  ios-testflight:
+    name: Petrovich iOS → TestFlight
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Petrovich App Store Connect
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: ru.petrovich.telemetry
+      vars:
+        BUNDLE_ID: ru.petrovich.telemetry
+        XCODE_PROJECT: ios/Petrovich.xcodeproj
+        XCODE_SCHEME: Petrovich
+        # Задать в Codemagic UI, если ещё нет (не хранить в git):
+        # APP_STORE_APPLE_ID: "1234567890"
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: feature/ios-app
+          include: true
+          source: true
+        - pattern: main
+          include: false
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          cd ios
+          xcodegen generate
+      - name: Increment build number
+        script: |
+          cd ios
+          if [ -n "${APP_STORE_APPLE_ID:-}" ]; then
+            LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" || \
+                     app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID" || echo 0)
+            NEXT=$((LATEST + 1))
+            echo "Setting CURRENT_PROJECT_VERSION=$NEXT"
+            agvtool new-version -all "$NEXT" || \
+              /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEXT" Petrovich/Resources/Info.plist
+          else
+            echo "APP_STORE_APPLE_ID not set — keeping MARKETING/CURRENT from project.yml"
+          fi
+      - name: Set up code signing
+        script: |
+          xcode-project use-profiles \
+            --project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            --custom-export-options='{"testFlightInternalTestingOnly": true}'
+      - name: Build IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$CM_BUILD_DIR/$XCODE_PROJECT" \
+            --scheme "$XCODE_SCHEME"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM
+    publishing:
+      app_store_connect:
+        # auth: integration — имя ключа из integrations выше
+        auth: integration
+        # Internal TestFlight: достаточно загрузки IPA (без beta review).
+        # Для External: submit_to_testflight: true и beta_groups: [...]
+        submit_to_testflight: false
+        submit_to_app_store: false

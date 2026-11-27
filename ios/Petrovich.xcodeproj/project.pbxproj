@@ -1,0 +1,216 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+		539F2B309D5A436584BCAB28 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1757FDC3415F48F1ACFDA625 /* AppEnvironment.swift */; };
+		FB7E086817FE4820B6302DDB /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 502061FDAC28426FB6C39431 /* MainTabView.swift */; };
+		B9DB5ECD57164EC4A848BAE2 /* PetrovichApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFC259F5AF964292A90F4257 /* PetrovichApp.swift */; };
+		12E83806D35A4AC38FEC7E0D /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2DF17F624B4DE8B6DA08C9 /* RootView.swift */; };
+		3EDD2105CA104342BDD56166 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ABB243E940347668E75ACDC /* AppSettings.swift */; };
+		55993D2BD2334CF2A84AE0C8 /* AutoGraphClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DA3BE924F1A438AB8C49B55 /* AutoGraphClient.swift */; };
+		1BE8AF19029642CB918D3BA4 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48142451DE0E4D42BCA6BE41 /* Config.swift */; };
+		631482AA3C1A4B2199617979 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCAC63F637C74BA0B84A3667 /* Models.swift */; };
+		2B2110833B22416DBE9B4DBF /* Repositories.swift in Sources */ = {isa = PBXBuildFile; fileRef = D74CAF4CADD04B6AA1FE9E2B /* Repositories.swift */; };
+		05E7A205A2C64820A4969714 /* StandClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF134D126C2F4DB3A27A842F /* StandClient.swift */; };
+		D3C3229316014E6581AB9222 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F54B94999754F76BB10DEC5 /* Components.swift */; };
+		FEF9EFAD3DF7487085843B22 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BF64516043540578BC9C0E2 /* Theme.swift */; };
+		AF17540F2BB441B28E454FE4 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C8360DD134E45F68F0E23FF /* ChatView.swift */; };
+		4457F627B1C94220B252C969 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C468F69A2BE4832BA669EB6 /* HomeView.swift */; };
+		2AD3B0CDF64344E2BDFA4E1F /* WidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CA2F3BA865D4347856D9873 /* WidgetViews.swift */; };
+		B53ADF6272B64740B96B3294 /* PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5988CE0A91644012A9361E36 /* PushRegistration.swift */; };
+		3EAFCD454C474FC79E54523D /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E69399E19D134918AEB26D46 /* OnboardingView.swift */; };
+		1373CCC6C8AC487EA5914E29 /* ParkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5A75928E3342679692FCEE /* ParkView.swift */; };
+		C10DEA1A2A584CA091B45023 /* VehicleDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B58824B9253C445C8A059480 /* VehicleDetailView.swift */; };
+		C67A297C423144EB90C3C11F /* AnomalyDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 599E8FD358F244EF9DD17EDA /* AnomalyDetailView.swift */; };
+		A3EC07CC36A7442EBFDEEF01 /* ProblemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F509070CBB43D480446D4A /* ProblemsView.swift */; };
+		393FE777673D446095488DEF /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEB2FD6D2DB4FEB97B9E65A /* ReportView.swift */; };
+		870526C82DE24492BC25DB85 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DF915ACCD4F485DAF9573CB /* ConnectionView.swift */; };
+		61B63ECDB1DA4956BE36CEBA /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F28FA38161340CF88B03ABA /* SettingsView.swift */; };
+		9A108C9FDD464BA78A6BC49A /* TelegramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13A50B59A42E486CBAD66F79 /* TelegramView.swift */; };
+		C598C4CD05864E20BDD976CC /* Formatters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E68BCFD50B94C8E86726D6C /* Formatters.swift */; };
+		28693E69422747D685F2FF4C /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68F2085180EB45D8BF4C948D /* KeychainStore.swift */; };
+		5E309852694A451E87214290 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 1782412F9B3B4BCC9701C6FF /* Info.plist */; };
+		7584C468E6E849F9AF3CA799 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8C58E8357B5B4EBA9A721FD0 /* Assets.xcassets */; };
+		6223FD60D966450587D82869 /* Petrovich.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Petrovich.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1757FDC3415F48F1ACFDA625 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/AppEnvironment.swift; sourceTree = "<group>"; };
+		502061FDAC28426FB6C39431 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/MainTabView.swift; sourceTree = "<group>"; };
+		BFC259F5AF964292A90F4257 /* PetrovichApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/PetrovichApp.swift; sourceTree = "<group>"; };
+		4D2DF17F624B4DE8B6DA08C9 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/RootView.swift; sourceTree = "<group>"; };
+		1ABB243E940347668E75ACDC /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/AppSettings.swift; sourceTree = "<group>"; };
+		4DA3BE924F1A438AB8C49B55 /* AutoGraphClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/AutoGraphClient.swift; sourceTree = "<group>"; };
+		48142451DE0E4D42BCA6BE41 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/Config.swift; sourceTree = "<group>"; };
+		CCAC63F637C74BA0B84A3667 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/Models.swift; sourceTree = "<group>"; };
+		D74CAF4CADD04B6AA1FE9E2B /* Repositories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/Repositories.swift; sourceTree = "<group>"; };
+		FF134D126C2F4DB3A27A842F /* StandClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Data/StandClient.swift; sourceTree = "<group>"; };
+		6F54B94999754F76BB10DEC5 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design/Components.swift; sourceTree = "<group>"; };
+		5BF64516043540578BC9C0E2 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Design/Theme.swift; sourceTree = "<group>"; };
+		5C8360DD134E45F68F0E23FF /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Chat/ChatView.swift; sourceTree = "<group>"; };
+		5C468F69A2BE4832BA669EB6 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Home/HomeView.swift; sourceTree = "<group>"; };
+		6CA2F3BA865D4347856D9873 /* WidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Home/WidgetViews.swift; sourceTree = "<group>"; };
+		5988CE0A91644012A9361E36 /* PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Notifications/PushRegistration.swift; sourceTree = "<group>"; };
+		E69399E19D134918AEB26D46 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Onboarding/OnboardingView.swift; sourceTree = "<group>"; };
+		2D5A75928E3342679692FCEE /* ParkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Park/ParkView.swift; sourceTree = "<group>"; };
+		B58824B9253C445C8A059480 /* VehicleDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Park/VehicleDetailView.swift; sourceTree = "<group>"; };
+		599E8FD358F244EF9DD17EDA /* AnomalyDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Problems/AnomalyDetailView.swift; sourceTree = "<group>"; };
+		14F509070CBB43D480446D4A /* ProblemsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Problems/ProblemsView.swift; sourceTree = "<group>"; };
+		9DEB2FD6D2DB4FEB97B9E65A /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Report/ReportView.swift; sourceTree = "<group>"; };
+		4DF915ACCD4F485DAF9573CB /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Settings/ConnectionView.swift; sourceTree = "<group>"; };
+		9F28FA38161340CF88B03ABA /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Settings/SettingsView.swift; sourceTree = "<group>"; };
+		13A50B59A42E486CBAD66F79 /* TelegramView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Features/Settings/TelegramView.swift; sourceTree = "<group>"; };
+		8E68BCFD50B94C8E86726D6C /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support/Formatters.swift; sourceTree = "<group>"; };
+		68F2085180EB45D8BF4C948D /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Support/KeychainStore.swift; sourceTree = "<group>"; };
+		1782412F9B3B4BCC9701C6FF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Resources/Info.plist; sourceTree = "<group>"; };
+		8C58E8357B5B4EBA9A721FD0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Resources/Assets.xcassets; sourceTree = "<group>"; };
+		1A9310D828054E8BA7C4ED71 = {isa = PBXGroup; children = (6223FD60D966450587D82869 /* Petrovich.app */); name = Products; sourceTree = "<group>"; };
+		266FBF51AE4F423B88DC8F40 = {
+			isa = PBXGroup;
+			children = (
+				1757FDC3415F48F1ACFDA625 /* AppEnvironment.swift */,
+				502061FDAC28426FB6C39431 /* MainTabView.swift */,
+				BFC259F5AF964292A90F4257 /* PetrovichApp.swift */,
+				4D2DF17F624B4DE8B6DA08C9 /* RootView.swift */,
+				1ABB243E940347668E75ACDC /* AppSettings.swift */,
+				4DA3BE924F1A438AB8C49B55 /* AutoGraphClient.swift */,
+				48142451DE0E4D42BCA6BE41 /* Config.swift */,
+				CCAC63F637C74BA0B84A3667 /* Models.swift */,
+				D74CAF4CADD04B6AA1FE9E2B /* Repositories.swift */,
+				FF134D126C2F4DB3A27A842F /* StandClient.swift */,
+				6F54B94999754F76BB10DEC5 /* Components.swift */,
+				5BF64516043540578BC9C0E2 /* Theme.swift */,
+				5C8360DD134E45F68F0E23FF /* ChatView.swift */,
+				5C468F69A2BE4832BA669EB6 /* HomeView.swift */,
+				6CA2F3BA865D4347856D9873 /* WidgetViews.swift */,
+				5988CE0A91644012A9361E36 /* PushRegistration.swift */,
+				E69399E19D134918AEB26D46 /* OnboardingView.swift */,
+				2D5A75928E3342679692FCEE /* ParkView.swift */,
+				B58824B9253C445C8A059480 /* VehicleDetailView.swift */,
+				599E8FD358F244EF9DD17EDA /* AnomalyDetailView.swift */,
+				14F509070CBB43D480446D4A /* ProblemsView.swift */,
+				9DEB2FD6D2DB4FEB97B9E65A /* ReportView.swift */,
+				4DF915ACCD4F485DAF9573CB /* ConnectionView.swift */,
+				9F28FA38161340CF88B03ABA /* SettingsView.swift */,
+				13A50B59A42E486CBAD66F79 /* TelegramView.swift */,
+				8E68BCFD50B94C8E86726D6C /* Formatters.swift */,
+				68F2085180EB45D8BF4C948D /* KeychainStore.swift */,
+				1782412F9B3B4BCC9701C6FF /* Info.plist */,
+				8C58E8357B5B4EBA9A721FD0 /* Assets.xcassets */,
+			);
+			path = Petrovich;
+			sourceTree = "<group>";
+		};
+		EC49D02FB304421E9A35B3CC = {
+			isa = PBXGroup;
+			children = (266FBF51AE4F423B88DC8F40 /* Petrovich */, 1A9310D828054E8BA7C4ED71 /* Products */);
+			sourceTree = "<group>";
+		};
+		51EA0231BA0748E89852FDF4 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			539F2B309D5A436584BCAB28 /* AppEnvironment.swift in Sources */,
+			FB7E086817FE4820B6302DDB /* MainTabView.swift in Sources */,
+			B9DB5ECD57164EC4A848BAE2 /* PetrovichApp.swift in Sources */,
+			12E83806D35A4AC38FEC7E0D /* RootView.swift in Sources */,
+			3EDD2105CA104342BDD56166 /* AppSettings.swift in Sources */,
+			55993D2BD2334CF2A84AE0C8 /* AutoGraphClient.swift in Sources */,
+			1BE8AF19029642CB918D3BA4 /* Config.swift in Sources */,
+			631482AA3C1A4B2199617979 /* Models.swift in Sources */,
+			2B2110833B22416DBE9B4DBF /* Repositories.swift in Sources */,
+			05E7A205A2C64820A4969714 /* StandClient.swift in Sources */,
+			D3C3229316014E6581AB9222 /* Components.swift in Sources */,
+			FEF9EFAD3DF7487085843B22 /* Theme.swift in Sources */,
+			AF17540F2BB441B28E454FE4 /* ChatView.swift in Sources */,
+			4457F627B1C94220B252C969 /* HomeView.swift in Sources */,
+			2AD3B0CDF64344E2BDFA4E1F /* WidgetViews.swift in Sources */,
+			B53ADF6272B64740B96B3294 /* PushRegistration.swift in Sources */,
+			3EAFCD454C474FC79E54523D /* OnboardingView.swift in Sources */,
+			1373CCC6C8AC487EA5914E29 /* ParkView.swift in Sources */,
+			C10DEA1A2A584CA091B45023 /* VehicleDetailView.swift in Sources */,
+			C67A297C423144EB90C3C11F /* AnomalyDetailView.swift in Sources */,
+			A3EC07CC36A7442EBFDEEF01 /* ProblemsView.swift in Sources */,
+			393FE777673D446095488DEF /* ReportView.swift in Sources */,
+			870526C82DE24492BC25DB85 /* ConnectionView.swift in Sources */,
+			61B63ECDB1DA4956BE36CEBA /* SettingsView.swift in Sources */,
+			9A108C9FDD464BA78A6BC49A /* TelegramView.swift in Sources */,
+			C598C4CD05864E20BDD976CC /* Formatters.swift in Sources */,
+			28693E69422747D685F2FF4C /* KeychainStore.swift in Sources */,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		DD2B18A8970D45AE82F02527 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
+			7584C468E6E849F9AF3CA799 /* Assets.xcassets in Resources */,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		2E4B4090C2974A37A308E18F = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F85A00019BFB406E917312CE = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1A143527E714AE3BEE1A076;
+			buildPhases = (51EA0231BA0748E89852FDF4, 2E4B4090C2974A37A308E18F, DD2B18A8970D45AE82F02527);
+			buildRules = ();
+			dependencies = ();
+			name = Petrovich;
+			productName = Petrovich;
+			productReference = 6223FD60D966450587D82869;
+			productType = "com.apple.product-type.application";
+		};
+		051FB8A6E58F48EFAB53E228 = {
+			isa = PBXProject;
+			attributes = { LastSwiftUpdateCheck = 1500; LastUpgradeCheck = 1500; };
+			buildConfigurationList = 25034683A6714BE0B7525ADF;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = ru;
+			hasScannedForEncodings = 0;
+			knownRegions = (ru, en, Base);
+			mainGroup = EC49D02FB304421E9A35B3CC;
+			productRefGroup = 1A9310D828054E8BA7C4ED71;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (F85A00019BFB406E917312CE);
+		};
+		B435928A7DE34F28B1AE9E97 = {isa = XCBuildConfiguration; buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			CLANG_ENABLE_MODULES = YES;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.9;
+		}; name = Debug; };
+		EDEA83E4DFCE40D6800ED4C3 = {isa = XCBuildConfiguration; buildSettings = {
+			ALWAYS_SEARCH_USER_PATHS = NO;
+			CLANG_ENABLE_MODULES = YES;
+			IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+			SDKROOT = iphoneos;
+			SWIFT_VERSION = 5.9;
+		}; name = Release; };
+		7FC5395EADED428C96F700F3 = {isa = XCBuildConfiguration; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+			CODE_SIGN_STYLE = Automatic;
+			CURRENT_PROJECT_VERSION = 1;
+			GENERATE_INFOPLIST_FILE = NO;
+			INFOPLIST_FILE = Petrovich/Resources/Info.plist;
+			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+			MARKETING_VERSION = 0.1.0;
+			PRODUCT_BUNDLE_IDENTIFIER = ru.petrovich.telemetry;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SWIFT_EMIT_LOC_STRINGS = YES;
+			SWIFT_VERSION = 5.9;
+			TARGETED_DEVICE_FAMILY = "1,2";
+			STAND_URL = "https://petrovichai.ru";
+			AUTOGRAPH_BASE_URL = "https://web.tk-ekat.ru/ServiceJSON/";
+		}; name = Debug; };
+		9A78A876970A467993D78DA7 = {isa = XCBuildConfiguration; buildSettings = {
+			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+			CODE_SIGN_STYLE = Automatic;
+			CURRENT_PROJECT_VERSION = 1;
+			GENERATE_INFOPLIST_FILE = NO;
+			INFOPLIST_FILE = Petrovich/Resources/Info.plist;
+			LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+			MARKETING_VERSION = 0.1.0;
+			PRODUCT_BUNDLE_IDENTIFIER = ru.petrovich.telemetry;
+			PRODUCT_NAME = "$(TARGET_NAME)";
+			SWIFT_EMIT_LOC_STRINGS = YES;
+			SWIFT_VERSION = 5.9;
+			TARGETED_DEVICE_FAMILY = "1,2";
+			STAND_URL = "https://petrovichai.ru";
+			AUTOGRAPH_BASE_URL = "https://web.tk-ekat.ru/ServiceJSON/";
+		}; name = Release; };
+		25034683A6714BE0B7525ADF = {isa = XCConfigurationList; buildConfigurations = (B435928A7DE34F28B1AE9E97, EDEA83E4DFCE40D6800ED4C3); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		B1A143527E714AE3BEE1A076 = {isa = XCConfigurationList; buildConfigurations = (7FC5395EADED428C96F700F3, 9A78A876970A467993D78DA7); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+	};
+	rootObject = 051FB8A6E58F48EFAB53E228 /* Project object */;
+}

@@ -1,10 +1,12 @@
-# Петрович Телеметрия (Android)
+# Петрович Телеметрия
 
 Мониторинг телеметрии грузовиков через AutoGRAPH API (`https://web.tk-ekat.ru/ServiceJSON/`,
 документация: https://web.tk-ekat.ru/ServiceAPI/index.html).
 
-Стек: Kotlin, Jetpack Compose (Material 3), Retrofit + kotlinx.serialization, WorkManager, DataStore.
+**Android** — Kotlin, Jetpack Compose (Material 3), Retrofit + kotlinx.serialization, WorkManager, DataStore;
 minSdk 26, targetSdk 35.
+
+**iOS** (ветка `feature/ios-app`) — SwiftUI-клиент в [`ios/`](ios/); сборка на Mac через XcodeGen, см. [`ios/README.md`](ios/README.md).
 
 ## Быстрый старт (Linux)
 
